@@ -104,6 +104,14 @@ def health():
     }
 
 
+@app.get("/admin/google-oauth-configured")
+def google_oauth_configured():
+    """Public endpoint — no auth required. Returns whether Google OAuth2 client is configured."""
+    client_id = os.getenv("GOOGLE_CLIENT_ID", "")
+    configured = bool(client_id and client_id.strip().upper() != "PLACEHOLDER")
+    return {"configured": configured}
+
+
 # ── Admin: account management ─────────────────────────────
 
 @app.post("/admin/account")

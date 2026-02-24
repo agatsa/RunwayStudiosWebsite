@@ -15,6 +15,7 @@ interface Props {
   workspaceName: string
   googleConnected?: boolean
   googleError?: string
+  googleOAuthConfigured?: boolean
 }
 
 function PlatformCard({
@@ -111,7 +112,7 @@ function PlatformCard({
   )
 }
 
-export default function SettingsView({ connections, workspaceId, workspaceName, googleConnected, googleError }: Props) {
+export default function SettingsView({ connections, workspaceId, workspaceName, googleConnected, googleError, googleOAuthConfigured = false }: Props) {
   const [showMetaDialog, setShowMetaDialog] = useState(false)
   const [showGoogleDialog, setShowGoogleDialog] = useState(false)
   const [showYouTubeDialog, setShowYouTubeDialog] = useState(false)
@@ -239,6 +240,7 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
           workspaceId={workspaceId}
           onConnected={refresh}
           onClose={() => setShowGoogleDialog(false)}
+          oauthConfigured={googleOAuthConfigured}
         />
       )}
 

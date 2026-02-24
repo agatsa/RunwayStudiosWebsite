@@ -28,6 +28,17 @@ async function fetchWorkspaces(): Promise<Workspace[]> {
   }
 }
 
+async function fetchGoogleOAuthConfigured(): Promise<boolean> {
+  try {
+    const r = await fetchFromFastAPI('/admin/google-oauth-configured')
+    if (!r.ok) return false
+    const d = await r.json()
+    return d.configured === true
+  } catch {
+    return false
+  }
+}
+
 export default async function SettingsPage({ searchParams }: PageProps) {
   const workspaceId = searchParams.ws ?? ''
   const googleConnected = searchParams.google_connected === '1'
@@ -41,9 +52,10 @@ export default async function SettingsPage({ searchParams }: PageProps) {
     )
   }
 
-  const [connectionsData, workspaces] = await Promise.all([
+  const [connectionsData, workspaces, googleOAuthConfigured] = await Promise.all([
     fetchConnections(workspaceId),
     fetchWorkspaces(),
+    fetchGoogleOAuthConfigured(),
   ])
 
   const workspace = workspaces.find((w: Workspace) => w.id === workspaceId)
@@ -56,6 +68,7 @@ export default async function SettingsPage({ searchParams }: PageProps) {
       workspaceName={workspaceName}
       googleConnected={googleConnected}
       googleError={googleError}
+      googleOAuthConfigured={googleOAuthConfigured}
     />
   )
 }
