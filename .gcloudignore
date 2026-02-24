@@ -1,0 +1,10 @@
+.gcloudignore
+.git
+.gitignore
+dashboard/node_modules/
+dashboard/.next/
+dashboard/.vercel/
+**/__pycache__/
+**/*.pyc
+**/.env.local
+*.log

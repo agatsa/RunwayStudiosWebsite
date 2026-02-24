@@ -1,0 +1,15 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'lp-auditor/Dockerfile'
+      - '-t'
+      - 'gcr.io/wa-ai-agency/lp-auditor'
+      - 'lp-auditor'
+    dir: '.'
+
+images:
+  - 'gcr.io/wa-ai-agency/lp-auditor'
+
+timeout: '900s'

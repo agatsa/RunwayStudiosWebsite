@@ -1,0 +1,11 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - build
+      - '-f'
+      - services/agent_swarm/Dockerfile
+      - '-t'
+      - 'asia-south1-docker.pkg.dev/wa-ai-agency/cloud-run-source-deploy/agent-swarm:latest'
+      - '.'
+images:
+  - 'asia-south1-docker.pkg.dev/wa-ai-agency/cloud-run-source-deploy/agent-swarm:latest'

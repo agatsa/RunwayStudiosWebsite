@@ -1,0 +1,11 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - build
+      - '-f'
+      - dashboard/Dockerfile
+      - '-t'
+      - 'asia-south1-docker.pkg.dev/wa-ai-agency/cloud-run-source-deploy/dashboard:latest'
+      - 'dashboard'
+images:
+  - 'asia-south1-docker.pkg.dev/wa-ai-agency/cloud-run-source-deploy/dashboard:latest'

@@ -1,0 +1,11 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - build
+      - -t
+      - asia-south1-docker.pkg.dev/wa-ai-agency/cloud-run-source-deploy/wa-bot
+      - -f
+      - Dockerfile
+      - .
+images:
+  - asia-south1-docker.pkg.dev/wa-ai-agency/cloud-run-source-deploy/wa-bot

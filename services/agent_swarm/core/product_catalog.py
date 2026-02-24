@@ -1,0 +1,488 @@
+# services/agent_swarm/core/product_catalog.py
+"""
+Product catalog discovery and sync service.
+
+Given a store URL, automatically detects the platform and populates
+the `products` table for the workspace.
+
+Supported platforms:
+  1. Shopify   — uses public /products.json endpoint (no auth needed)
+  2. WooCommerce — uses WooCommerce REST API v3
+  3. Custom/Unknown — Claude reads the page and extracts product data
+
+Called during:
+  - Onboarding (client enters store URL for the first time)
+  - Manual re-sync from the dashboard
+  - Scheduled weekly sync to pick up price/inventory changes
+"""
+
+import json
+import re
+from urllib.parse import urlparse
+
+import requests as _requests
+import anthropic
+
+from services.agent_swarm.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from services.agent_swarm.db import get_conn
+from services.agent_swarm.core.workspace import invalidate_workspace_cache
+
+
+# ── Platform detection ────────────────────────────────────────────────────
+
+def detect_platform(store_url: str) -> str:
+    """
+    Detect the e-commerce platform for a given store URL.
+    Returns: 'shopify' | 'woocommerce' | 'custom'
+    """
+    url = store_url.rstrip("/")
+
+    # Check Shopify: /products.json always returns 200 on Shopify stores
+    try:
+        r = _requests.get(f"{url}/products.json?limit=1", timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if "products" in data:
+                return "shopify"
+    except Exception:
+        pass
+
+    # Check WooCommerce: /wp-json/wc/v3/products returns 200 with valid auth
+    # (Even without auth it returns 401, which still means WooCommerce is present)
+    try:
+        r = _requests.get(f"{url}/wp-json/wc/v3/products", timeout=10)
+        if r.status_code in (200, 401, 403):
+            if "woocommerce" in r.headers.get("X-WC-Store-API-Nonce", "").lower() or \
+               r.status_code == 401:
+                # Check wp-json route exists at all
+                wp = _requests.get(f"{url}/wp-json/", timeout=10)
+                if wp.status_code == 200 and "wp/v2" in wp.text:
+                    return "woocommerce"
+    except Exception:
+        pass
+
+    return "custom"
+
+
+# ── Shopify sync ──────────────────────────────────────────────────────────
+
+def sync_from_shopify(workspace_id: str, store_url: str) -> list[dict]:
+    """
+    Fetch all products from a Shopify store via the public /products.json API.
+    Upserts into the products table.
+    Returns list of synced product dicts.
+    """
+    url = store_url.rstrip("/")
+    synced = []
+    page = 1
+    limit = 250  # Shopify max per page
+
+    while True:
+        try:
+            r = _requests.get(
+                f"{url}/products.json",
+                params={"limit": limit, "page": page},
+                timeout=20,
+            )
+            if not r.ok:
+                print(f"Shopify products.json failed: {r.status_code} — {r.text[:200]}")
+                break
+            data = r.json()
+            products = data.get("products", [])
+            if not products:
+                break
+
+            for p in products:
+                synced_product = _upsert_shopify_product(workspace_id, store_url, p)
+                if synced_product:
+                    synced.append(synced_product)
+
+            if len(products) < limit:
+                break
+            page += 1
+
+        except Exception as e:
+            print(f"Shopify sync error on page {page}: {e}")
+            break
+
+    # Mark products that no longer exist in Shopify as inactive
+    if synced:
+        active_source_ids = [p["source_product_id"] for p in synced]
+        _deactivate_removed_products(workspace_id, "shopify", active_source_ids)
+
+    invalidate_workspace_cache(workspace_id)
+    print(f"Shopify sync complete: {len(synced)} products for workspace {workspace_id}")
+    return synced
+
+
+def _upsert_shopify_product(workspace_id: str, store_url: str, p: dict) -> dict | None:
+    """Parse a Shopify product object and upsert into products table."""
+    try:
+        product_id = str(p["id"])
+        title = p.get("title", "")
+        description = _strip_html(p.get("body_html", "") or "")
+
+        # Price: use first variant's price
+        variants = p.get("variants", [])
+        price_inr = None
+        mrp_inr = None
+        sku = None
+        if variants:
+            v = variants[0]
+            try:
+                price_inr = float(v.get("price") or 0) or None
+            except (ValueError, TypeError):
+                pass
+            try:
+                compare = v.get("compare_at_price")
+                if compare:
+                    mrp_inr = float(compare)
+            except (ValueError, TypeError):
+                pass
+            sku = v.get("sku")
+
+        # Product URL
+        handle = p.get("handle", "")
+        product_url = f"{store_url.rstrip('/')}/products/{handle}" if handle else None
+
+        # Images
+        images = [
+            {"url": img["src"], "alt": img.get("alt", ""), "position": img.get("position", 0)}
+            for img in p.get("images", [])
+            if img.get("src")
+        ]
+
+        # Category from product type
+        category = p.get("product_type", "") or None
+        brand = p.get("vendor", "") or None
+
+        # Tags → key features (use Shopify tags as seed)
+        tags = [t.strip() for t in (p.get("tags") or "").split(",") if t.strip()]
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO products (
+                        workspace_id, name, description, price_inr, mrp_inr,
+                        product_url, images, sku, category, brand,
+                        key_features, source_platform, source_product_id,
+                        active, last_synced_at
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE,NOW())
+                    ON CONFLICT (workspace_id, source_platform, source_product_id)
+                    DO UPDATE SET
+                        name            = EXCLUDED.name,
+                        description     = EXCLUDED.description,
+                        price_inr       = EXCLUDED.price_inr,
+                        mrp_inr         = EXCLUDED.mrp_inr,
+                        product_url     = EXCLUDED.product_url,
+                        images          = EXCLUDED.images,
+                        sku             = EXCLUDED.sku,
+                        category        = EXCLUDED.category,
+                        brand           = EXCLUDED.brand,
+                        active          = TRUE,
+                        last_synced_at  = NOW(),
+                        updated_at      = NOW()
+                    RETURNING id
+                    """,
+                    (
+                        workspace_id, title, description or None,
+                        price_inr, mrp_inr,
+                        product_url, json.dumps(images),
+                        sku, category, brand,
+                        json.dumps(tags),
+                        "shopify", product_id,
+                    ),
+                )
+                row = cur.fetchone()
+                internal_id = str(row[0]) if row else None
+
+        return {
+            "id": internal_id,
+            "name": title,
+            "price_inr": price_inr,
+            "product_url": product_url,
+            "source_platform": "shopify",
+            "source_product_id": product_id,
+        }
+
+    except Exception as e:
+        print(f"Error upserting Shopify product {p.get('id')}: {e}")
+        return None
+
+
+# ── WooCommerce sync ──────────────────────────────────────────────────────
+
+def sync_from_woocommerce(
+    workspace_id: str,
+    store_url: str,
+    consumer_key: str,
+    consumer_secret: str,
+) -> list[dict]:
+    """
+    Fetch products from WooCommerce REST API v3.
+    Requires consumer key + secret from WooCommerce → Settings → Advanced → REST API.
+    """
+    url = store_url.rstrip("/")
+    synced = []
+    page = 1
+    per_page = 100
+
+    while True:
+        try:
+            r = _requests.get(
+                f"{url}/wp-json/wc/v3/products",
+                params={"per_page": per_page, "page": page, "status": "publish"},
+                auth=(consumer_key, consumer_secret),
+                timeout=20,
+            )
+            if not r.ok:
+                print(f"WooCommerce API error: {r.status_code} — {r.text[:200]}")
+                break
+            products = r.json()
+            if not products:
+                break
+
+            for p in products:
+                synced_product = _upsert_woocommerce_product(workspace_id, store_url, p)
+                if synced_product:
+                    synced.append(synced_product)
+
+            if len(products) < per_page:
+                break
+            page += 1
+
+        except Exception as e:
+            print(f"WooCommerce sync error on page {page}: {e}")
+            break
+
+    if synced:
+        active_source_ids = [p["source_product_id"] for p in synced]
+        _deactivate_removed_products(workspace_id, "woocommerce", active_source_ids)
+
+    invalidate_workspace_cache(workspace_id)
+    print(f"WooCommerce sync complete: {len(synced)} products for workspace {workspace_id}")
+    return synced
+
+
+def _upsert_woocommerce_product(workspace_id: str, store_url: str, p: dict) -> dict | None:
+    try:
+        product_id = str(p["id"])
+        title = p.get("name", "")
+        description = _strip_html(p.get("description") or p.get("short_description") or "")
+        price_inr = float(p.get("price") or 0) or None
+        regular_price = p.get("regular_price")
+        mrp_inr = float(regular_price) if regular_price else None
+        sku = p.get("sku") or None
+        product_url = p.get("permalink") or None
+        category = (p.get("categories") or [{}])[0].get("name") if p.get("categories") else None
+        brand = None  # WooCommerce doesn't have native brand, may be in attributes
+
+        images = [
+            {"url": img["src"], "alt": img.get("alt", ""), "position": i}
+            for i, img in enumerate(p.get("images", []))
+            if img.get("src")
+        ]
+
+        tags = [t.get("name", "") for t in (p.get("tags") or []) if t.get("name")]
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO products (
+                        workspace_id, name, description, price_inr, mrp_inr,
+                        product_url, images, sku, category, brand,
+                        key_features, source_platform, source_product_id,
+                        active, last_synced_at
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,TRUE,NOW())
+                    ON CONFLICT (workspace_id, source_platform, source_product_id)
+                    DO UPDATE SET
+                        name = EXCLUDED.name, description = EXCLUDED.description,
+                        price_inr = EXCLUDED.price_inr, mrp_inr = EXCLUDED.mrp_inr,
+                        product_url = EXCLUDED.product_url, images = EXCLUDED.images,
+                        active = TRUE, last_synced_at = NOW(), updated_at = NOW()
+                    RETURNING id
+                    """,
+                    (
+                        workspace_id, title, description or None,
+                        price_inr, mrp_inr, product_url,
+                        json.dumps(images), sku, category, brand,
+                        json.dumps(tags), "woocommerce", product_id,
+                    ),
+                )
+                row = cur.fetchone()
+                internal_id = str(row[0]) if row else None
+
+        return {"id": internal_id, "name": title, "price_inr": price_inr,
+                "product_url": product_url, "source_platform": "woocommerce",
+                "source_product_id": product_id}
+
+    except Exception as e:
+        print(f"WooCommerce product upsert error: {e}")
+        return None
+
+
+# ── Claude-powered extraction for custom/unknown sites ────────────────────
+
+def extract_via_claude(workspace_id: str, store_url: str) -> list[dict]:
+    """
+    For custom or unknown sites: fetch the page HTML and ask Claude
+    to extract product information. Best-effort — may miss products
+    on heavily JS-rendered pages.
+    """
+    try:
+        r = _requests.get(store_url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        html = r.text[:15000]  # Claude context limit guard
+    except Exception as e:
+        print(f"Failed to fetch {store_url}: {e}")
+        return []
+
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    prompt = f"""
+You are a product catalog extractor.
+
+Below is HTML from a store page at {store_url}.
+Extract ALL products you can find and return a JSON array.
+
+For each product extract:
+- name (string, required)
+- description (string)
+- price_inr (number, the selling price in INR — look for ₹ symbol)
+- mrp_inr (number, the original/crossed-out price if shown)
+- product_url (string, full URL to the product page)
+- images (array of image URLs you can find)
+- sku (string)
+- category (string)
+- key_features (array of short strings)
+
+Return ONLY valid JSON array. If no products found, return [].
+
+HTML:
+{html}
+"""
+    try:
+        msg = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = msg.content[0].text.strip()
+        # Extract JSON from response
+        match = re.search(r'\[.*\]', raw, re.DOTALL)
+        if not match:
+            print("Claude returned no JSON array")
+            return []
+        products_data = json.loads(match.group(0))
+    except Exception as e:
+        print(f"Claude extraction error: {e}")
+        return []
+
+    synced = []
+    for p in products_data:
+        if not p.get("name"):
+            continue
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO products (
+                            workspace_id, name, description, price_inr, mrp_inr,
+                            product_url, images, key_features,
+                            source_platform, active, last_synced_at
+                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'custom',TRUE,NOW())
+                        ON CONFLICT DO NOTHING
+                        RETURNING id
+                        """,
+                        (
+                            workspace_id,
+                            p["name"],
+                            p.get("description"),
+                            p.get("price_inr"),
+                            p.get("mrp_inr"),
+                            p.get("product_url"),
+                            json.dumps(p.get("images", [])),
+                            json.dumps(p.get("key_features", [])),
+                        ),
+                    )
+                    row = cur.fetchone()
+            synced.append({"id": str(row[0]) if row else None, "name": p["name"]})
+        except Exception as e:
+            print(f"Error inserting Claude-extracted product: {e}")
+
+    invalidate_workspace_cache(workspace_id)
+    print(f"Claude extraction complete: {len(synced)} products for workspace {workspace_id}")
+    return synced
+
+
+# ── Unified entry point ───────────────────────────────────────────────────
+
+def discover_and_sync(
+    workspace_id: str,
+    store_url: str,
+    wc_key: str = None,
+    wc_secret: str = None,
+) -> dict:
+    """
+    Main entry point. Detects platform and runs appropriate sync.
+    Returns: {platform, products_synced, products: [...]}
+    """
+    platform = detect_platform(store_url)
+    print(f"Detected platform: {platform} for {store_url}")
+
+    if platform == "shopify":
+        products = sync_from_shopify(workspace_id, store_url)
+    elif platform == "woocommerce":
+        if not wc_key or not wc_secret:
+            # WooCommerce needs API credentials — return a request for them
+            return {
+                "platform": "woocommerce",
+                "needs_credentials": True,
+                "message": "WooCommerce detected. Please provide API key and secret from WooCommerce → Settings → Advanced → REST API",
+            }
+        products = sync_from_woocommerce(workspace_id, store_url, wc_key, wc_secret)
+    else:
+        products = extract_via_claude(workspace_id, store_url)
+
+    # Update workspace store_platform
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE workspaces SET store_platform=%s, store_url=%s, updated_at=NOW() WHERE id=%s",
+                (platform, store_url, workspace_id),
+            )
+
+    return {
+        "platform": platform,
+        "needs_credentials": False,
+        "products_synced": len(products),
+        "products": products,
+    }
+
+
+# ── Utility ───────────────────────────────────────────────────────────────
+
+def _strip_html(html: str) -> str:
+    """Remove HTML tags, return plain text."""
+    return re.sub(r'<[^>]+>', ' ', html or '').strip()
+
+
+def _deactivate_removed_products(workspace_id: str, platform: str, active_ids: list[str]):
+    """Mark products that no longer appear in the store's catalog as inactive."""
+    if not active_ids:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE products
+                SET active = FALSE, updated_at = NOW()
+                WHERE workspace_id = %s
+                  AND source_platform = %s
+                  AND source_product_id != ALL(%s)
+                  AND active = TRUE
+                """,
+                (workspace_id, platform, active_ids),
+            )
