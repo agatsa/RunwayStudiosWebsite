@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Runway Studios — AI-Powered Growth OS for Indian Brands</title>
+  <meta name="description" content="Runway Studios is an AI-powered marketing intelligence platform that helps Indian brands grow faster with unified ad analytics across Meta, Google, YouTube, and marketplaces." />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --brand: #7c3aed;
+      --brand-dark: #5b21b6;
+      --brand-light: #ede9fe;
+      --gray-900: #111827;
+      --gray-700: #374151;
+      --gray-500: #6b7280;
+      --gray-200: #e5e7eb;
+      --gray-100: #f9fafb;
+      --white: #ffffff;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      color: var(--gray-700);
+      line-height: 1.6;
+      background: var(--white);
+    }
+
+    /* ── NAV ── */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      background: rgba(255,255,255,0.95);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--gray-200);
+      padding: 0 2rem;
+      height: 60px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .nav-logo {
+      font-size: 1.1rem; font-weight: 700; color: var(--brand);
+      text-decoration: none; letter-spacing: -0.02em;
+    }
+    .nav-links { display: flex; gap: 2rem; list-style: none; }
+    .nav-links a {
+      text-decoration: none; color: var(--gray-700); font-size: 0.9rem;
+      transition: color 0.2s;
+    }
+    .nav-links a:hover { color: var(--brand); }
+    .nav-cta {
+      background: var(--brand); color: white; padding: 0.45rem 1.1rem;
+      border-radius: 6px; text-decoration: none; font-size: 0.875rem; font-weight: 600;
+      transition: background 0.2s;
+    }
+    .nav-cta:hover { background: var(--brand-dark); }
+
+    /* ── HERO ── */
+    .hero {
+      padding: 120px 2rem 80px;
+      text-align: center;
+      background: linear-gradient(135deg, #f5f3ff 0%, #faf5ff 50%, #f0fdf4 100%);
+    }
+    .hero-badge {
+      display: inline-block; background: var(--brand-light); color: var(--brand);
+      font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em;
+      text-transform: uppercase; padding: 0.3rem 0.9rem; border-radius: 99px;
+      margin-bottom: 1.5rem;
+    }
+    .hero h1 {
+      font-size: clamp(2rem, 5vw, 3.25rem); font-weight: 800;
+      color: var(--gray-900); line-height: 1.15; letter-spacing: -0.03em;
+      max-width: 800px; margin: 0 auto 1.25rem;
+    }
+    .hero h1 span { color: var(--brand); }
+    .hero p {
+      font-size: 1.125rem; color: var(--gray-500);
+      max-width: 600px; margin: 0 auto 2.5rem;
+    }
+    .hero-buttons { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+    .btn-primary {
+      background: var(--brand); color: white; padding: 0.75rem 1.75rem;
+      border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 0.95rem;
+      transition: background 0.2s, transform 0.1s;
+    }
+    .btn-primary:hover { background: var(--brand-dark); transform: translateY(-1px); }
+    .btn-secondary {
+      background: white; color: var(--gray-700); padding: 0.75rem 1.75rem;
+      border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 0.95rem;
+      border: 1px solid var(--gray-200);
+      transition: border-color 0.2s, transform 0.1s;
+    }
+    .btn-secondary:hover { border-color: var(--brand); color: var(--brand); transform: translateY(-1px); }
+
+    /* ── STATS ── */
+    .stats {
+      background: var(--gray-900);
+      padding: 3rem 2rem;
+    }
+    .stats-grid {
+      max-width: 900px; margin: 0 auto;
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 2rem; text-align: center;
+    }
+    .stat-value { font-size: 2rem; font-weight: 800; color: white; }
+    .stat-label { font-size: 0.85rem; color: #9ca3af; margin-top: 0.25rem; }
+
+    /* ── SECTION WRAPPER ── */
+    section { padding: 5rem 2rem; }
+    .container { max-width: 1100px; margin: 0 auto; }
+    .section-badge {
+      display: inline-block; background: var(--brand-light); color: var(--brand);
+      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; padding: 0.25rem 0.75rem; border-radius: 99px;
+      margin-bottom: 1rem;
+    }
+    .section-title {
+      font-size: clamp(1.5rem, 3vw, 2.25rem); font-weight: 800;
+      color: var(--gray-900); letter-spacing: -0.02em;
+      margin-bottom: 1rem;
+    }
+    .section-sub {
+      font-size: 1.05rem; color: var(--gray-500);
+      max-width: 580px;
+    }
+
+    /* ── WHAT WE DO ── */
+    .what { background: white; }
+    .what-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.5rem; margin-top: 3rem;
+    }
+    .what-card {
+      border: 1px solid var(--gray-200); border-radius: 12px;
+      padding: 1.75rem;
+      transition: box-shadow 0.2s, border-color 0.2s;
+    }
+    .what-card:hover {
+      box-shadow: 0 4px 20px rgba(124,58,237,0.08);
+      border-color: #c4b5fd;
+    }
+    .card-icon {
+      width: 44px; height: 44px; border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.3rem; margin-bottom: 1rem;
+    }
+    .card-title { font-size: 1rem; font-weight: 700; color: var(--gray-900); margin-bottom: 0.5rem; }
+    .card-desc { font-size: 0.9rem; color: var(--gray-500); line-height: 1.6; }
+
+    /* ── HOW IT WORKS ── */
+    .how { background: var(--gray-100); }
+    .steps {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 2rem; margin-top: 3rem;
+    }
+    .step { text-align: center; }
+    .step-num {
+      width: 48px; height: 48px; border-radius: 50%;
+      background: var(--brand); color: white;
+      font-weight: 800; font-size: 1.1rem;
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 1rem;
+    }
+    .step h3 { font-size: 0.95rem; font-weight: 700; color: var(--gray-900); margin-bottom: 0.5rem; }
+    .step p { font-size: 0.875rem; color: var(--gray-500); }
+
+    /* ── PLATFORMS ── */
+    .platforms { background: white; }
+    .platform-chips {
+      display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 2rem;
+    }
+    .chip {
+      background: var(--gray-100); border: 1px solid var(--gray-200);
+      border-radius: 99px; padding: 0.5rem 1.1rem;
+      font-size: 0.875rem; font-weight: 600; color: var(--gray-700);
+      display: flex; align-items: center; gap: 0.5rem;
+    }
+    .chip-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+    /* ── ABOUT ── */
+    .about { background: linear-gradient(135deg, #4c1d95 0%, #7c3aed 100%); color: white; }
+    .about .section-title { color: white; }
+    .about .section-sub { color: #ddd6fe; max-width: 700px; }
+    .about-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; margin-top: 3rem;
+      align-items: start;
+    }
+    .about-text p { color: #ede9fe; margin-bottom: 1rem; font-size: 0.95rem; line-height: 1.75; }
+    .about-points { list-style: none; }
+    .about-points li {
+      display: flex; align-items: flex-start; gap: 0.75rem;
+      margin-bottom: 1rem; font-size: 0.9rem; color: #ddd6fe;
+    }
+    .about-points li::before {
+      content: '✓'; color: #a78bfa; font-weight: 700; flex-shrink: 0; margin-top: 2px;
+    }
+
+    /* ── API USE CASE ── */
+    .api-use { background: var(--gray-100); }
+    .api-box {
+      background: white; border: 1px solid var(--gray-200); border-radius: 12px;
+      padding: 2rem; margin-top: 2rem;
+    }
+    .api-box h3 { font-size: 1rem; font-weight: 700; color: var(--gray-900); margin-bottom: 0.75rem; }
+    .api-box p { font-size: 0.9rem; color: var(--gray-500); line-height: 1.75; }
+    .api-list { margin-top: 1rem; list-style: none; }
+    .api-list li {
+      font-size: 0.875rem; color: var(--gray-700); padding: 0.4rem 0;
+      border-bottom: 1px solid var(--gray-100); display: flex; align-items: center; gap: 0.6rem;
+    }
+    .api-list li:last-child { border-bottom: none; }
+    .api-list li::before { content: '→'; color: var(--brand); font-weight: 700; }
+
+    /* ── CONTACT ── */
+    .contact { background: white; }
+    .contact-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; margin-top: 3rem;
+    }
+    .contact-info h3 { font-size: 1rem; font-weight: 700; color: var(--gray-900); margin-bottom: 1.25rem; }
+    .contact-item { margin-bottom: 1rem; }
+    .contact-label { font-size: 0.75rem; font-weight: 600; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.05em; }
+    .contact-value { font-size: 0.9rem; color: var(--gray-900); margin-top: 0.2rem; }
+    .contact-value a { color: var(--brand); text-decoration: none; }
+    .contact-form { background: var(--gray-100); border-radius: 12px; padding: 2rem; }
+    .form-group { margin-bottom: 1rem; }
+    label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--gray-700); margin-bottom: 0.4rem; }
+    input, textarea {
+      width: 100%; padding: 0.65rem 0.9rem; border: 1px solid var(--gray-200);
+      border-radius: 6px; font-size: 0.9rem; color: var(--gray-900);
+      background: white; outline: none;
+      transition: border-color 0.2s;
+    }
+    input:focus, textarea:focus { border-color: var(--brand); }
+    textarea { min-height: 100px; resize: vertical; }
+    .form-submit {
+      width: 100%; background: var(--brand); color: white; border: none;
+      padding: 0.75rem; border-radius: 6px; font-size: 0.9rem; font-weight: 600;
+      cursor: pointer; transition: background 0.2s;
+    }
+    .form-submit:hover { background: var(--brand-dark); }
+
+    /* ── PRIVACY POLICY ── */
+    .privacy { background: var(--gray-100); }
+    .privacy-content {
+      background: white; border: 1px solid var(--gray-200); border-radius: 12px;
+      padding: 2.5rem; margin-top: 2rem;
+    }
+    .privacy-content h3 {
+      font-size: 1rem; font-weight: 700; color: var(--gray-900);
+      margin: 1.5rem 0 0.5rem;
+    }
+    .privacy-content h3:first-child { margin-top: 0; }
+    .privacy-content p, .privacy-content li {
+      font-size: 0.875rem; color: var(--gray-500); line-height: 1.75;
+    }
+    .privacy-content ul { margin-left: 1.5rem; margin-top: 0.5rem; }
+    .privacy-content li { margin-bottom: 0.25rem; }
+
+    /* ── FOOTER ── */
+    footer {
+      background: var(--gray-900); color: #9ca3af;
+      padding: 3rem 2rem 2rem;
+    }
+    .footer-inner {
+      max-width: 1100px; margin: 0 auto;
+      display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 3rem;
+    }
+    .footer-brand { }
+    .footer-logo { font-size: 1.1rem; font-weight: 800; color: white; margin-bottom: 0.75rem; }
+    .footer-tagline { font-size: 0.875rem; line-height: 1.6; }
+    .footer-col h4 { font-size: 0.8rem; font-weight: 700; color: white; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 1rem; }
+    .footer-col ul { list-style: none; }
+    .footer-col li { margin-bottom: 0.6rem; }
+    .footer-col a { text-decoration: none; color: #9ca3af; font-size: 0.875rem; transition: color 0.2s; }
+    .footer-col a:hover { color: white; }
+    .footer-bottom {
+      max-width: 1100px; margin: 2.5rem auto 0;
+      padding-top: 1.5rem; border-top: 1px solid #374151;
+      display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;
+      font-size: 0.8rem;
+    }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 768px) {
+      nav { padding: 0 1rem; }
+      .nav-links { display: none; }
+      .hero { padding: 90px 1.25rem 60px; }
+      section { padding: 3.5rem 1.25rem; }
+      .about-grid, .contact-grid, .footer-inner {
+        grid-template-columns: 1fr;
+        gap: 2rem;
+      }
+      .footer-inner { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="#" class="nav-logo">Runway Studios</a>
+  <ul class="nav-links">
+    <li><a href="#what-we-do">Platform</a></li>
+    <li><a href="#how">How It Works</a></li>
+    <li><a href="#about">About</a></li>
+    <li><a href="#contact">Contact</a></li>
+    <li><a href="#privacy">Privacy</a></li>
+  </ul>
+  <a href="#contact" class="nav-cta">Get Started</a>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-badge">AI-Powered Marketing Intelligence</div>
+  <h1>Grow Faster with <span>Unified Ad Intelligence</span> Across Every Channel</h1>
+  <p>Runway Studios is a full-stack AI growth platform for Indian brands — connecting Meta, Google, YouTube, and marketplaces into one intelligent dashboard.</p>
+  <div class="hero-buttons">
+    <a href="#contact" class="btn-primary">Request Early Access</a>
+    <a href="#what-we-do" class="btn-secondary">See the Platform</a>
+  </div>
+</section>
+
+<!-- STATS -->
+<div class="stats">
+  <div class="stats-grid">
+    <div>
+      <div class="stat-value">4+</div>
+      <div class="stat-label">Ad Platforms Connected</div>
+    </div>
+    <div>
+      <div class="stat-value">₹18L+</div>
+      <div class="stat-label">Ad Spend Tracked</div>
+    </div>
+    <div>
+      <div class="stat-value">8</div>
+      <div class="stat-label">Report Types Analysed</div>
+    </div>
+    <div>
+      <div class="stat-value">24/7</div>
+      <div class="stat-label">AI Agent Monitoring</div>
+    </div>
+  </div>
+</div>
+
+<!-- WHAT WE DO -->
+<section class="what" id="what-we-do">
+  <div class="container">
+    <div class="section-badge">The Platform</div>
+    <div class="section-title">Everything your growth team needs — in one place</div>
+    <p class="section-sub">We unify your ad data, apply AI intelligence, and surface opportunities your team would take days to find manually.</p>
+
+    <div class="what-grid">
+      <div class="what-card">
+        <div class="card-icon" style="background:#eff6ff">📊</div>
+        <div class="card-title">Unified Analytics Dashboard</div>
+        <p class="card-desc">See Meta, Google Ads, YouTube, and marketplace performance side-by-side with real-time KPIs — spend, ROAS, conversions, CTR — all in one view.</p>
+      </div>
+      <div class="what-card">
+        <div class="card-icon" style="background:#f0fdf4">🔍</div>
+        <div class="card-title">Google Ads Deep Intelligence</div>
+        <p class="card-desc">Analyse campaign, keyword, search term, geographic, device, and time-of-day performance. Identify wasted spend and high-opportunity keywords automatically.</p>
+      </div>
+      <div class="what-card">
+        <div class="card-icon" style="background:#fdf4ff">🤖</div>
+        <div class="card-title">AI Action Plans</div>
+        <p class="card-desc">Claude AI analyses all your data cross-channel and generates prioritised, specific actions — from negative keyword lists to geographic expansion opportunities.</p>
+      </div>
+      <div class="what-card">
+        <div class="card-icon" style="background:#fef9c3">📺</div>
+        <div class="card-title">YouTube Channel Intelligence</div>
+        <p class="card-desc">Track subscriber growth, video performance, watch time, and CTR. Understand which content drives the highest organic and paid reach.</p>
+      </div>
+      <div class="what-card">
+        <div class="card-icon" style="background:#fff7ed">⚡</div>
+        <div class="card-title">WhatsApp & Telegram Alerts</div>
+        <p class="card-desc">Get AI-generated daily performance summaries, spend alerts, and opportunity notifications delivered directly to your phone — no dashboard login needed.</p>
+      </div>
+      <div class="what-card">
+        <div class="card-icon" style="background:#fdf2f8">🏆</div>
+        <div class="card-title">Auction Insights & Competitive Intelligence</div>
+        <p class="card-desc">See who's outbidding you, your impression share vs competitors, and where your position is slipping — for both Search and Shopping campaigns.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="how" id="how">
+  <div class="container">
+    <div class="section-badge">How It Works</div>
+    <div class="section-title">From data to action in minutes</div>
+    <p class="section-sub">Connect your accounts once. The platform does the rest — automatically, every day.</p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h3>Connect Your Accounts</h3>
+        <p>Link Meta Ads, Google Ads, and YouTube via secure OAuth2. No manual exports needed for live channels.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>Upload Historical Reports</h3>
+        <p>Upload Google Ads CSV exports (campaigns, keywords, search terms, devices, geo, time-of-day, auction insights) for deep analysis.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>AI Analyses Everything</h3>
+        <p>Our AI agents process your data cross-channel, identify patterns, calculate brand equity, and detect funnel gaps.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <h3>Act on Opportunities</h3>
+        <p>Receive specific, prioritised action recommendations with projected impact. Approve and execute — or let AI handle it.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PLATFORMS -->
+<section class="platforms" id="platforms">
+  <div class="container">
+    <div class="section-badge">Integrations</div>
+    <div class="section-title">All your channels, one platform</div>
+    <p class="section-sub">We connect to the tools you already use — with more integrations launching every quarter.</p>
+    <div class="platform-chips">
+      <span class="chip"><span class="chip-dot" style="background:#1877f2"></span>Meta Ads</span>
+      <span class="chip"><span class="chip-dot" style="background:#34a853"></span>Google Ads</span>
+      <span class="chip"><span class="chip-dot" style="background:#ff0000"></span>YouTube</span>
+      <span class="chip"><span class="chip-dot" style="background:#ff9900"></span>Amazon (Coming Soon)</span>
+      <span class="chip"><span class="chip-dot" style="background:#2874f0"></span>Flipkart (Coming Soon)</span>
+      <span class="chip"><span class="chip-dot" style="background:#25d366"></span>WhatsApp Alerts</span>
+      <span class="chip"><span class="chip-dot" style="background:#229ed9"></span>Telegram Alerts</span>
+      <span class="chip"><span class="chip-dot" style="background:#96bf48"></span>Shopify</span>
+    </div>
+  </div>
+</section>
+
+<!-- ABOUT -->
+<section class="about" id="about">
+  <div class="container">
+    <div class="section-badge" style="background:rgba(255,255,255,0.15);color:white;">About Us</div>
+    <div class="section-title">Built for India's growth-stage brands</div>
+    <p class="section-sub">Runway Studios was founded to give Indian D2C brands and agencies access to the same AI-powered marketing intelligence tools that Fortune 500 companies use — at a fraction of the cost.</p>
+
+    <div class="about-grid">
+      <div class="about-text">
+        <p>We build AI-native marketing software. Our platform integrates with the Google Ads API, Meta Marketing API, and YouTube Data and Analytics APIs to pull live performance data, analyse it with large language models, and surface actionable intelligence for marketers.</p>
+        <p>We use the Google Ads API specifically to read campaign metrics, keyword performance, search term reports, geographic breakdowns, device splits, and auction insights — enabling our clients to make faster, more informed optimisation decisions.</p>
+        <p>All data accessed through the Google Ads API is used exclusively for reporting and analytics within our platform and is never shared with third parties.</p>
+      </div>
+      <div>
+        <ul class="about-points">
+          <li>Read-only access to Google Ads campaign performance data for reporting</li>
+          <li>Keyword, search term, and quality score analysis to identify waste and opportunity</li>
+          <li>Geographic and device performance breakdown for smarter budget allocation</li>
+          <li>Auction insights to understand competitive position</li>
+          <li>Cross-channel ROAS computation blending Meta, Google, and marketplace data</li>
+          <li>AI-generated action plans with projected impact estimates</li>
+          <li>Secure OAuth2 authentication — no passwords stored, tokens refreshed automatically</li>
+          <li>All data processed and stored on Google Cloud (asia-south1) within India</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- API USE CASE -->
+<section class="api-use" id="api-use">
+  <div class="container">
+    <div class="section-badge">Google Ads API Usage</div>
+    <div class="section-title">How we use the Google Ads API</div>
+    <p class="section-sub">Runway Studios accesses the Google Ads API strictly for performance reporting and analytics on behalf of our clients.</p>
+
+    <div class="api-box">
+      <h3>Purpose of API Access</h3>
+      <p>Our platform uses the Google Ads API to retrieve advertising performance metrics for our client accounts. This data powers our analytics dashboard, AI-generated insights, and cross-channel reporting features. We do not use the API to create, modify, or delete any campaigns or ads.</p>
+      <ul class="api-list">
+        <li>Read campaign, ad group, and ad performance metrics (impressions, clicks, spend, conversions)</li>
+        <li>Read keyword performance including Quality Score, match types, and search terms</li>
+        <li>Read geographic performance reports (city, region, country breakdown)</li>
+        <li>Read device performance reports (mobile, desktop, tablet)</li>
+        <li>Read time-of-day and day-of-week performance segmentation</li>
+        <li>Read auction insights reports (impression share, overlap rate, competitor data)</li>
+        <li>List accessible customer accounts for multi-account agency management</li>
+      </ul>
+    </div>
+
+    <div class="api-box" style="margin-top:1rem">
+      <h3>Data Handling & Security</h3>
+      <p>All Google Ads data retrieved through the API is:</p>
+      <ul class="api-list">
+        <li>Stored encrypted in a PostgreSQL database on Google Cloud SQL (asia-south1)</li>
+        <li>Accessible only to the workspace owner and authorised team members</li>
+        <li>Never sold, shared, or transferred to any third party</li>
+        <li>Retained only as long as the client account is active</li>
+        <li>Deletable on request via account deletion workflow</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- CONTACT -->
+<section class="contact" id="contact">
+  <div class="container">
+    <div class="section-badge">Contact</div>
+    <div class="section-title">Get in touch</div>
+    <p class="section-sub">Request early access, ask about our plans, or reach out for any partnership inquiries.</p>
+
+    <div class="contact-grid">
+      <div class="contact-info">
+        <h3>Our Details</h3>
+
+        <div class="contact-item">
+          <div class="contact-label">Company</div>
+          <div class="contact-value">Runway Studios</div>
+        </div>
+        <div class="contact-item">
+          <div class="contact-label">Website</div>
+          <div class="contact-value"><a href="https://runwaystudios.co">runwaystudios.co</a></div>
+        </div>
+        <div class="contact-item">
+          <div class="contact-label">Email</div>
+          <div class="contact-value"><a href="mailto:hello@runwaystudios.co">hello@runwaystudios.co</a></div>
+        </div>
+        <div class="contact-item">
+          <div class="contact-label">Phone</div>
+          <div class="contact-value"><a href="tel:+918826283840">+91 88262 83840</a></div>
+        </div>
+        <div class="contact-item">
+          <div class="contact-label">Location</div>
+          <div class="contact-value">India</div>
+        </div>
+        <div class="contact-item">
+          <div class="contact-label">Platform Status</div>
+          <div class="contact-value">Early Access — Invite Only</div>
+        </div>
+      </div>
+
+      <div class="contact-form">
+        <form onsubmit="handleSubmit(event)">
+          <div class="form-group">
+            <label for="name">Your Name</label>
+            <input type="text" id="name" placeholder="Rahul Sharma" required />
+          </div>
+          <div class="form-group">
+            <label for="email">Email Address</label>
+            <input type="email" id="email" placeholder="rahul@yourbrand.com" required />
+          </div>
+          <div class="form-group">
+            <label for="company">Company / Brand</label>
+            <input type="text" id="company" placeholder="Your Brand Name" />
+          </div>
+          <div class="form-group">
+            <label for="message">Message</label>
+            <textarea id="message" placeholder="Tell us about your brand and what you're looking for..."></textarea>
+          </div>
+          <button type="submit" class="form-submit">Send Message</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PRIVACY POLICY -->
+<section class="privacy" id="privacy">
+  <div class="container">
+    <div class="section-badge">Legal</div>
+    <div class="section-title">Privacy Policy</div>
+    <p class="section-sub">Last updated: February 2026</p>
+
+    <div class="privacy-content">
+      <h3>1. Who We Are</h3>
+      <p>Runway Studios ("we", "us", "our") operates an AI-powered marketing intelligence platform accessible at runwaystudios.co and its subdomains. We are committed to protecting the privacy of our users and clients.</p>
+
+      <h3>2. Information We Collect</h3>
+      <p>We collect the following types of information:</p>
+      <ul>
+        <li><strong>Account information:</strong> Name, email address, phone number, and organisation details provided during registration.</li>
+        <li><strong>Ad platform data:</strong> Advertising performance metrics retrieved via authorised API connections (Meta Marketing API, Google Ads API, YouTube Data API). This includes impressions, clicks, spend, conversions, keywords, and campaign metadata.</li>
+        <li><strong>Uploaded reports:</strong> CSV/Excel files containing advertising performance reports uploaded by users for analysis.</li>
+        <li><strong>Usage data:</strong> Pages visited, features used, and actions taken within the platform.</li>
+        <li><strong>Communications:</strong> Messages sent through our contact form or WhatsApp/Telegram integrations.</li>
+      </ul>
+
+      <h3>3. How We Use Your Information</h3>
+      <ul>
+        <li>To provide, operate, and improve the Runway Studios platform</li>
+        <li>To generate analytics, reports, and AI-powered recommendations based on your ad data</li>
+        <li>To send performance alerts and summaries via WhatsApp, Telegram, or email (with your consent)</li>
+        <li>To respond to support requests and communications</li>
+        <li>To comply with legal obligations</li>
+      </ul>
+
+      <h3>4. Google Ads API Data</h3>
+      <p>When you connect your Google Ads account, we access your advertising data via the Google Ads API using OAuth2 authorisation. This access is read-only — we never create, modify, or delete your campaigns. Data retrieved is used solely to power your analytics dashboard and AI recommendations within our platform. We do not share Google Ads data with any third party, and we do not use it for advertising or resale purposes. You can revoke access at any time through your Google Account settings.</p>
+
+      <h3>5. Data Storage and Security</h3>
+      <p>Your data is stored in a PostgreSQL database hosted on Google Cloud SQL in the asia-south1 (Mumbai) region. We implement industry-standard security measures including encryption at rest and in transit, access controls, and regular security reviews. OAuth tokens are stored encrypted and refreshed automatically.</p>
+
+      <h3>6. Data Retention</h3>
+      <p>We retain your data for as long as your account is active. You may request deletion of your account and all associated data by contacting us at hello@runwaystudios.co. Upon request, data will be permanently deleted within 30 days.</p>
+
+      <h3>7. Third-Party Services</h3>
+      <p>We integrate with the following third-party platforms using their respective APIs:</p>
+      <ul>
+        <li>Meta Platforms (Meta Marketing API) — <a href="https://www.facebook.com/privacy/policy/" target="_blank" rel="noopener">Meta Privacy Policy</a></li>
+        <li>Google LLC (Google Ads API, YouTube Data API, YouTube Analytics API) — <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a></li>
+        <li>Anthropic (Claude AI API) — used for generating insights and recommendations</li>
+        <li>Google Cloud Platform — infrastructure and database hosting</li>
+      </ul>
+
+      <h3>8. Your Rights</h3>
+      <p>You have the right to: access the personal data we hold about you; correct inaccurate data; request deletion of your data; withdraw consent for data processing; and receive a copy of your data in a portable format. To exercise these rights, contact us at hello@runwaystudios.co.</p>
+
+      <h3>9. Cookies</h3>
+      <p>Our platform uses session cookies required for authentication and functionality. We do not use advertising or tracking cookies. We do not sell data to advertisers.</p>
+
+      <h3>10. Changes to This Policy</h3>
+      <p>We may update this Privacy Policy from time to time. We will notify registered users of significant changes via email. Continued use of the platform after changes constitutes acceptance of the updated policy.</p>
+
+      <h3>11. Contact Us</h3>
+      <p>For any privacy-related questions or requests: <a href="mailto:hello@runwaystudios.co">hello@runwaystudios.co</a></p>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <div class="footer-logo">Runway Studios</div>
+      <p class="footer-tagline">AI-powered marketing intelligence for Indian brands. Unify your ad data. Amplify your growth.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Platform</h4>
+      <ul>
+        <li><a href="#what-we-do">Features</a></li>
+        <li><a href="#how">How It Works</a></li>
+        <li><a href="#platforms">Integrations</a></li>
+        <li><a href="#api-use">API Usage</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h4>Company</h4>
+      <ul>
+        <li><a href="#about">About</a></li>
+        <li><a href="#contact">Contact</a></li>
+        <li><a href="#privacy">Privacy Policy</a></li>
+        <li><a href="mailto:hello@runwaystudios.co">hello@runwaystudios.co</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Runway Studios. All rights reserved.</span>
+    <span>runwaystudios.co</span>
+  </div>
+</footer>
+
+<script>
+  function handleSubmit(e) {
+    e.preventDefault();
+    const btn = e.target.querySelector('.form-submit');
+    btn.textContent = 'Message Sent ✓';
+    btn.style.background = '#16a34a';
+    btn.disabled = true;
+    // In production, wire to a form backend (Formspree, EmailJS, etc.)
+  }
+</script>
+
+</body>
+</html>
