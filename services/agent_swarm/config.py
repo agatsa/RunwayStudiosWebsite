@@ -68,6 +68,11 @@ META_PAGE_ID = os.getenv("META_PAGE_ID", "203855559983211")
 # ── New campaign defaults ──────────────────────────────────
 NEW_CAMPAIGN_DAILY_BUDGET_INR = float(os.getenv("NEW_CAMPAIGN_DAILY_BUDGET_INR", "300"))
 
+# ── Shopify App ────────────────────────────────────────────
+SHOPIFY_API_KEY    = os.getenv("SHOPIFY_API_KEY", "")
+SHOPIFY_API_SECRET = os.getenv("SHOPIFY_API_SECRET", "")
+SHOPIFY_SCOPES     = os.getenv("SHOPIFY_SCOPES", "read_products,read_inventory")
+
 # ── Security ───────────────────────────────────────────────
 CRON_TOKEN = os.getenv("CRON_TOKEN", "")
 

@@ -1,13 +1,14 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { CheckCircle, Link2, Trash2, Loader2 } from 'lucide-react'
+import { CheckCircle, Link2, Trash2, Loader2, RefreshCw, ShoppingBag } from 'lucide-react'
 import MetaConnectDialog from './MetaConnectDialog'
 import GoogleConnectDialog from './GoogleConnectDialog'
 import GoogleAccountSelectDialog from './GoogleAccountSelectDialog'
 import YouTubeConnectDialog from './YouTubeConnectDialog'
+import ShopifyConnectDialog from './ShopifyConnectDialog'
 import ExcelUploadDialog from './ExcelUploadDialog'
 import type { PlatformConnection } from '@/lib/types'
 
@@ -120,9 +121,62 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
   const [showMetaDialog, setShowMetaDialog] = useState(false)
   const [showGoogleDialog, setShowGoogleDialog] = useState(false)
   const [showYouTubeDialog, setShowYouTubeDialog] = useState(false)
+  const [showShopifyDialog, setShowShopifyDialog] = useState(false)
   const [showGoogleAccountSelect, setShowGoogleAccountSelect] = useState(false)
   const [showUpload, setShowUpload] = useState<'meta' | 'google' | null>(null)
+  const [shopifyStatus, setShopifyStatus] = useState<{ connected: boolean; shop_domain?: string; shop_name?: string; synced_at?: string; products_count?: number } | null>(null)
+  const [shopifyLoading, setShopifyLoading] = useState(false)
   const router = useRouter()
+
+  const fetchShopifyStatus = useCallback(async () => {
+    if (!workspaceId) return
+    try {
+      const r = await fetch(`/api/shopify/status?workspace_id=${workspaceId}`)
+      if (r.ok) setShopifyStatus(await r.json())
+    } catch { /* ignore */ }
+  }, [workspaceId])
+
+  const handleShopifySync = async () => {
+    setShopifyLoading(true)
+    try {
+      const r = await fetch('/api/shopify/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspace_id: workspaceId }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.detail ?? 'Sync failed')
+      toast.success(`Synced ${d.products_synced} products from Shopify`)
+      fetchShopifyStatus()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Sync failed')
+    } finally {
+      setShopifyLoading(false)
+    }
+  }
+
+  const handleShopifyDisconnect = async () => {
+    if (!confirm('Disconnect Shopify? Product catalog will no longer auto-sync.')) return
+    setShopifyLoading(true)
+    try {
+      const r = await fetch('/api/shopify/disconnect', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspace_id: workspaceId }),
+      })
+      if (!r.ok) throw new Error('Failed')
+      toast.success('Shopify disconnected')
+      setShopifyStatus({ connected: false })
+    } catch {
+      toast.error('Failed to disconnect Shopify')
+    } finally {
+      setShopifyLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchShopifyStatus()
+  }, [fetchShopifyStatus])
 
   useEffect(() => {
     if (googleConnected) {
@@ -138,6 +192,23 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
         server_not_configured: 'Google OAuth not configured on server (missing env vars).',
       }
       toast.error(messages[googleError] ?? `Google connect error: ${googleError}`)
+    }
+    // Shopify OAuth result toasts
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('shopify_connected') === '1') {
+      toast.success('Shopify store connected! Products are syncing now.')
+      fetchShopifyStatus()
+    }
+    const shopifyError = params.get('shopify_error')
+    if (shopifyError) {
+      const errMessages: Record<string, string> = {
+        invalid_state: 'Invalid OAuth state — please try again.',
+        hmac_failed: 'Security check failed — please try again.',
+        missing_params: 'Shopify did not return required parameters.',
+        token_exchange_failed: 'Could not exchange token with Shopify. Check app credentials.',
+        save_failed: 'Could not save Shopify connection. Try again or contact support.',
+      }
+      toast.error(errMessages[shopifyError] ?? `Shopify error: ${shopifyError}`)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -242,6 +313,64 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
             </div>
           }
         />
+
+        {/* Shopify */}
+        <div className="rounded-xl border border-gray-200 bg-white p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-green-600 shrink-0">
+                <ShoppingBag className="h-5 w-5 text-white" />
+              </div>
+              <div>
+                <p className="font-semibold text-gray-900">Shopify Store</p>
+                {shopifyStatus?.connected ? (
+                  <p className="text-xs text-gray-500">
+                    {shopifyStatus.shop_name ?? shopifyStatus.shop_domain}
+                    {shopifyStatus.products_count != null ? ` · ${shopifyStatus.products_count} products` : ''}
+                    {shopifyStatus.synced_at ? ` · Synced ${new Date(shopifyStatus.synced_at).toLocaleDateString()}` : ''}
+                  </p>
+                ) : (
+                  <p className="text-xs text-gray-400">Not connected — connect to auto-sync products + images</p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-2">
+              {shopifyStatus?.connected ? (
+                <>
+                  <span className="flex items-center gap-1 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700">
+                    <CheckCircle className="h-3 w-3" />
+                    Connected
+                  </span>
+                  <button
+                    onClick={handleShopifySync}
+                    disabled={shopifyLoading}
+                    className="flex items-center gap-1 rounded-lg border border-green-200 px-2.5 py-1 text-xs text-green-700 hover:bg-green-50 disabled:opacity-50"
+                  >
+                    {shopifyLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                    Sync Now
+                  </button>
+                  <button
+                    onClick={handleShopifyDisconnect}
+                    disabled={shopifyLoading}
+                    className="flex items-center gap-1 rounded-lg border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    Disconnect
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setShowShopifyDialog(true)}
+                  className="flex items-center gap-1.5 rounded-lg bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
+                >
+                  <Link2 className="h-3 w-3" />
+                  Connect Store
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
 
         {/* GA4 — auto-discovered via Google OAuth */}
         <div className="rounded-xl border border-gray-200 bg-white p-5">
@@ -402,6 +531,14 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
           workspaceId={workspaceId}
           onConnected={refresh}
           onClose={() => setShowYouTubeDialog(false)}
+        />
+      )}
+
+      {/* Shopify connect dialog */}
+      {showShopifyDialog && (
+        <ShopifyConnectDialog
+          workspaceId={workspaceId}
+          onClose={() => setShowShopifyDialog(false)}
         />
       )}
 

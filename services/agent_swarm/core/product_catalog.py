@@ -417,6 +417,39 @@ HTML:
     return synced
 
 
+# ── Authenticated Shopify sync (Admin API — works even when /products.json blocked) ──
+
+def sync_from_shopify_authenticated(
+    workspace_id: str,
+    shop_domain: str,
+    access_token: str,
+) -> list[dict]:
+    """
+    Fetch all products using the Shopify Admin REST API (requires OAuth token).
+    Works for stores that block the public /products.json endpoint.
+    Upserts into products table with source_platform='shopify'.
+    """
+    from services.agent_swarm.connectors.shopify import ShopifyConnector
+    connector = ShopifyConnector()
+    raw_products = connector.get_all_products(shop_domain, access_token)
+
+    store_url = f"https://{shop_domain}"
+    synced = []
+    for p in raw_products:
+        result = _upsert_shopify_product(workspace_id, store_url, p)
+        if result:
+            synced.append(result)
+
+    # Deactivate products no longer in Shopify
+    if synced:
+        active_source_ids = [p["source_product_id"] for p in synced]
+        _deactivate_removed_products(workspace_id, "shopify", active_source_ids)
+
+    invalidate_workspace_cache(workspace_id)
+    print(f"Shopify authenticated sync: {len(synced)} products for workspace {workspace_id}")
+    return synced
+
+
 # ── Unified entry point ───────────────────────────────────────────────────
 
 def discover_and_sync(
@@ -429,6 +462,31 @@ def discover_and_sync(
     Main entry point. Detects platform and runs appropriate sync.
     Returns: {platform, products_synced, products: [...]}
     """
+    # Check for stored Shopify OAuth token first (works for stores behind CDN/Cloudflare)
+    try:
+        from services.agent_swarm.db import get_conn as _gc
+        with _gc() as _conn:
+            with _conn.cursor() as _cur:
+                _cur.execute(
+                    "SELECT shop_domain, access_token FROM shopify_connections WHERE workspace_id=%s LIMIT 1",
+                    (workspace_id,),
+                )
+                _row = _cur.fetchone()
+        if _row:
+            _shop_domain, _access_token = _row
+            products = sync_from_shopify_authenticated(workspace_id, _shop_domain, _access_token)
+            with _gc() as _conn:
+                with _conn.cursor() as _cur:
+                    _cur.execute(
+                        "UPDATE shopify_connections SET synced_at=NOW() WHERE workspace_id=%s AND shop_domain=%s",
+                        (workspace_id, _shop_domain),
+                    )
+                _conn.commit()
+            return {"platform": "shopify", "needs_credentials": False,
+                    "products_synced": len(products), "products": products}
+    except Exception as _e:
+        print(f"Shopify token lookup failed: {_e}")
+
     platform = detect_platform(store_url)
     print(f"Detected platform: {platform} for {store_url}")
 

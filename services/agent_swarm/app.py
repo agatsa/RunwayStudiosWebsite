@@ -405,6 +405,243 @@ async def add_product_image(request: Request):
     return {"ok": True, "image_url": image_url, "product_id": product_id}
 
 
+# ── Shopify App endpoints ───────────────────────────────────────────────────
+
+@app.post("/shopify/save-connection")
+async def shopify_save_connection(request: Request):
+    """
+    Called by Next.js callback after OAuth code exchange.
+    Stores access token, syncs all products, registers webhooks.
+    Body: {workspace_id, shop_domain, access_token, scope}
+    """
+    _auth(request)
+    import json as _json
+    from services.agent_swarm.db import get_conn
+    from services.agent_swarm.connectors.shopify import ShopifyConnector
+    from services.agent_swarm.core.product_catalog import sync_from_shopify_authenticated
+    from services.agent_swarm.config import SHOPIFY_API_SECRET
+
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    shop_domain  = (body.get("shop_domain") or "").strip().lower()
+    access_token = body.get("access_token")
+    scope        = body.get("scope") or ""
+
+    if not workspace_id or not shop_domain or not access_token:
+        raise HTTPException(status_code=400, detail="workspace_id, shop_domain and access_token required")
+
+    # Fetch shop info (name)
+    connector = ShopifyConnector()
+    try:
+        shop_info = connector.get_shop_info(shop_domain, access_token)
+        shop_name = shop_info.get("name") or shop_domain
+    except Exception as e:
+        print(f"get_shop_info failed: {e}")
+        shop_name = shop_domain
+
+    # Upsert shopify_connections
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO shopify_connections (workspace_id, shop_domain, access_token, scopes, shop_name)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (workspace_id, shop_domain)
+                DO UPDATE SET
+                    access_token = EXCLUDED.access_token,
+                    scopes = EXCLUDED.scopes,
+                    shop_name = EXCLUDED.shop_name,
+                    installed_at = NOW()
+                """,
+                (workspace_id, shop_domain, access_token, scope, shop_name),
+            )
+        conn.commit()
+
+    # Register webhooks
+    webhook_base = "https://agent-swarm-771420308292.asia-south1.run.app/shopify/webhook"
+    for topic in ("products/create", "products/update", "products/delete"):
+        try:
+            connector.register_webhook(shop_domain, access_token, topic, webhook_base)
+        except Exception as e:
+            print(f"Webhook registration failed for {topic}: {e}")
+
+    # Sync all products
+    try:
+        products = sync_from_shopify_authenticated(workspace_id, shop_domain, access_token)
+        products_synced = len(products)
+        # Mark synced_at
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE shopify_connections SET synced_at=NOW() WHERE workspace_id=%s AND shop_domain=%s",
+                    (workspace_id, shop_domain),
+                )
+            conn.commit()
+    except Exception as e:
+        print(f"Initial product sync failed: {e}")
+        products_synced = 0
+
+    return {"ok": True, "shop_domain": shop_domain, "shop_name": shop_name, "products_synced": products_synced}
+
+
+@app.post("/shopify/webhook")
+async def shopify_webhook(request: Request):
+    """
+    Receives real-time product events from Shopify.
+    HMAC validated via X-Shopify-Hmac-Sha256 header.
+    Handles: products/create, products/update, products/delete
+    """
+    import json as _json
+    from services.agent_swarm.db import get_conn
+    from services.agent_swarm.connectors.shopify import ShopifyConnector
+    from services.agent_swarm.config import SHOPIFY_API_SECRET
+    from services.agent_swarm.core.product_catalog import _upsert_shopify_product
+
+    raw_body = await request.body()
+    hmac_header = request.headers.get("X-Shopify-Hmac-Sha256", "")
+    topic       = request.headers.get("X-Shopify-Topic", "")
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "").lower()
+
+    # Validate HMAC
+    if SHOPIFY_API_SECRET:
+        connector = ShopifyConnector()
+        if not connector.verify_webhook_hmac(raw_body, hmac_header, SHOPIFY_API_SECRET):
+            raise HTTPException(status_code=401, detail="HMAC validation failed")
+
+    # Look up workspace
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT workspace_id FROM shopify_connections WHERE shop_domain=%s LIMIT 1",
+                (shop_domain,),
+            )
+            row = cur.fetchone()
+    if not row:
+        # Unknown store — return 200 to stop Shopify retrying
+        return {"ok": True, "note": "unknown shop"}
+
+    workspace_id = str(row[0])
+
+    try:
+        payload = _json.loads(raw_body)
+    except Exception:
+        return {"ok": True, "note": "invalid json"}
+
+    if topic in ("products/create", "products/update"):
+        store_url = f"https://{shop_domain}"
+        _upsert_shopify_product(workspace_id, store_url, payload)
+    elif topic == "products/delete":
+        product_id = str(payload.get("id", ""))
+        if product_id:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE products SET active=FALSE, updated_at=NOW() WHERE workspace_id=%s AND source_platform='shopify' AND source_product_id=%s",
+                        (workspace_id, product_id),
+                    )
+                conn.commit()
+
+    return {"ok": True}
+
+
+@app.post("/shopify/sync")
+async def shopify_sync(request: Request):
+    """Manual full re-sync for a workspace. Body: {workspace_id}"""
+    _auth(request)
+    from services.agent_swarm.db import get_conn
+    from services.agent_swarm.core.product_catalog import sync_from_shopify_authenticated
+
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT shop_domain, access_token FROM shopify_connections WHERE workspace_id=%s LIMIT 1",
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="No Shopify connection found for this workspace")
+
+    shop_domain, access_token = row
+    products = sync_from_shopify_authenticated(workspace_id, shop_domain, access_token)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE shopify_connections SET synced_at=NOW() WHERE workspace_id=%s AND shop_domain=%s",
+                (workspace_id, shop_domain),
+            )
+        conn.commit()
+
+    return {"ok": True, "products_synced": len(products), "shop_domain": shop_domain}
+
+
+@app.get("/shopify/status")
+async def shopify_status(request: Request, workspace_id: str = None):
+    """Returns Shopify connection status + stats for a workspace."""
+    _auth(request)
+    from services.agent_swarm.db import get_conn
+
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT shop_domain, shop_name, scopes, installed_at, synced_at FROM shopify_connections WHERE workspace_id=%s LIMIT 1",
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                cur.execute(
+                    "SELECT COUNT(*) FROM products WHERE workspace_id=%s AND source_platform='shopify' AND active=TRUE",
+                    (workspace_id,),
+                )
+                count_row = cur.fetchone()
+                products_count = count_row[0] if count_row else 0
+
+    if not row:
+        return {"connected": False}
+
+    shop_domain, shop_name, scopes, installed_at, synced_at = row
+    return {
+        "connected": True,
+        "shop_domain": shop_domain,
+        "shop_name": shop_name,
+        "scopes": scopes,
+        "installed_at": installed_at.isoformat() if installed_at else None,
+        "synced_at": synced_at.isoformat() if synced_at else None,
+        "products_count": products_count,
+    }
+
+
+@app.delete("/shopify/disconnect")
+async def shopify_disconnect(request: Request):
+    """Remove Shopify connection for a workspace. Body: {workspace_id}"""
+    _auth(request)
+    from services.agent_swarm.db import get_conn
+
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM shopify_connections WHERE workspace_id=%s",
+                (workspace_id,),
+            )
+        conn.commit()
+
+    return {"ok": True}
+
+
 @app.get("/workspace/list")
 async def list_workspaces(request: Request):
     """List all active workspaces. Agency admin view."""
@@ -7800,6 +8037,19 @@ async def admin_migrate(request: Request):
             UNIQUE (workspace_id, campaign_name, competitor_domain)
         )""",
         "CREATE INDEX IF NOT EXISTS idx_auction_ws ON google_auction_insights(workspace_id)",
+        """CREATE TABLE IF NOT EXISTS shopify_connections (
+            id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id  UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            shop_domain   TEXT NOT NULL,
+            access_token  TEXT NOT NULL,
+            scopes        TEXT,
+            shop_name     TEXT,
+            installed_at  TIMESTAMPTZ DEFAULT NOW(),
+            synced_at     TIMESTAMPTZ,
+            UNIQUE(workspace_id, shop_domain)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_shopify_workspace ON shopify_connections(workspace_id)",
+        "CREATE INDEX IF NOT EXISTS idx_shopify_domain ON shopify_connections(shop_domain)",
     ]
     with get_conn() as conn:
         with conn.cursor() as cur:

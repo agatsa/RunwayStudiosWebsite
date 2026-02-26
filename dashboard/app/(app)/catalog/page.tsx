@@ -20,9 +20,23 @@ async function fetchProducts(workspaceId: string): Promise<ProductsResponse | nu
   }
 }
 
+async function fetchShopifyStatus(workspaceId: string): Promise<{ connected: boolean; shop_domain?: string } | null> {
+  if (!workspaceId) return null
+  try {
+    const r = await fetchFromFastAPI(`/shopify/status?workspace_id=${workspaceId}`)
+    if (!r.ok) return null
+    return r.json()
+  } catch {
+    return null
+  }
+}
+
 export default async function CatalogPage({ searchParams }: PageProps) {
   const workspaceId = searchParams.ws ?? ''
-  const data = await fetchProducts(workspaceId)
+  const [data, shopify] = await Promise.all([
+    fetchProducts(workspaceId),
+    fetchShopifyStatus(workspaceId),
+  ])
 
   if (!workspaceId) {
     return (
@@ -55,7 +69,12 @@ export default async function CatalogPage({ searchParams }: PageProps) {
         </div>
         <div className="flex items-center gap-2">
           <AddProductDialog workspaceId={workspaceId} />
-          <ShopifyImportButton workspaceId={workspaceId} defaultStoreUrl="agatsaone.com" />
+          <ShopifyImportButton
+            workspaceId={workspaceId}
+            defaultStoreUrl="agatsaone.com"
+            shopifyConnected={shopify?.connected ?? false}
+            shopDomain={shopify?.shop_domain ?? ''}
+          />
           <SyncButton workspaceId={workspaceId} />
         </div>
       </div>
