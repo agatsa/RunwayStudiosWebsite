@@ -11,15 +11,15 @@ interface Props {
 }
 
 const ACTION_META: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
-  increase_budget:      { icon: <span className="text-lg">💰</span>, label: 'Increase Budget', color: 'bg-green-100 text-green-700' },
-  reduce_budget:        { icon: <span className="text-lg">📉</span>, label: 'Reduce Budget', color: 'bg-orange-100 text-orange-700' },
-  pause_campaign:       { icon: <PauseCircle className="h-5 w-5" />, label: 'Pause Campaign', color: 'bg-yellow-100 text-yellow-700' },
-  new_creative:         { icon: <Sparkles className="h-5 w-5" />, label: 'New Creative', color: 'bg-purple-100 text-purple-700' },
-  geographic_expansion: { icon: <MapPin className="h-5 w-5" />, label: 'Geo Expansion', color: 'bg-blue-100 text-blue-700' },
-  keyword_addition:     { icon: <Hash className="h-5 w-5" />, label: 'Add Keywords', color: 'bg-indigo-100 text-indigo-700' },
-  bid_adjustment:       { icon: <Target className="h-5 w-5" />, label: 'Adjust Bids', color: 'bg-cyan-100 text-cyan-700' },
-  review:               { icon: <Eye className="h-5 w-5" />, label: 'Review', color: 'bg-gray-100 text-gray-700' },
-  ai_brief:             { icon: <span className="text-lg">✨</span>, label: 'AI Opportunity', color: 'bg-amber-100 text-amber-700' },
+  increase_budget:      { icon: <span className="text-2xl">💰</span>, label: 'Increase Budget', color: 'bg-green-100 text-green-700' },
+  reduce_budget:        { icon: <span className="text-2xl">📉</span>, label: 'Reduce Budget', color: 'bg-orange-100 text-orange-700' },
+  pause_campaign:       { icon: <PauseCircle className="h-7 w-7" />, label: 'Pause Campaign', color: 'bg-yellow-100 text-yellow-700' },
+  new_creative:         { icon: <Sparkles className="h-7 w-7" />, label: 'New Creative', color: 'bg-purple-100 text-purple-700' },
+  geographic_expansion: { icon: <MapPin className="h-7 w-7" />, label: 'Geo Expansion', color: 'bg-blue-100 text-blue-700' },
+  keyword_addition:     { icon: <Hash className="h-7 w-7" />, label: 'Add Keywords', color: 'bg-indigo-100 text-indigo-700' },
+  bid_adjustment:       { icon: <Target className="h-7 w-7" />, label: 'Adjust Bids', color: 'bg-cyan-100 text-cyan-700' },
+  review:               { icon: <Eye className="h-7 w-7" />, label: 'Review', color: 'bg-gray-100 text-gray-700' },
+  ai_brief:             { icon: <span className="text-2xl">✨</span>, label: 'AI Opportunity', color: 'bg-amber-100 text-amber-700' },
 }
 
 const PLATFORM_COLORS: Record<string, string> = {
@@ -80,8 +80,27 @@ export default function ApprovalRow({ action }: Props) {
           return
         }
         if (decision === 'approve') {
-          if (data.status === 'executed') toast.success('✓ Action approved and executed via API')
-          else toast.success('✓ Action approved — ready for manual execution')
+          const REDIRECT_LABELS: Record<string, string> = {
+            '/campaign-planner': 'View in Campaign Planner →',
+            '/google-ads':       'View in Google Ads →',
+            '/campaigns':        'View in Campaigns →',
+          }
+          const linkLabel = data.redirect ? REDIRECT_LABELS[data.redirect] : null
+          if (data.status === 'executed') {
+            toast.success('✓ Budget / status updated via Meta API', { duration: 4000 })
+          } else if (data.redirect === '/campaign-planner') {
+            toast.success(
+              `✓ Campaign brief created by AI — ${linkLabel}`,
+              { action: { label: linkLabel ?? 'Open', onClick: () => router.push(data.redirect) }, duration: 6000 }
+            )
+          } else if (data.redirect) {
+            toast.success(
+              `✓ Approved — ${linkLabel}`,
+              { action: { label: linkLabel ?? 'Open', onClick: () => router.push(data.redirect) }, duration: 6000 }
+            )
+          } else {
+            toast.success('✓ Action approved')
+          }
         } else {
           toast.success('Action rejected')
         }
@@ -93,30 +112,30 @@ export default function ApprovalRow({ action }: Props) {
   }
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 hover:border-gray-300 transition-colors">
+    <div className="rounded-xl border border-gray-200 bg-white p-6 hover:border-gray-300 transition-colors">
       {/* Header row */}
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-3">
-          <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${meta.color}`}>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-4">
+          <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-xl ${meta.color}`}>
             {meta.icon}
           </div>
           <div>
-            <p className="text-sm font-semibold text-gray-900">{meta.label}</p>
+            <p className="text-xl font-semibold text-gray-900">{meta.label}</p>
             {entityName && (
-              <p className="text-sm text-gray-500 truncate max-w-[260px]">{entityName}</p>
+              <p className="text-base text-gray-500 truncate max-w-[320px]">{entityName}</p>
             )}
           </div>
         </div>
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${PLATFORM_COLORS[action.platform] ?? 'bg-gray-100 text-gray-600'}`}>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`rounded-full px-3 py-1 text-sm font-medium ${PLATFORM_COLORS[action.platform] ?? 'bg-gray-100 text-gray-600'}`}>
             {action.platform?.toUpperCase()}
           </span>
           {action.triggered_by && action.triggered_by !== 'dashboard_user' && (
-            <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-500">
+            <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">
               {action.triggered_by.replace(/_/g, ' ')}
             </span>
           )}
-          <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[action.status] ?? 'bg-gray-100 text-gray-600'}`}>
+          <span className={`rounded-full px-3 py-1 text-sm font-medium ${STATUS_COLORS[action.status] ?? 'bg-gray-100 text-gray-600'}`}>
             {action.status}
           </span>
         </div>
@@ -124,7 +143,7 @@ export default function ApprovalRow({ action }: Props) {
 
       {/* Value change */}
       {(oldValue || suggestedValue) && (
-        <div className="mt-3 flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2 text-sm">
+        <div className="mt-4 flex items-center gap-3 rounded-lg bg-gray-50 px-4 py-3 text-base">
           {oldValue && <span className="font-mono text-gray-400 line-through">{oldValue}</span>}
           {oldValue && suggestedValue && <span className="text-gray-400">→</span>}
           {suggestedValue && <span className="font-mono font-semibold text-gray-800">{suggestedValue}</span>}
@@ -133,37 +152,37 @@ export default function ApprovalRow({ action }: Props) {
 
       {/* Description */}
       {description && (
-        <p className="mt-2.5 text-sm text-gray-600 leading-relaxed">{description}</p>
+        <p className="mt-3 text-base text-gray-600 leading-relaxed">{description}</p>
       )}
 
       {/* Footer */}
-      <div className="mt-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-1 text-xs text-gray-400">
-          <Clock className="h-3.5 w-3.5" />
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-1.5 text-sm text-gray-400">
+          <Clock className="h-4 w-4" />
           <span>{timeAgo(action.ts)}</span>
         </div>
 
         {action.status === 'pending' ? (
-          <div className="flex gap-2">
+          <div className="flex gap-3">
             <button
               onClick={() => respond('approve')}
               disabled={isPending}
-              className="flex items-center gap-1.5 rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
+              className="flex items-center gap-2 rounded-lg bg-green-600 px-6 py-2.5 text-base font-semibold text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
             >
-              {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+              {isPending ? <Loader2 className="h-5 w-5 animate-spin" /> : <Check className="h-5 w-5" />}
               Approve
             </button>
             <button
               onClick={() => respond('reject')}
               disabled={isPending}
-              className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors"
+              className="flex items-center gap-2 rounded-lg border border-red-200 bg-white px-5 py-2.5 text-base font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors"
             >
-              <X className="h-4 w-4" />
+              <X className="h-5 w-5" />
               Reject
             </button>
           </div>
         ) : (
-          <span className="text-xs text-gray-400">
+          <span className="text-sm text-gray-400">
             {action.executed_at ? `Executed ${timeAgo(action.executed_at)}` : action.status}
           </span>
         )}

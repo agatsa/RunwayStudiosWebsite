@@ -1217,18 +1217,119 @@ async def handle_creative_approval(request: Request):
     return result
 
 
+def _generate_campaign_plan_from_action(workspace_id: str, action_type: str, ctx: dict, entity_id: str, platform: str) -> str | None:
+    """
+    Called after approving an ai_brief or new_creative action.
+    Calls Claude to generate a campaign concept and inserts it into action_log
+    as action_type='create_campaign' so it appears in the Campaign Planner.
+    Returns the new plan_id (str) or None on failure.
+    """
+    import json as _json
+    import anthropic as _anthropic
+    from services.agent_swarm.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+    from services.agent_swarm.db import get_conn
+
+    description = ctx.get("description") or ctx.get("detail") or ""
+    entity_name = ctx.get("entity_name") or entity_id or "Campaign"
+    suggested_value = ctx.get("suggested_value") or ""
+    product_name = ctx.get("product_name") or entity_name
+    budget_daily = int(ctx.get("budget_daily") or ctx.get("suggested_value") or 1000)
+    channels = ctx.get("channels") or ([platform] if platform and platform != "all" else ["meta"])
+    if isinstance(channels, str):
+        channels = [channels]
+
+    prompt = f"""You are an expert performance marketing strategist for an Indian health tech brand.
+An AI system flagged this opportunity and the team has approved it:
+
+Action type: {action_type.replace('_', ' ')}
+Campaign/Entity: {entity_name}
+Opportunity: {description}
+{f'Suggested value: {suggested_value}' if suggested_value else ''}
+Channels: {', '.join(channels)}
+
+Generate a complete campaign concept as a JSON object with exactly these keys:
+- headline: (string) Primary ad headline, max 40 chars
+- body_copy: (string) 2-3 sentence ad body copy
+- hook: (string) Opening hook for video/reel, 1 sentence
+- creative_direction: (string) Visual/creative guidance, 2-3 sentences
+- recommended_format: (string) e.g. "Carousel + Reel" or "Search + Display"
+- kpi_targets: {{expected_roas: number, expected_cpa: number, expected_ctr: number}}
+- rationale: (string) Why this approach for this opportunity
+
+Return ONLY valid JSON, no markdown."""
+
+    client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    concept = {}
+    try:
+        msg = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = msg.content[0].text.strip()
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        concept = _json.loads(text[start:end]) if start != -1 else {}
+    except Exception as e:
+        concept = {
+            "headline": f"Grow with {product_name}",
+            "body_copy": f"Reach more customers with targeted {', '.join(channels)} ads. AI-optimised for maximum ROAS.",
+            "hook": "Here's what your competitors don't want you to know...",
+            "creative_direction": "Show real results. Use testimonials + product demo split-screen.",
+            "recommended_format": "Video + Carousel",
+            "kpi_targets": {"expected_roas": 2.5, "expected_cpa": 800, "expected_ctr": 2.0},
+            "rationale": "Approved AI opportunity converted to campaign brief.",
+            "error": str(e),
+        }
+
+    new_value = {
+        "brief": {
+            "product_name": product_name,
+            "goal": "conversions",
+            "budget_daily": budget_daily,
+            "duration_days": 14,
+            "channels": channels,
+            "source_action": action_type,
+            "source_description": description,
+        },
+        "concept": concept,
+    }
+
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO action_log
+                        (workspace_id, platform, account_id, entity_level, entity_id,
+                         action_type, new_value, triggered_by, status)
+                    VALUES (%s, %s, 'ai_approved', 'campaign', 'new',
+                            'create_campaign', %s::jsonb, 'ai_approval', 'pending')
+                    RETURNING id
+                    """,
+                    (workspace_id, channels[0] if channels else "meta", _json.dumps(new_value)),
+                )
+                plan_id = cur.fetchone()[0]
+            conn.commit()
+        return str(plan_id)
+    except Exception:
+        return None
+
+
 @app.post("/approval/respond")
 async def handle_approval(request: Request):
     """
     Called by wa-bot when admin replies 'approve XXXXXXXX' or 'reject XXXXXXXX',
     or by the dashboard UI with {action_id: full_uuid, decision: approve|reject}.
-    For directly executable action types (pause/resume/budget) it calls the Meta API.
-    For all other types it simply marks the action approved so it leaves the queue.
+
+    Downstream actions on approve:
+      - pause / resume / increase_budget / decrease_budget → Meta API execution
+      - ai_brief / new_creative → Claude generates campaign concept → Campaign Planner
+      - keyword_addition → mark approved, redirect to /google-ads
+      - geographic_expansion / bid_adjustment → mark approved, redirect to /campaigns
+      - review → mark approved, no redirect
     """
     body = await request.json()
-    # Accept both field name formats:
-    # WhatsApp bot sends: {action_id: short_prefix, decision: approve/reject}
-    # Dashboard UI sends: {action_id: full_uuid, decision: approve/reject}
     action_short_id = (body.get("action_id") or body.get("action_log_id") or "").strip().lower()
     decision_raw = body.get("decision") or body.get("response", "")
     decision = "approve" if str(decision_raw).upper() in ("APPROVE", "YES") else "reject"
@@ -1238,12 +1339,13 @@ async def handle_approval(request: Request):
 
     from services.agent_swarm.db import get_conn
     from services.agent_swarm.agents.budget_governor import _auto_execute_action
+    import json as _json
 
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, entity_id, action_type, new_value, status
+                SELECT id, workspace_id, platform, entity_id, action_type, new_value, status
                 FROM action_log
                 WHERE id::text LIKE %s AND status='pending'
                 ORDER BY ts DESC LIMIT 1
@@ -1255,7 +1357,8 @@ async def handle_approval(request: Request):
     if not row:
         raise HTTPException(status_code=404, detail="Action not found or already resolved")
 
-    action_id, entity_id, action_type, new_value_raw, status = row
+    action_id, workspace_id, platform, entity_id, action_type, new_value_raw, status = row
+    new_value = _json.loads(new_value_raw) if isinstance(new_value_raw, str) else (new_value_raw or {})
 
     if decision == "reject":
         with get_conn() as conn:
@@ -1270,26 +1373,56 @@ async def handle_approval(request: Request):
                 )
         return {"ok": True, "decision": "rejected", "action_id": str(action_id)}
 
-    # Approve path: determine if this action type is directly executable via API
+    # ── Approve path ─────────────────────────────────────────────────────────
     EXECUTABLE_TYPES = {"pause", "resume", "increase_budget", "decrease_budget", "pause_campaign"}
-    import json as _json
-    new_value = _json.loads(new_value_raw) if isinstance(new_value_raw, str) else (new_value_raw or {})
+    PLAN_TYPES = {"ai_brief", "new_creative"}
+    redirect = None
+    plan_id = None
+    final_status = "approved"
+    success = True
 
     if action_type in EXECUTABLE_TYPES:
-        # Attempt live execution (updates action_log to 'executed' or 'failed' internally)
+        # Live Meta API execution — updates action_log internally
         success = _auto_execute_action(str(action_id), entity_id, action_type, new_value)
         final_status = "executed" if success else "failed"
-    else:
-        # Non-executable types (ai_brief, new_creative, keyword_addition, etc.):
-        # Mark approved so they leave the pending queue. Humans act on them manually.
+        redirect = "/campaigns"
+
+    elif action_type in PLAN_TYPES:
+        # Generate a campaign concept via Claude and add to Campaign Planner
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE action_log SET status='approved', approved_by='dashboard', executed_at=NOW() WHERE id=%s",
                     (action_id,),
                 )
-        success = True
+        plan_id = _generate_campaign_plan_from_action(
+            workspace_id=str(workspace_id),
+            action_type=action_type,
+            ctx=new_value if isinstance(new_value, dict) else {},
+            entity_id=str(entity_id or ""),
+            platform=platform or "meta",
+        )
         final_status = "approved"
+        redirect = "/campaign-planner"
+
+    elif action_type == "keyword_addition":
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE action_log SET status='approved', approved_by='dashboard', executed_at=NOW() WHERE id=%s",
+                    (action_id,),
+                )
+        redirect = "/google-ads"
+
+    else:
+        # geographic_expansion, bid_adjustment, review, etc.
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE action_log SET status='approved', approved_by='dashboard', executed_at=NOW() WHERE id=%s",
+                    (action_id,),
+                )
+        redirect = "/campaigns"
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -1298,7 +1431,15 @@ async def handle_approval(request: Request):
                 (final_status, action_id),
             )
 
-    return {"ok": True, "decision": "approved", "executed": success, "status": final_status, "action_id": str(action_id)}
+    return {
+        "ok": True,
+        "decision": "approved",
+        "executed": success,
+        "status": final_status,
+        "action_id": str(action_id),
+        "redirect": redirect,
+        "plan_id": plan_id,
+    }
 
 
 # ── Sales Intelligence Layer ────────────────────────────────
