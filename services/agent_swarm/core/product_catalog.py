@@ -522,65 +522,130 @@ def discover_and_sync(
 
 # ── URL scraper (single product page) ────────────────────────────────────
 
+def _is_cloudflare_challenge(text: str) -> bool:
+    """Detect Cloudflare bot challenge pages."""
+    lower = text.lower()
+    return (
+        "just a moment" in lower
+        or "checking your browser" in lower
+        or "cf-browser-verification" in text
+        or "cloudflare" in lower and "challenge" in lower
+        or "enable javascript and cookies to continue" in lower
+    )
+
+
+def _guess_myshopify_domain(parsed_url) -> str | None:
+    """
+    Given a parsed URL for a custom Shopify domain, guess the .myshopify.com subdomain.
+    e.g. agatsaone.com → agatsaone.myshopify.com
+         www.agatsaone.com → agatsaone.myshopify.com
+    Returns None if it already IS a myshopify.com domain.
+    """
+    host = parsed_url.netloc.lower().lstrip("www.")
+    if host.endswith(".myshopify.com"):
+        return None  # already myshopify
+    # Take the first segment of the domain as the store slug
+    subdomain = host.split(".")[0]
+    return f"{subdomain}.myshopify.com"
+
+
+def _fetch_shopify_json(json_url: str) -> dict | None:
+    """Try to fetch a Shopify product .json URL. Returns the product dict or None."""
+    try:
+        r = _requests.get(
+            json_url,
+            timeout=15,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; Shopify API)",
+                "Accept": "application/json",
+            },
+        )
+        if r.status_code != 200:
+            return None
+        text = r.text
+        if _is_cloudflare_challenge(text):
+            return None
+        data = r.json()
+        p = data.get("product")
+        return p if (p and p.get("title")) else None
+    except Exception as e:
+        print(f"Shopify .json fetch error for {json_url}: {e}")
+        return None
+
+
 def scrape_product_page(workspace_id: str, url: str) -> dict:
     """
     Scrape a single product page URL and upsert into the products table.
-    Strategy:
-      1. Shopify .json endpoint (append .json to product URL)
-      2. Open Graph / meta tags from page HTML
-      3. Claude extraction fallback
-    Returns the upserted product dict with at least {id, name, images}.
-    Raises ValueError if scraping fails or no meaningful data found.
-    """
-    url = url.strip().rstrip("/")
 
-    # ── 1. Try Shopify .json (works on any Shopify-hosted product URL) ────
+    Strategy:
+      1a. Shopify .json on the custom domain
+      1b. Shopify .json on the .myshopify.com equivalent (bypasses Cloudflare)
+      2.  Open Graph / meta tags from HTML
+      3.  Claude extraction fallback on the HTML
+    """
+    from urllib.parse import urlparse as _up
+
+    url = url.strip().rstrip("/")
+    parsed = _up(url)
+    path_no_qs = parsed.path.rstrip("/")
+
+    # ── 1. Try Shopify .json ───────────────────────────────────────────────
     if "/products/" in url:
-        json_url = url.split("?")[0]  # strip query params first
-        if not json_url.endswith(".json"):
-            json_url = json_url + ".json"
-        try:
-            r = _requests.get(json_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-            if r.status_code == 200:
-                data = r.json()
-                p = data.get("product")
-                if p and p.get("title"):
-                    # Extract base store URL
-                    from urllib.parse import urlparse as _up
-                    parsed = _up(url)
-                    store_url = f"{parsed.scheme}://{parsed.netloc}"
-                    result = _upsert_scraped_product(workspace_id, url, p, "shopify_json")
-                    if result:
-                        return result
-        except Exception as e:
-            print(f"Shopify .json scrape failed for {url}: {e}")
+        # Build the .json URL for the custom domain
+        base_json = f"{parsed.scheme}://{parsed.netloc}{path_no_qs}"
+        if not base_json.endswith(".json"):
+            base_json += ".json"
+
+        # 1a. Custom domain
+        p = _fetch_shopify_json(base_json)
+
+        # 1b. .myshopify.com fallback (avoids Cloudflare on custom domains)
+        if not p:
+            myshopify = _guess_myshopify_domain(parsed)
+            if myshopify:
+                myshopify_json = f"https://{myshopify}{path_no_qs}.json"
+                p = _fetch_shopify_json(myshopify_json)
+                print(f"myshopify fallback tried: {myshopify_json} → {'ok' if p else 'failed'}")
+
+        if p:
+            result = _upsert_scraped_product(workspace_id, url, p, "shopify_json")
+            if result:
+                return result
 
     # ── 2. Fetch HTML and extract OG tags ─────────────────────────────────
+    html = None
+    cloudflare_blocked = False
     try:
         r = _requests.get(
             url,
             timeout=20,
             headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
+                "Accept-Language": "en-US,en;q=0.9",
             },
         )
         html = r.text
+        if _is_cloudflare_challenge(html):
+            cloudflare_blocked = True
+            print(f"Cloudflare challenge detected for {url}")
     except Exception as e:
         raise ValueError(f"Could not fetch URL: {e}")
 
-    og = _extract_og_tags(html)
+    if not cloudflare_blocked and html:
+        og = _extract_og_tags(html)
+        if og.get("title") and og.get("images"):
+            result = _upsert_scraped_product(workspace_id, url, og, "og_tags")
+            if result:
+                return result
 
-    # If OG gives us at least a title + image, use it
-    if og.get("title") and og.get("images"):
-        result = _upsert_scraped_product(workspace_id, url, og, "og_tags")
-        if result:
-            return result
-
-    # ── 3. Claude extraction fallback ─────────────────────────────────────
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    prompt = f"""You are extracting product info from a single product page.
+        # ── 3. Claude extraction fallback ─────────────────────────────────
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        prompt = f"""You are extracting product info from a single product page.
 URL: {url}
 
 Below is the page HTML (truncated). Extract the product details and return ONLY a JSON object.
@@ -600,28 +665,30 @@ Return ONLY valid JSON object, no markdown fences.
 HTML:
 {html[:12000]}"""
 
-    try:
-        msg = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
+        try:
+            msg = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=2048,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = msg.content[0].text.strip()
+            raw = re.sub(r'^```(?:json)?\s*', '', raw)
+            raw = re.sub(r'\s*```$', '', raw)
+            p_claude = json.loads(raw)
+            if p_claude.get("title"):
+                result = _upsert_scraped_product(workspace_id, url, p_claude, "claude")
+                if result:
+                    return result
+        except json.JSONDecodeError:
+            pass
+        except Exception as e:
+            print(f"Claude scrape fallback error: {e}")
+
+    if cloudflare_blocked:
+        raise ValueError(
+            "This store uses Cloudflare protection. "
+            "Connect Shopify via Settings → Shopify Store (Admin API token) to sync products directly."
         )
-        raw = msg.content[0].text.strip()
-        # Strip markdown fences if present
-        raw = re.sub(r'^```(?:json)?\s*', '', raw)
-        raw = re.sub(r'\s*```$', '', raw)
-        p = json.loads(raw)
-        if not p.get("title"):
-            raise ValueError("Claude could not extract product title from this page")
-        result = _upsert_scraped_product(workspace_id, url, p, "claude")
-        if result:
-            return result
-    except json.JSONDecodeError:
-        pass
-    except ValueError:
-        raise
-    except Exception as e:
-        print(f"Claude scrape fallback error: {e}")
 
     raise ValueError("Could not extract product data from this URL")
 
