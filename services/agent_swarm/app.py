@@ -1217,6 +1217,196 @@ async def handle_creative_approval(request: Request):
     return result
 
 
+def _launch_campaign_on_meta(workspace_id: str, new_value: dict, platform: str) -> dict:
+    """
+    Creates a PAUSED Meta Campaign + Ad Set from a create_campaign plan.
+    Returns {ok, meta_campaign_id, meta_adset_id, campaign_name, adset_name, adset_error, error}.
+    """
+    import json as _json
+    import requests as _requests
+    from datetime import datetime, timezone
+    from services.agent_swarm.db import get_conn
+
+    concept = new_value.get("concept", {})
+    brief   = new_value.get("brief", {})
+
+    campaign_name = concept.get("headline") or brief.get("product_name") or "New Campaign"
+    goal = brief.get("goal", "conversions")
+    budget_daily = (
+        brief.get("budget_daily")
+        or concept.get("recommended_budget_daily")
+        or 1000
+    )
+
+    GOAL_TO_OBJECTIVE = {
+        "conversions": "OUTCOME_SALES",
+        "awareness":   "OUTCOME_AWARENESS",
+        "traffic":     "OUTCOME_TRAFFIC",
+        "leads":       "OUTCOME_LEADS",
+        "video_views": "OUTCOME_ENGAGEMENT",
+    }
+    objective = GOAL_TO_OBJECTIVE.get(goal, "OUTCOME_SALES")
+
+    OBJECTIVE_ADSET_CONFIG = {
+        "OUTCOME_SALES":      ("OFFSITE_CONVERSIONS", "IMPRESSIONS"),
+        "OUTCOME_AWARENESS":  ("REACH",               "IMPRESSIONS"),
+        "OUTCOME_TRAFFIC":    ("LINK_CLICKS",          "LINK_CLICKS"),
+        "OUTCOME_LEADS":      ("LEAD_GENERATION",      "IMPRESSIONS"),
+        "OUTCOME_ENGAGEMENT": ("POST_ENGAGEMENT",      "IMPRESSIONS"),
+    }
+    optimization_goal, billing_event = OBJECTIVE_ADSET_CONFIG.get(
+        objective, ("REACH", "IMPRESSIONS")
+    )
+
+    # Get Meta connection for this workspace
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT ad_account_id, access_token, pixel_id
+                   FROM platform_connections
+                   WHERE workspace_id = %s AND platform = 'meta'
+                   ORDER BY is_primary DESC LIMIT 1""",
+                (workspace_id,),
+            )
+            meta_row = cur.fetchone()
+
+    if not meta_row or not meta_row[0] or not meta_row[1]:
+        return {"ok": False, "error": "No active Meta connection — connect Meta in Settings first"}
+
+    ad_account_id, access_token, pixel_id = meta_row
+    act_id = ad_account_id if ad_account_id.startswith("act_") else f"act_{ad_account_id}"
+    META_API_VERSION = "v21.0"
+
+    # ── Step 1: Create Campaign ───────────────────────────────────────────────
+    camp_url = f"https://graph.facebook.com/{META_API_VERSION}/{act_id}/campaigns"
+    camp_resp = _requests.post(
+        camp_url,
+        params={"access_token": access_token},
+        data={
+            "name": campaign_name,
+            "objective": objective,
+            "status": "PAUSED",
+            "special_ad_categories": "[]",
+            "is_adset_budget_sharing_enabled": "false",
+        },
+        timeout=15,
+    )
+    camp_data = camp_resp.json()
+    print(f"[launch_meta] campaign status={camp_resp.status_code} body={_json.dumps(camp_data)}")
+
+    if not camp_resp.ok or "error" in camp_data:
+        err = camp_data.get("error", {})
+        msg = err.get("error_user_msg") or err.get("message") or "Meta API error"
+        code = err.get("code", "")
+        sub  = err.get("error_subcode", "")
+        return {"ok": False, "error": f"Campaign creation failed (code {code}/{sub}): {msg}"}
+
+    meta_campaign_id = camp_data["id"]
+
+    # ── Step 2: Create Ad Set ─────────────────────────────────────────────────
+    adset_name = f"{campaign_name} — Ad Set"
+    daily_budget_paise = max(int(float(budget_daily) * 100), 57600)  # INR paise, min ~₹576
+
+    adset_payload = {
+        "name": adset_name,
+        "campaign_id": meta_campaign_id,
+        "daily_budget": daily_budget_paise,
+        "billing_event": billing_event,
+        "optimization_goal": optimization_goal,
+        "targeting": _json.dumps({"geo_locations": {"countries": ["IN"]}, "age_min": 25, "age_max": 55}),
+        "status": "PAUSED",
+        "start_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+0000"),
+    }
+
+    if optimization_goal == "OFFSITE_CONVERSIONS" and pixel_id:
+        adset_payload["promoted_object"] = _json.dumps({
+            "pixel_id": pixel_id,
+            "custom_event_type": "PURCHASE",
+        })
+    elif optimization_goal == "OFFSITE_CONVERSIONS":
+        # No pixel — fall back to REACH so the ad set doesn't get rejected
+        adset_payload["optimization_goal"] = "REACH"
+        adset_payload["billing_event"] = "IMPRESSIONS"
+
+    adset_url = f"https://graph.facebook.com/{META_API_VERSION}/{act_id}/adsets"
+    adset_resp = _requests.post(
+        adset_url,
+        params={"access_token": access_token},
+        data=adset_payload,
+        timeout=15,
+    )
+    adset_data = adset_resp.json()
+    print(f"[launch_meta] adset status={adset_resp.status_code} body={_json.dumps(adset_data)}")
+
+    meta_adset_id = None
+    adset_error  = None
+    if adset_resp.ok and "error" not in adset_data:
+        meta_adset_id = adset_data.get("id")
+    else:
+        adset_error = adset_data.get("error", {}).get("message", "Ad set creation failed")
+
+    return {
+        "ok": True,
+        "meta_campaign_id": meta_campaign_id,
+        "meta_adset_id": meta_adset_id,
+        "campaign_name": campaign_name,
+        "adset_name": adset_name if meta_adset_id else None,
+        "adset_error": adset_error,
+    }
+
+
+def _launch_campaign_on_google(workspace_id: str, new_value: dict) -> dict:
+    """
+    Creates a PAUSED Google Performance Max campaign from a create_campaign plan.
+    Uses _get_google_conn_from_db (which reads google_auth_tokens) — no Meta API called.
+    Returns {ok, google_campaign_id, campaign_name, note, error}.
+
+    NOTE: Requires Google Ads developer token with Basic/Standard access.
+          Returns an error if the token is still in Test status.
+    """
+    from services.agent_swarm.connectors.google import GoogleConnector
+    from services.agent_swarm.connectors.base import CampaignSpec
+
+    concept = new_value.get("concept", {})
+    brief   = new_value.get("brief", {})
+    campaign_name = concept.get("headline") or brief.get("product_name") or "New Campaign"
+    budget_daily  = float(brief.get("budget_daily") or concept.get("recommended_budget_daily") or 1000)
+    product_name  = brief.get("product_name") or campaign_name
+    goal          = brief.get("goal", "conversions")
+
+    conn_row = _get_google_conn_from_db(workspace_id)
+    if not conn_row:
+        return {"ok": False, "error": "No Google Ads connection — connect Google in Settings first"}
+    if not conn_row.get("customer_id"):
+        return {"ok": False, "error": "Google customer_id not found — reconnect Google in Settings"}
+
+    workspace_obj = get_workspace(workspace_id) or {"id": workspace_id}
+    spec = CampaignSpec(
+        name=campaign_name,
+        product_id="",
+        product_name=product_name,
+        product_url=brief.get("product_url") or "https://agatsaone.com",
+        daily_budget_inr=budget_daily,
+        objective=goal,
+        headline=concept.get("headline") or campaign_name,
+        primary_text=concept.get("body_copy") or "",
+        description=concept.get("creative_direction") or "",
+    )
+    try:
+        connector = GoogleConnector(conn_row, workspace_obj)
+        result = connector.create_campaign(spec)
+        if "error" in result:
+            return {"ok": False, "error": result["error"]}
+        return {
+            "ok": True,
+            "google_campaign_id": result.get("campaign_id"),
+            "campaign_name": campaign_name,
+            "note": "PAUSED Performance Max campaign created in Google Ads",
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def _generate_campaign_plan_from_action(workspace_id: str, action_type: str, ctx: dict, entity_id: str, platform: str) -> str | None:
     """
     Called after approving an ai_brief or new_creative action.
@@ -1380,11 +1570,42 @@ async def handle_approval(request: Request):
     plan_id = None
     final_status = "approved"
     success = True
+    launch_result = None
+    execution_note = None
 
     if action_type in EXECUTABLE_TYPES:
-        # Live Meta API execution — updates action_log internally
-        success = _auto_execute_action(str(action_id), entity_id, action_type, new_value)
-        final_status = "executed" if success else "failed"
+        if platform == "google":
+            # Use GoogleConnector for Google platform budget/pause/resume actions
+            _gconn = _get_google_conn_from_db(str(workspace_id))
+            if _gconn:
+                _gws = get_workspace(str(workspace_id)) or {"id": str(workspace_id)}
+                from services.agent_swarm.connectors.google import GoogleConnector as _GC
+                try:
+                    _gc = _GC(_gconn, _gws)
+                    if action_type in ("pause", "pause_campaign"):
+                        success = _gc.pause(str(entity_id))
+                    elif action_type == "resume":
+                        success = _gc.resume(str(entity_id))
+                    elif action_type in ("increase_budget", "decrease_budget"):
+                        _new_b = float((new_value or {}).get("daily_budget_inr", 0))
+                        success = _gc.update_budget(str(entity_id), _new_b) if _new_b > 0 else False
+                except Exception as _ge:
+                    print(f"[approval] Google action error: {_ge}")
+                    success = False
+            else:
+                success = False
+                execution_note = "No Google Ads connection — connect Google in Settings"
+            final_status = "executed" if success else "failed"
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE action_log SET status=%s, approved_by='dashboard', executed_at=NOW() WHERE id=%s",
+                        (final_status, action_id),
+                    )
+        else:
+            # Meta API execution — _auto_execute_action updates action_log internally
+            success = _auto_execute_action(str(action_id), entity_id, action_type, new_value)
+            final_status = "executed" if success else "failed"
         redirect = "/campaigns"
 
     elif action_type in PLAN_TYPES:
@@ -1405,22 +1626,107 @@ async def handle_approval(request: Request):
         final_status = "approved"
         redirect = "/campaign-planner"
 
+    elif action_type == "create_campaign":
+        # Branch on platform: google → PMax via GoogleConnector, meta (default) → Meta Graph API
+        _nv = new_value if isinstance(new_value, dict) else {}
+        if (platform or "meta") == "google":
+            launch_result = _launch_campaign_on_google(
+                workspace_id=str(workspace_id),
+                new_value=_nv,
+            )
+        else:
+            launch_result = _launch_campaign_on_meta(
+                workspace_id=str(workspace_id),
+                new_value=_nv,
+                platform=platform or "meta",
+            )
+        if launch_result.get("ok"):
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE action_log SET status='executed', approved_by='dashboard', executed_at=NOW() WHERE id=%s",
+                        (action_id,),
+                    )
+            final_status = "executed"
+            success = True
+        else:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE action_log SET status='failed', approved_by='dashboard', executed_at=NOW() WHERE id=%s",
+                        (action_id,),
+                    )
+            final_status = "failed"
+            success = False
+        redirect = "/campaigns"
+
     elif action_type == "keyword_addition":
+        # Try to add the keyword via GoogleConnector; fall back to "approved" with a note
+        if platform == "google" and entity_id:
+            _gconn = _get_google_conn_from_db(str(workspace_id))
+            if _gconn:
+                _gws = get_workspace(str(workspace_id)) or {"id": str(workspace_id)}
+                from services.agent_swarm.connectors.google import GoogleConnector as _GC
+                try:
+                    _gc = _GC(_gconn, _gws)
+                    _kw = (
+                        (new_value or {}).get("keyword")
+                        or (new_value or {}).get("suggested_value")
+                        or ""
+                    ).strip()
+                    if _kw:
+                        _kr = _gc.add_keyword(str(entity_id), _kw)
+                        if _kr.get("ok"):
+                            final_status = "executed"
+                            execution_note = f"Keyword \"{_kw}\" added to ad group in Google Ads"
+                        else:
+                            execution_note = "Approved — add manually in Google Ads (developer token pending approval)"
+                    else:
+                        execution_note = "Approved — add keywords manually in Google Ads → Campaigns"
+                except Exception:
+                    execution_note = "Approved — keyword queued for manual addition in Google Ads"
+            else:
+                execution_note = "Approved — connect Google Ads in Settings to auto-add keywords"
+        else:
+            execution_note = "Approved — add keywords manually in Google Ads"
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE action_log SET status='approved', approved_by='dashboard', executed_at=NOW() WHERE id=%s",
-                    (action_id,),
+                    "UPDATE action_log SET status=%s, approved_by='dashboard', executed_at=NOW() WHERE id=%s",
+                    (final_status, action_id),
                 )
         redirect = "/google-ads"
 
     else:
         # geographic_expansion, bid_adjustment, review, etc.
+        if action_type == "bid_adjustment" and platform == "google" and entity_id:
+            _gconn = _get_google_conn_from_db(str(workspace_id))
+            if _gconn:
+                _gws = get_workspace(str(workspace_id)) or {"id": str(workspace_id)}
+                from services.agent_swarm.connectors.google import GoogleConnector as _GC
+                try:
+                    _gc = _GC(_gconn, _gws)
+                    _bid_inr = float((new_value or {}).get("suggested_value") or (new_value or {}).get("new_bid_inr") or 0)
+                    if _bid_inr > 0:
+                        _br = _gc.adjust_bid(str(entity_id), int(_bid_inr * 1_000_000))
+                        if _br.get("ok"):
+                            final_status = "executed"
+                            execution_note = f"Bid adjusted to ₹{_bid_inr:.2f} in Google Ads"
+                        else:
+                            execution_note = "Approved — update bid manually in Google Ads (developer token pending approval)"
+                    else:
+                        execution_note = "Approved — update bid manually in Google Ads"
+                except Exception:
+                    execution_note = "Approved — update bid manually in Google Ads"
+            else:
+                execution_note = "Approved — connect Google Ads in Settings to auto-adjust bids"
+        elif action_type == "geographic_expansion":
+            execution_note = "Approved — update geo targeting in Google Ads: Campaigns → Settings → Locations"
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE action_log SET status='approved', approved_by='dashboard', executed_at=NOW() WHERE id=%s",
-                    (action_id,),
+                    "UPDATE action_log SET status=%s, approved_by='dashboard', executed_at=NOW() WHERE id=%s",
+                    (final_status, action_id),
                 )
         redirect = "/campaigns"
 
@@ -1439,6 +1745,15 @@ async def handle_approval(request: Request):
         "action_id": str(action_id),
         "redirect": redirect,
         "plan_id": plan_id,
+        "platform": platform or "meta",
+        # Populated only for create_campaign approvals
+        "campaign_created": launch_result.get("ok") if launch_result else False,
+        "campaign_name": launch_result.get("campaign_name") if launch_result else None,
+        "adset_name": launch_result.get("adset_name") if launch_result else None,
+        "google_campaign_id": launch_result.get("google_campaign_id") if launch_result else None,
+        "launch_error": launch_result.get("error") if launch_result and not launch_result.get("ok") else None,
+        # Populated for keyword/geo/bid actions
+        "execution_note": execution_note,
     }
 
 
@@ -6562,6 +6877,44 @@ Return ONLY valid JSON, no markdown."""
         "status": "pending",
         "auto_generated": True,
         "context_used": bool(context_parts),
+    }
+
+
+# ── Campaign Planner — Launch (Campaign + Ad Set on Meta) ────────────────────
+
+@app.post("/campaign-planner/launch")
+async def campaign_planner_launch(request: Request):
+    """
+    Confirms a plan is in the approvals queue (no Meta API call happens here).
+    Actual campaign creation on Meta happens when user Approves in Decision Inbox.
+    Body: {plan_id, workspace_id}
+    """
+    _auth(request)
+    body = await request.json()
+    plan_id = body.get("plan_id")
+    workspace_id = body.get("workspace_id")
+    if not plan_id or not workspace_id:
+        raise HTTPException(status_code=400, detail="plan_id and workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, status FROM action_log WHERE id = %s AND workspace_id = %s",
+                (plan_id, workspace_id),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    return {
+        "ok": True,
+        "plan_id": str(row[0]),
+        "status": row[1],
+        "redirect": "/approvals",
+        "message": "Plan is in your Decision Inbox — approve there to launch on Meta",
     }
 
 

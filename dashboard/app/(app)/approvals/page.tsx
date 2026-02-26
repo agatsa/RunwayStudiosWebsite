@@ -67,32 +67,32 @@ export default async function ApprovalsPage({ searchParams }: PageProps) {
     <div className="space-y-5">
       {/* Header */}
       <div>
-        <h1 className="text-xl font-bold text-gray-900">Decision Inbox</h1>
-        <p className="text-sm text-gray-500">AI-detected + manual actions waiting for your approval</p>
+        <h1 className="text-3xl font-bold text-gray-900">Decision Inbox</h1>
+        <p className="text-base text-gray-500 mt-1">AI-detected + manual actions waiting for your approval</p>
       </div>
 
       {/* Stats strip */}
       {stats && (
         <div className="grid grid-cols-3 gap-3">
-          <div className="flex items-center gap-3 rounded-xl border border-yellow-200 bg-yellow-50 px-4 py-3">
-            <Clock className="h-5 w-5 text-yellow-600 shrink-0" />
+          <div className="flex items-center gap-4 rounded-xl border border-yellow-200 bg-yellow-50 px-5 py-4">
+            <Clock className="h-7 w-7 text-yellow-600 shrink-0" />
             <div>
-              <p className="text-xl font-bold text-yellow-700">{stats.pending}</p>
-              <p className="text-xs text-yellow-600">Pending approval</p>
+              <p className="text-3xl font-bold text-yellow-700">{stats.pending}</p>
+              <p className="text-sm text-yellow-600">Pending approval</p>
             </div>
           </div>
-          <div className="flex items-center gap-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3">
-            <CheckCircle2 className="h-5 w-5 text-green-600 shrink-0" />
+          <div className="flex items-center gap-4 rounded-xl border border-green-200 bg-green-50 px-5 py-4">
+            <CheckCircle2 className="h-7 w-7 text-green-600 shrink-0" />
             <div>
-              <p className="text-xl font-bold text-green-700">{stats.approved}</p>
-              <p className="text-xs text-green-600">Approved this week</p>
+              <p className="text-3xl font-bold text-green-700">{stats.approved}</p>
+              <p className="text-sm text-green-600">Approved this week</p>
             </div>
           </div>
-          <div className="flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
-            <Zap className="h-5 w-5 text-blue-600 shrink-0" />
+          <div className="flex items-center gap-4 rounded-xl border border-blue-200 bg-blue-50 px-5 py-4">
+            <Zap className="h-7 w-7 text-blue-600 shrink-0" />
             <div>
-              <p className="text-xl font-bold text-blue-700">{stats.autoExecuted}</p>
-              <p className="text-xs text-blue-600">Auto-executed</p>
+              <p className="text-3xl font-bold text-blue-700">{stats.autoExecuted}</p>
+              <p className="text-sm text-blue-600">Auto-executed</p>
             </div>
           </div>
         </div>
@@ -100,13 +100,13 @@ export default async function ApprovalsPage({ searchParams }: PageProps) {
 
       {/* Filter tabs + count */}
       <div className="flex items-center justify-between">
-        <p className="text-sm text-gray-500">{data?.count ?? 0} actions</p>
+        <p className="text-base text-gray-500">{data?.count ?? 0} actions</p>
         <div className="flex gap-1 rounded-lg border border-gray-200 bg-white p-1">
           {STATUS_TABS.map(({ label, value }) => (
             <a
               key={value}
               href={`/approvals?ws=${workspaceId}&status=${value}`}
-              className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${
+              className={`rounded px-4 py-2 text-base font-medium transition-colors ${
                 status === value
                   ? 'bg-gray-900 text-white'
                   : 'text-gray-600 hover:text-gray-900'

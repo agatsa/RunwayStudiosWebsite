@@ -479,6 +479,60 @@ class GoogleConnector(PlatformConnector):
         print(f"Create asset group error: {r.text[:200]}")
         return None
 
+    # ── Keyword management ────────────────────────────────
+
+    def add_keyword(self, ad_group_id: str, keyword_text: str, match_type: str = "BROAD") -> dict:
+        """
+        Add a keyword to an ad group.
+        match_type: BROAD | PHRASE | EXACT
+        Returns {ok, resource, error}.
+        """
+        url = f"{_GOOGLE_ADS_BASE}/customers/{self.customer_id}/adGroupCriteria:mutate"
+        ad_group_resource = f"customers/{self.customer_id}/adGroups/{ad_group_id}"
+        payload = {
+            "operations": [{
+                "create": {
+                    "adGroup": ad_group_resource,
+                    "status": "ENABLED",
+                    "keyword": {
+                        "text": keyword_text[:80],
+                        "matchType": match_type.upper(),
+                    },
+                }
+            }]
+        }
+        try:
+            r = requests.post(url, headers=self._headers(), json=payload, timeout=20)
+            if r.ok:
+                results = r.json().get("results", [{}])
+                return {"ok": True, "resource": results[0].get("resourceName", "")}
+            err = r.json().get("error", {})
+            return {"ok": False, "error": err.get("message", r.text[:200])}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def adjust_bid(self, ad_group_id: str, cpc_bid_micros: int) -> dict:
+        """
+        Set CPC bid on an ad group (in micros, 1_000_000 = ₹1 / $1).
+        Returns {ok, error}.
+        """
+        url = f"{_GOOGLE_ADS_BASE}/customers/{self.customer_id}/adGroups:mutate"
+        resource = f"customers/{self.customer_id}/adGroups/{ad_group_id}"
+        payload = {
+            "operations": [{
+                "update": {
+                    "resourceName": resource,
+                    "cpcBidMicros": str(cpc_bid_micros),
+                },
+                "updateMask": "cpcBidMicros",
+            }]
+        }
+        try:
+            r = requests.post(url, headers=self._headers(), json=payload, timeout=20)
+            return {"ok": r.status_code < 300, "error": r.text[:200] if not r.ok else None}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     # ── Search term report ────────────────────────────────
 
     def fetch_search_terms(self, since: str, until: str) -> list[dict]:
