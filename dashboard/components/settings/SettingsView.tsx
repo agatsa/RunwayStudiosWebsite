@@ -6,7 +6,9 @@ import { toast } from 'sonner'
 import { CheckCircle, Link2, Trash2, Loader2 } from 'lucide-react'
 import MetaConnectDialog from './MetaConnectDialog'
 import GoogleConnectDialog from './GoogleConnectDialog'
+import GoogleAccountSelectDialog from './GoogleAccountSelectDialog'
 import YouTubeConnectDialog from './YouTubeConnectDialog'
+import ExcelUploadDialog from './ExcelUploadDialog'
 import type { PlatformConnection } from '@/lib/types'
 
 interface Props {
@@ -16,6 +18,8 @@ interface Props {
   googleConnected?: boolean
   googleError?: string
   googleOAuthConfigured?: boolean
+  ga4PropertyId?: string | null
+  ga4Connected?: boolean
 }
 
 function PlatformCard({
@@ -112,21 +116,24 @@ function PlatformCard({
   )
 }
 
-export default function SettingsView({ connections, workspaceId, workspaceName, googleConnected, googleError, googleOAuthConfigured = false }: Props) {
+export default function SettingsView({ connections, workspaceId, workspaceName, googleConnected, googleError, googleOAuthConfigured = false, ga4PropertyId, ga4Connected = false }: Props) {
   const [showMetaDialog, setShowMetaDialog] = useState(false)
   const [showGoogleDialog, setShowGoogleDialog] = useState(false)
   const [showYouTubeDialog, setShowYouTubeDialog] = useState(false)
+  const [showGoogleAccountSelect, setShowGoogleAccountSelect] = useState(false)
+  const [showUpload, setShowUpload] = useState<'meta' | 'google' | null>(null)
   const router = useRouter()
 
   useEffect(() => {
     if (googleConnected) {
-      toast.success('Google Ads connected! YouTube channel auto-discovered if linked.')
+      toast.success('Google Ads connected! YouTube + GA4 auto-discovered if linked.')
     } else if (googleError) {
       const messages: Record<string, string> = {
         access_denied: 'Google sign-in was cancelled.',
-        no_refresh_token: 'No refresh token received — please try again.',
+        no_refresh_token: 'No refresh token — please try again (select your Google account fresh).',
         token_exchange_failed: 'Token exchange failed. Check your OAuth credentials.',
-        save_failed: 'Failed to save credentials. Check server logs.',
+        no_ads_account: 'No Google Ads account found for this Google account. Make sure Google Ads is active.',
+        save_failed: 'Failed to save credentials. Contact support if this persists.',
         fastapi_unreachable: 'Could not reach backend server.',
         server_not_configured: 'Google OAuth not configured on server (missing env vars).',
       }
@@ -171,6 +178,16 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
             </div>
           }
         />
+        {!metaConn?.has_token && (
+          <div className="flex justify-end -mt-2 px-1">
+            <button
+              onClick={() => setShowUpload('meta')}
+              className="text-xs text-blue-600 underline hover:text-blue-800"
+            >
+              Upload Excel instead
+            </button>
+          </div>
+        )}
 
         {/* Google */}
         <PlatformCard
@@ -190,6 +207,25 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
             </div>
           }
         />
+        {googleConn?.has_token ? (
+          <div className="flex justify-end -mt-2 px-1">
+            <button
+              onClick={() => setShowGoogleAccountSelect(true)}
+              className="text-xs text-gray-500 underline hover:text-gray-700"
+            >
+              Switch Account
+            </button>
+          </div>
+        ) : (
+          <div className="flex justify-end -mt-2 px-1">
+            <button
+              onClick={() => setShowUpload('google')}
+              className="text-xs text-blue-600 underline hover:text-blue-800"
+            >
+              Upload Excel instead
+            </button>
+          </div>
+        )}
 
         {/* YouTube */}
         <PlatformCard
@@ -206,6 +242,43 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
             </div>
           }
         />
+
+        {/* GA4 — auto-discovered via Google OAuth */}
+        <div className="rounded-xl border border-gray-200 bg-white p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-500 text-white font-bold text-sm shrink-0">
+                GA4
+              </div>
+              <div>
+                <p className="font-semibold text-gray-900">Google Analytics 4</p>
+                {ga4Connected && ga4PropertyId ? (
+                  <p className="text-xs text-gray-500">Property ID: {ga4PropertyId} · Auto-discovered</p>
+                ) : googleConn?.has_token ? (
+                  <p className="text-xs text-amber-600">GA4 not found — reconnect Google to auto-discover</p>
+                ) : (
+                  <p className="text-xs text-gray-400">Connect Google Ads first (includes GA4 scope)</p>
+                )}
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {ga4Connected ? (
+                <span className="flex items-center gap-1 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700">
+                  <CheckCircle className="h-3 w-3" />
+                  Connected
+                </span>
+              ) : (
+                <button
+                  onClick={() => setShowGoogleDialog(true)}
+                  className="flex items-center gap-1.5 rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-600"
+                >
+                  <Link2 className="h-3 w-3" />
+                  {googleConn?.has_token ? 'Reconnect Google' : 'Connect Google'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
       </section>
 
       {/* Workspace info */}
@@ -222,6 +295,85 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
               <p className="mt-0.5 font-mono text-xs text-gray-600 break-all">{workspaceId}</p>
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* Business type */}
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-base font-semibold text-gray-900">Business Type</h2>
+          <p className="text-sm text-gray-500">Helps ARIA personalize recommendations for your business model</p>
+        </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-4">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {[
+              { key: 'd2c', label: 'D2C Product', desc: 'Meta → YouTube → Google → Marketplace' },
+              { key: 'creator', label: 'YouTuber / Creator', desc: 'YouTube-first → Instagram → Email' },
+              { key: 'service', label: 'Service / SaaS', desc: 'Google Search → LinkedIn → YouTube' },
+              { key: 'local', label: 'Local Business', desc: 'Google Maps → Local Search → Instagram' },
+              { key: 'b2b', label: 'B2B / Enterprise', desc: 'LinkedIn → Google → Email → Webinars' },
+            ].map(bt => (
+              <div key={bt.key}
+                className="rounded-lg border border-gray-200 p-3 cursor-pointer hover:border-brand-400 hover:bg-brand-50 transition-colors">
+                <p className="text-sm font-medium text-gray-900">{bt.label}</p>
+                <p className="text-[10px] text-gray-400 mt-0.5">{bt.desc}</p>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-xs text-gray-400">Saving business type — coming soon</p>
+        </div>
+      </section>
+
+      {/* Product & Competitor URLs */}
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-base font-semibold text-gray-900">Product & Competitor URLs</h2>
+          <p className="text-sm text-gray-500">Used for price monitoring, ad library tracking, and competitor intelligence</p>
+        </div>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <div className="rounded-xl border border-gray-200 bg-white p-4">
+            <p className="text-sm font-semibold text-gray-800 mb-2">Your Product URLs</p>
+            <div className="space-y-2 opacity-50">
+              {['https://agatsaone.com/products/sanketlife-2-0', 'https://agatsaone.com/products/easytouch-plus'].map(url => (
+                <div key={url} className="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                  <span className="flex-1 truncate">{url}</span>
+                </div>
+              ))}
+            </div>
+            <p className="mt-3 text-xs text-gray-400">URL management — coming soon</p>
+          </div>
+          <div className="rounded-xl border border-gray-200 bg-white p-4">
+            <p className="text-sm font-semibold text-gray-800 mb-2">Competitor URLs</p>
+            <div className="space-y-2 opacity-50">
+              {['https://www.livemed.in', 'https://www.omronhealthcare.in'].map(url => (
+                <div key={url} className="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                  <span className="flex-1 truncate">{url}</span>
+                </div>
+              ))}
+            </div>
+            <p className="mt-3 text-xs text-gray-400">Competitor monitoring — coming soon</p>
+          </div>
+        </div>
+      </section>
+
+      {/* Coming soon integrations */}
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-base font-semibold text-gray-900">Future Integrations</h2>
+          <p className="text-sm text-gray-500">These will be available in upcoming releases</p>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {[
+            { name: 'Email (Klaviyo / Mailchimp)', desc: 'Revenue per email, sequence optimization, repeat purchase attribution', color: 'indigo' },
+            { name: 'Marketplace (Amazon / Flipkart)', desc: 'BSR tracking, review velocity, buy box intelligence', color: 'amber' },
+            { name: 'Search Console', desc: 'Brand search lift, keyword growth trends, geographic demand map', color: 'emerald' },
+              ].map(({ name, desc, color }) => (
+            <div key={name} className={`rounded-xl border border-${color}-200 bg-${color}-50/30 p-4`}>
+              <p className="text-sm font-semibold text-gray-900">{name}</p>
+              <p className="text-xs text-gray-500 mt-1">{desc}</p>
+              <span className={`mt-2 inline-block rounded-full bg-${color}-100 px-2 py-0.5 text-[10px] font-semibold text-${color}-700`}>Coming Soon</span>
+            </div>
+          ))}
         </div>
       </section>
 
@@ -250,6 +402,25 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
           workspaceId={workspaceId}
           onConnected={refresh}
           onClose={() => setShowYouTubeDialog(false)}
+        />
+      )}
+
+      {/* Google account switcher */}
+      {showGoogleAccountSelect && (
+        <GoogleAccountSelectDialog
+          workspaceId={workspaceId}
+          onSuccess={refresh}
+          onClose={() => setShowGoogleAccountSelect(false)}
+        />
+      )}
+
+      {/* Excel upload dialog */}
+      {showUpload && (
+        <ExcelUploadDialog
+          workspaceId={workspaceId}
+          platform={showUpload}
+          onSuccess={() => { setShowUpload(null); refresh() }}
+          onClose={() => setShowUpload(null)}
         />
       )}
     </div>

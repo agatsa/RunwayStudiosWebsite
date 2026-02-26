@@ -4,6 +4,7 @@ const SCOPES = [
   'https://www.googleapis.com/auth/adwords',
   'https://www.googleapis.com/auth/yt-analytics.readonly',
   'https://www.googleapis.com/auth/youtube.readonly',
+  'https://www.googleapis.com/auth/analytics.readonly',
 ].join(' ')
 
 export async function GET(req: NextRequest) {

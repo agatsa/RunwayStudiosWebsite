@@ -28,21 +28,15 @@ async function fetchWorkspaces(): Promise<Workspace[]> {
   }
 }
 
-async function fetchGoogleOAuthConfigured(): Promise<boolean> {
-  try {
-    const r = await fetchFromFastAPI('/admin/google-oauth-configured')
-    if (!r.ok) return false
-    const d = await r.json()
-    return d.configured === true
-  } catch {
-    return false
-  }
-}
-
 export default async function SettingsPage({ searchParams }: PageProps) {
   const workspaceId = searchParams.ws ?? ''
   const googleConnected = searchParams.google_connected === '1'
   const googleError = searchParams.google_error
+
+  // Check dashboard's own env var — this controls whether OAuth can actually start.
+  // No FastAPI round-trip needed; server components can read process.env directly.
+  const gClientId = process.env.GOOGLE_CLIENT_ID ?? ''
+  const googleOAuthConfigured = !!(gClientId && gClientId.toUpperCase() !== 'PLACEHOLDER')
 
   if (!workspaceId) {
     return (
@@ -52,10 +46,16 @@ export default async function SettingsPage({ searchParams }: PageProps) {
     )
   }
 
-  const [connectionsData, workspaces, googleOAuthConfigured] = await Promise.all([
+  const ga4StatusPromise = workspaceId
+    ? fetchFromFastAPI(`/ga4/status?workspace_id=${workspaceId}`)
+        .then(r => r.ok ? r.json() : null)
+        .catch(() => null)
+    : Promise.resolve(null)
+
+  const [connectionsData, workspaces, ga4Status] = await Promise.all([
     fetchConnections(workspaceId),
     fetchWorkspaces(),
-    fetchGoogleOAuthConfigured(),
+    ga4StatusPromise,
   ])
 
   const workspace = workspaces.find((w: Workspace) => w.id === workspaceId)
@@ -69,6 +69,8 @@ export default async function SettingsPage({ searchParams }: PageProps) {
       googleConnected={googleConnected}
       googleError={googleError}
       googleOAuthConfigured={googleOAuthConfigured}
+      ga4PropertyId={ga4Status?.property_id ?? null}
+      ga4Connected={!!(ga4Status?.connected && ga4Status?.has_property)}
     />
   )
 }

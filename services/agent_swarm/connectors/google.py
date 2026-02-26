@@ -16,7 +16,7 @@ Authentication:
     - customer_id      (Google Ads account ID, no dashes)
 
 API:
-  Uses Google Ads REST API v18 directly (no heavy google-ads library).
+  Uses Google Ads REST API v20 directly (no heavy google-ads library).
   All queries use GAQL (Google Ads Query Language).
 """
 
@@ -31,8 +31,8 @@ from services.agent_swarm.connectors.base import (
     PlatformConnector, CampaignSpec, MetricSnapshot,
 )
 
-# Google Ads REST API base
-_GOOGLE_ADS_BASE = "https://googleads.googleapis.com/v18"
+# Google Ads REST API base (v20 = stable as of early 2026; v18/v19 are sunset)
+_GOOGLE_ADS_BASE = "https://googleads.googleapis.com/v20"
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 _GOOGLE_CONTENT_BASE = "https://shoppingcontent.googleapis.com/content/v2.1"
 
@@ -211,7 +211,6 @@ class GoogleConnector(PlatformConnector):
                 metrics.absolute_top_impression_percentage
             FROM {resource}
             WHERE segments.date BETWEEN '{since}' AND '{until}'
-              AND metrics.impressions > 0
         """
 
         rows = self._gaql(query)
@@ -283,8 +282,12 @@ class GoogleConnector(PlatformConnector):
 
         return snapshots
 
-    def list_campaigns(self, status: str = "ENABLED") -> list[dict]:
-        """List campaigns with budget info."""
+    def list_campaigns(self, status: str = "ALL") -> list[dict]:
+        """List campaigns with budget info. status='ALL' returns enabled + paused."""
+        if status == "ALL":
+            where = "campaign.status IN ('ENABLED', 'PAUSED')"
+        else:
+            where = f"campaign.status = '{status}'"
         query = f"""
             SELECT
                 campaign.id,
@@ -296,7 +299,7 @@ class GoogleConnector(PlatformConnector):
                 metrics.cost_micros,
                 metrics.impressions
             FROM campaign
-            WHERE campaign.status = '{status}'
+            WHERE {where}
         """
         rows = self._gaql(query)
         result = []

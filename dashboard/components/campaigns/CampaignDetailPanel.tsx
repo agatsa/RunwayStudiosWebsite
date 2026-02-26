@@ -5,8 +5,43 @@ import { X, Lightbulb, Loader2 } from 'lucide-react'
 import { BarChart } from '@tremor/react'
 import { formatINR, formatNumber, formatROAS, formatPercent } from '@/lib/utils'
 import type { MetaCampaign, GoogleCampaign } from '@/lib/types'
+import CampaignBreakdown from './CampaignBreakdown'
 
-type Campaign = (MetaCampaign | GoogleCampaign) & { _platform: 'meta' | 'google' }
+type Campaign = (MetaCampaign | GoogleCampaign) & { _platform: 'meta' | 'google'; _source?: 'excel_upload' }
+
+interface KeywordRow {
+  id: string
+  keyword: string
+  match_type: string
+  ad_group_name: string
+  quality_score: number | null
+  spend: number
+  clicks: number
+  conversions: number
+  impressions: number
+  cpc: number
+  ctr: number
+}
+
+interface SearchTermRow {
+  id: string
+  search_term: string
+  keyword: string
+  match_type: string
+  spend: number
+  clicks: number
+  conversions: number
+}
+
+interface AdGroupRow {
+  id: string
+  name: string
+  spend: number
+  clicks: number
+  conversions: number
+  revenue: number
+  roas: number
+}
 
 interface Insights {
   campaign_id: string
@@ -20,6 +55,11 @@ interface Insights {
   ctr_total: number
   daily: { date: string; spend: number }[]
   suggestions: string[]
+  ad_groups?: AdGroupRow[]
+  keywords?: KeywordRow[]
+  search_terms?: SearchTermRow[]
+  has_keyword_data?: boolean
+  has_search_term_data?: boolean
 }
 
 interface Props {
@@ -38,15 +78,42 @@ function MetricTile({ label, value, sub }: { label: string; value: string; sub?:
   )
 }
 
+function QsBadge({ qs }: { qs: number | null }) {
+  if (qs === null) return <span className="text-gray-400">—</span>
+  const color = qs >= 7 ? 'text-green-700 bg-green-100' : qs >= 4 ? 'text-yellow-700 bg-yellow-100' : 'text-red-700 bg-red-100'
+  return (
+    <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold ${color}`}>
+      {qs}/10
+    </span>
+  )
+}
+
+function MatchBadge({ match }: { match: string }) {
+  const label = match === 'EXACT' ? 'Exact' : match === 'PHRASE' ? 'Phrase' : 'Broad'
+  const color = match === 'EXACT' ? 'bg-blue-100 text-blue-700' : match === 'PHRASE' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-600'
+  return (
+    <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${color}`}>
+      {label}
+    </span>
+  )
+}
+
+type Tab = 'overview' | 'keywords' | 'search_terms' | 'breakdown'
+
 export default function CampaignDetailPanel({ campaign, workspaceId, onClose }: Props) {
   const [insights, setInsights] = useState<Insights | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<Tab>('overview')
 
   useEffect(() => {
     setLoading(true)
     setError(null)
-    fetch(`/api/campaigns/insights/${campaign.id}?workspace_id=${workspaceId}&days=7&platform=${campaign._platform}`)
+    setActiveTab('overview')
+    const url = campaign._source === 'excel_upload'
+      ? `/api/upload/campaign-insights/${campaign.id}?workspace_id=${workspaceId}&days=365`
+      : `/api/campaigns/insights/${campaign.id}?workspace_id=${workspaceId}&days=7&platform=${campaign._platform}`
+    fetch(url)
       .then(r => r.json())
       .then(d => {
         if (d.detail) throw new Error(d.detail)
@@ -54,7 +121,7 @@ export default function CampaignDetailPanel({ campaign, workspaceId, onClose }: 
       })
       .catch(e => setError(e instanceof Error ? e.message : 'Failed to load'))
       .finally(() => setLoading(false))
-  }, [campaign.id, workspaceId, campaign._platform])
+  }, [campaign.id, workspaceId, campaign._platform, campaign._source])
 
   const isActive =
     campaign.status === 'ACTIVE' ||
@@ -64,6 +131,9 @@ export default function CampaignDetailPanel({ campaign, workspaceId, onClose }: 
     date: d.date.slice(5),
     'Spend (₹)': d.spend,
   }))
+
+  const showTabs = (campaign._source === 'excel_upload' && insights?.has_keyword_data) || campaign._platform === 'meta'
+  const showBreakdown = campaign._platform === 'meta' && campaign._source !== 'excel_upload'
 
   return (
     <>
@@ -103,6 +173,33 @@ export default function CampaignDetailPanel({ campaign, workspaceId, onClose }: 
           </button>
         </div>
 
+        {/* Tab bar */}
+        {showTabs && !loading && (
+          <div className="flex border-b border-gray-200 bg-gray-50 overflow-x-auto">
+            {([
+              'overview',
+              ...(campaign._source === 'excel_upload' && insights?.has_keyword_data ? ['keywords'] : []),
+              ...(campaign._source === 'excel_upload' && insights?.has_search_term_data ? ['search_terms'] : []),
+              ...(showBreakdown ? ['breakdown'] : []),
+            ] as Tab[]).map(tab => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`shrink-0 px-5 py-2.5 text-sm font-medium transition-colors ${
+                  activeTab === tab
+                    ? 'border-b-2 border-blue-600 text-blue-600 bg-white'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                {tab === 'overview' ? 'Overview'
+                  : tab === 'keywords' ? `Keywords (${insights?.keywords?.length ?? 0})`
+                  : tab === 'search_terms' ? `Search Terms (${insights?.search_terms?.length ?? 0})`
+                  : 'Breakdown'}
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Body */}
         {loading ? (
           <div className="flex flex-1 items-center justify-center gap-2 text-sm text-gray-400">
@@ -111,6 +208,12 @@ export default function CampaignDetailPanel({ campaign, workspaceId, onClose }: 
           </div>
         ) : error ? (
           <div className="p-5 text-sm text-red-500">{error}</div>
+        ) : activeTab === 'keywords' ? (
+          <KeywordsTab keywords={insights?.keywords ?? []} />
+        ) : activeTab === 'search_terms' ? (
+          <SearchTermsTab searchTerms={insights?.search_terms ?? []} />
+        ) : activeTab === 'breakdown' ? (
+          <CampaignBreakdown campaignId={campaign.id} workspaceId={workspaceId} />
         ) : (
           <div className="flex-1 space-y-6 p-5">
             {/* Today's spend */}
@@ -131,7 +234,7 @@ export default function CampaignDetailPanel({ campaign, workspaceId, onClose }: 
 
             {/* 7-day metrics grid */}
             <div>
-              <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">
+              <h3 className="mb-3 text-sm font-semibold text-gray-700">
                 Last 7 Days
               </h3>
               <div className="grid grid-cols-2 gap-2">
@@ -167,7 +270,7 @@ export default function CampaignDetailPanel({ campaign, workspaceId, onClose }: 
             {/* Spend trend chart */}
             {chartData.length > 0 && (
               <div>
-                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <h3 className="mb-3 text-sm font-semibold text-gray-700">
                   Daily Spend Trend
                 </h3>
                 <BarChart
@@ -187,7 +290,7 @@ export default function CampaignDetailPanel({ campaign, workspaceId, onClose }: 
             <div>
               <div className="mb-3 flex items-center gap-1.5">
                 <Lightbulb className="h-3.5 w-3.5 text-yellow-500" />
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <h3 className="text-sm font-semibold text-gray-700">
                   AI Suggestions
                 </h3>
               </div>
@@ -209,5 +312,118 @@ export default function CampaignDetailPanel({ campaign, workspaceId, onClose }: 
         )}
       </div>
     </>
+  )
+}
+
+// ── Keywords tab ──────────────────────────────────────────────────────────────
+
+function KeywordsTab({ keywords }: { keywords: KeywordRow[] }) {
+  if (!keywords.length) {
+    return <div className="p-8 text-center text-sm text-gray-400">No keyword data available.</div>
+  }
+
+  const sorted = [...keywords].sort((a, b) => b.spend - a.spend)
+
+  return (
+    <div className="flex-1 overflow-x-auto p-5">
+      <p className="mb-3 text-xs text-gray-500">
+        Rows in <span className="rounded bg-red-100 px-1 text-red-700">red</span> = spend &gt;₹1,000 with 0 conversions (wasted spend).
+      </p>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-gray-200 text-left text-gray-500">
+            <th className="pb-2 pr-3 font-medium">Keyword</th>
+            <th className="pb-2 pr-3 font-medium">Match</th>
+            <th className="pb-2 pr-3 font-medium">QS</th>
+            <th className="pb-2 pr-3 font-medium text-right">Spend</th>
+            <th className="pb-2 pr-3 font-medium text-right">CPC</th>
+            <th className="pb-2 pr-3 font-medium text-right">CTR</th>
+            <th className="pb-2 font-medium text-right">Conv</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map(kw => {
+            const isWasted = kw.spend > 1000 && kw.conversions === 0
+            return (
+              <tr
+                key={kw.id}
+                className={`border-b border-gray-100 ${isWasted ? 'bg-red-50' : 'hover:bg-gray-50'}`}
+              >
+                <td className="py-2 pr-3">
+                  <span className={`font-medium ${isWasted ? 'text-red-800' : 'text-gray-800'}`}>
+                    {kw.keyword}
+                  </span>
+                  {kw.ad_group_name && (
+                    <p className="text-gray-400 truncate max-w-[140px]">{kw.ad_group_name}</p>
+                  )}
+                </td>
+                <td className="py-2 pr-3">
+                  <MatchBadge match={kw.match_type} />
+                </td>
+                <td className="py-2 pr-3">
+                  <QsBadge qs={kw.quality_score} />
+                </td>
+                <td className={`py-2 pr-3 text-right font-medium ${isWasted ? 'text-red-700' : 'text-gray-900'}`}>
+                  {formatINR(kw.spend)}
+                </td>
+                <td className="py-2 pr-3 text-right text-gray-700">{formatINR(kw.cpc)}</td>
+                <td className="py-2 pr-3 text-right text-gray-700">{formatPercent(kw.ctr)}</td>
+                <td className="py-2 text-right text-gray-700">{kw.conversions}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// ── Search Terms tab ──────────────────────────────────────────────────────────
+
+function SearchTermsTab({ searchTerms }: { searchTerms: SearchTermRow[] }) {
+  if (!searchTerms.length) {
+    return <div className="p-8 text-center text-sm text-gray-400">No search term data available.</div>
+  }
+
+  const sorted = [...searchTerms].sort((a, b) => b.spend - a.spend)
+
+  return (
+    <div className="flex-1 overflow-x-auto p-5">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-gray-200 text-left text-gray-500">
+            <th className="pb-2 pr-3 font-medium">Search Term</th>
+            <th className="pb-2 pr-3 font-medium">Keyword</th>
+            <th className="pb-2 pr-3 font-medium text-right">Spend</th>
+            <th className="pb-2 pr-3 font-medium text-right">Clicks</th>
+            <th className="pb-2 font-medium text-right">Conv</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map(st => (
+            <tr key={st.id} className="border-b border-gray-100 hover:bg-gray-50">
+              <td className="py-2 pr-3 font-medium text-gray-800 max-w-[160px]">
+                <span className="block truncate">{st.search_term}</span>
+              </td>
+              <td className="py-2 pr-3 text-gray-500 max-w-[120px]">
+                {st.keyword ? (
+                  <span className="block truncate">
+                    {st.keyword}
+                    {st.match_type && (
+                      <span className="ml-1 text-gray-400">[{st.match_type.toLowerCase()}]</span>
+                    )}
+                  </span>
+                ) : (
+                  <span className="text-gray-300">—</span>
+                )}
+              </td>
+              <td className="py-2 pr-3 text-right font-medium text-gray-900">{formatINR(st.spend)}</td>
+              <td className="py-2 pr-3 text-right text-gray-700">{formatNumber(st.clicks)}</td>
+              <td className="py-2 text-right text-gray-700">{st.conversions}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }

@@ -389,12 +389,161 @@ async def hourly_run(request: Request):
             "results": results,
         })
 
+    # ── Google Ads ingestion (appended to every hourly run) ───────────────
+    google_ingest_results = _run_google_ingestion_all()
+
     return {
         "ok": True,
         "ts": datetime.now(timezone.utc).isoformat(),
         "tenants_processed": len(all_results),
         "results": all_results,
+        "google_ingestion": google_ingest_results,
     }
+
+
+def _run_google_ingestion_all() -> dict:
+    """
+    Ingest Google Ads campaign + ad_group metrics into kpi_hourly
+    for every workspace that has google_auth_tokens credentials.
+    Fetches yesterday + today (2-day window) to catch late-arriving data.
+    """
+    import json as _json
+    from datetime import date, timedelta
+
+    today = date.today()
+    since = (today - timedelta(days=1)).isoformat()
+    until = today.isoformat()
+
+    from services.agent_swarm.db import get_conn as _db
+    # Find all workspaces with Google credentials
+    try:
+        with _db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT workspace_id FROM google_auth_tokens")
+                ws_ids = [str(r[0]) for r in cur.fetchall()]
+    except Exception as e:
+        return {"error": f"DB lookup failed: {e}", "workspaces": []}
+
+    results = []
+    for ws_id in ws_ids:
+        r = _ingest_google_workspace(ws_id, since, until)
+        results.append(r)
+        print(f"[google_ingest] {ws_id}: {r.get('kpi_rows', 0)} rows, errors={r.get('errors')}")
+
+    return {"since": since, "until": until, "workspaces": results}
+
+
+def _ingest_google_workspace(workspace_id: str, since: str, until: str) -> dict:
+    """Ingest Google Ads data for a single workspace into kpi_hourly."""
+    import json as _json
+
+    conn_row = _get_google_conn_from_db(workspace_id)
+    if not conn_row:
+        return {"workspace_id": workspace_id, "error": "no credentials", "kpi_rows": 0}
+
+    from services.agent_swarm.db import get_conn as _db
+    with _db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, name, timezone, currency FROM workspaces WHERE id = %s",
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+    if not row:
+        return {"workspace_id": workspace_id, "error": "workspace not found", "kpi_rows": 0}
+
+    workspace_dict = {
+        "id": str(row[0]),
+        "name": row[1] or "",
+        "timezone": row[2] or "Asia/Kolkata",
+        "currency": row[3] or "INR",
+    }
+
+    from services.agent_swarm.connectors.google import GoogleConnector
+    gc = GoogleConnector(conn_row, workspace_dict)
+
+    total_rows = 0
+    errors = []
+
+    for entity_level in ("campaign", "ad_group"):
+        try:
+            snapshots = gc.fetch_metrics(since=since, until=until, entity_level=entity_level)
+            if not snapshots:
+                continue
+            with _db() as conn:
+                with conn.cursor() as cur:
+                    for s in snapshots:
+                        cur.execute(
+                            """
+                            INSERT INTO kpi_hourly (
+                                workspace_id, platform, account_id,
+                                entity_level, entity_id, entity_name,
+                                hour_ts,
+                                spend, impressions, clicks, conversions, revenue,
+                                ctr, cpm, cpc, roas, raw_json
+                            ) VALUES (
+                                %s, %s, %s, %s, %s, %s, %s,
+                                %s, %s, %s, %s, %s,
+                                %s, %s, %s, %s, %s
+                            )
+                            ON CONFLICT (platform, account_id, entity_level, entity_id, hour_ts)
+                            DO UPDATE SET
+                                workspace_id = EXCLUDED.workspace_id,
+                                entity_name  = EXCLUDED.entity_name,
+                                spend        = EXCLUDED.spend,
+                                impressions  = EXCLUDED.impressions,
+                                clicks       = EXCLUDED.clicks,
+                                conversions  = EXCLUDED.conversions,
+                                revenue      = EXCLUDED.revenue,
+                                ctr          = EXCLUDED.ctr,
+                                cpm          = EXCLUDED.cpm,
+                                cpc          = EXCLUDED.cpc,
+                                roas         = EXCLUDED.roas,
+                                raw_json     = EXCLUDED.raw_json,
+                                updated_at   = NOW()
+                            """,
+                            (
+                                workspace_id, s.platform, s.account_id,
+                                s.entity_level, s.entity_id, s.entity_name,
+                                s.hour_ts,
+                                s.spend, s.impressions, s.clicks,
+                                s.conversions, s.revenue,
+                                s.ctr, s.cpm, s.cpc, s.roas,
+                                _json.dumps(s.raw_json) if s.raw_json else None,
+                            ),
+                        )
+                    total_rows += len(snapshots)
+        except Exception as e:
+            errors.append(f"{entity_level}: {e}")
+
+    return {
+        "workspace_id": workspace_id,
+        "since": since,
+        "until": until,
+        "kpi_rows": total_rows,
+        "errors": errors,
+    }
+
+
+@app.post("/cron/google/ingest")
+async def google_ingest_endpoint(request: Request):
+    """Manual trigger: ingest Google Ads data for all workspaces right now."""
+    _auth(request)
+    from datetime import date, timedelta
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    days_back = int(body.get("days_back", 1))
+    today = date.today()
+    since = (today - timedelta(days=days_back)).isoformat()
+    until = today.isoformat()
+    workspace_id = body.get("workspace_id")
+    if workspace_id:
+        result = _ingest_google_workspace(workspace_id, since, until)
+        return {"ok": True, "result": result}
+    return {"ok": True, **_run_google_ingestion_all()}
 
 
 # ── LP Audit Cache — receives results from LP Auditor web tool ─────────────
@@ -1076,8 +1225,12 @@ async def handle_approval(request: Request):
     Body: {action_id, decision, phone_number_id?}
     """
     body = await request.json()
-    action_short_id = body.get("action_id", "").strip().lower()
-    decision = body.get("decision", "").strip().lower()
+    # Accept both field name formats:
+    # WhatsApp bot sends: {action_id: short_prefix, decision: approve/reject}
+    # Dashboard UI sends: {action_log_id: full_uuid, response: YES/NO}
+    action_short_id = (body.get("action_id") or body.get("action_log_id") or "").strip().lower()
+    decision_raw = body.get("decision") or body.get("response", "")
+    decision = "approve" if str(decision_raw).upper() in ("APPROVE", "YES") else "reject"
 
     if not action_short_id or decision not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="Invalid payload")
@@ -1818,6 +1971,300 @@ async def google_connect(request: Request):
     return {"ok": True, "workspace_id": workspace_id, "customer_id": customer_id}
 
 
+@app.get("/google/debug-customers")
+async def google_debug_customers(request: Request, workspace_id: str = None):
+    """
+    Diagnostic: list all accessible Google Ads customers for a workspace
+    and show which are manager (MCC) vs real ad accounts.
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    conn_row = _get_google_conn_from_db(workspace_id)
+    if not conn_row:
+        raise HTTPException(status_code=404, detail="No Google credentials found")
+
+    import json as _json, requests as rq
+    from services.agent_swarm import config as cfg
+    from services.agent_swarm.connectors.google import GoogleConnector
+    workspace = get_workspace(workspace_id) or {}
+
+    gc = GoogleConnector(conn_row, workspace)
+    try:
+        access_token = gc._refresh_access_token()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Token refresh failed: {e}")
+
+    developer_token = conn_row.get("metadata", {}).get("developer_token", "")
+
+    # List all accessible customers
+    ads_resp = rq.get(
+        f"https://googleads.googleapis.com/{cfg.GOOGLE_ADS_API_VERSION}"
+        "/customers:listAccessibleCustomers",
+        headers={"Authorization": f"Bearer {access_token}", "developer-token": developer_token},
+        timeout=15,
+    )
+    if not ads_resp.ok:
+        raise HTTPException(status_code=502, detail=f"Google API error: {ads_resp.status_code} {ads_resp.text[:300]}")
+
+    resource_names = ads_resp.json().get("resourceNames", [])
+    candidates = [r.split("/")[-1] for r in resource_names]
+
+    # Check each candidate — try both with and without login-customer-id headers
+    details = []
+    for cid in candidates:
+        info = {"customer_id": cid, "tries": []}
+        # Try 1: no login-customer-id
+        # Try 2+: each other candidate as login-customer-id
+        for login_cid in [None] + [c for c in candidates if c != cid]:
+            hdr = {
+                "Authorization": f"Bearer {access_token}",
+                "developer-token": developer_token,
+                "Content-Type": "application/json",
+            }
+            if login_cid:
+                hdr["login-customer-id"] = login_cid
+            try:
+                qr = rq.post(
+                    f"https://googleads.googleapis.com/{cfg.GOOGLE_ADS_API_VERSION}"
+                    f"/customers/{cid}/googleAds:searchStream",
+                    headers=hdr,
+                    json={"query": "SELECT customer.id, customer.manager, customer.descriptive_name, customer.currency_code FROM customer LIMIT 1"},
+                    timeout=10,
+                )
+                attempt = {"login_customer_id": login_cid, "status": qr.status_code}
+                if qr.ok:
+                    attempt["success"] = True
+                    for line in qr.text.strip().splitlines():
+                        try:
+                            batch = _json.loads(line)
+                            for result_row in batch.get("results", []):
+                                cust = result_row.get("customer", {})
+                                attempt["manager"] = cust.get("manager", None)
+                                attempt["name"] = cust.get("descriptiveName", "")
+                                attempt["currency"] = cust.get("currencyCode", "")
+                        except Exception:
+                            pass
+                else:
+                    # Parse Google Ads error code for diagnosis
+                    try:
+                        err_body = _json.loads(qr.text)
+                        err_details = err_body[0].get("error", {}).get("details", []) if isinstance(err_body, list) else err_body.get("error", {}).get("details", [])
+                        for d in err_details:
+                            for e in d.get("errors", []):
+                                err_code = e.get("errorCode", {})
+                                if err_code:
+                                    attempt["ads_error_code"] = err_code
+                    except Exception:
+                        attempt["raw_error"] = qr.text[:500]
+                info["tries"].append(attempt)
+                if qr.ok:
+                    break  # found a working combo for this customer
+            except Exception as ce:
+                info["tries"].append({"login_customer_id": login_cid, "exception": str(ce)})
+        details.append(info)
+
+    current_id = conn_row.get("customer_id")
+    return {
+        "current_customer_id": current_id,
+        "all_candidates": candidates,
+        "details": details,
+    }
+
+
+@app.get("/google/accessible-customers")
+async def google_accessible_customers(request: Request, workspace_id: str = None):
+    """List all accessible Google Ads accounts for the account switcher UI."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    conn_row = _get_google_conn_from_db(workspace_id)
+    if not conn_row:
+        raise HTTPException(status_code=404, detail="No Google credentials found")
+
+    import json as _json, requests as rq
+    from services.agent_swarm import config as cfg
+    from services.agent_swarm.connectors.google import GoogleConnector
+    workspace = get_workspace(workspace_id) or {}
+
+    gc = GoogleConnector(conn_row, workspace)
+    try:
+        access_token = gc._refresh_access_token()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Token refresh failed: {e}")
+
+    developer_token = conn_row.get("metadata", {}).get("developer_token", "") or cfg.GOOGLE_DEVELOPER_TOKEN
+
+    # List accessible customers
+    ads_resp = rq.get(
+        f"https://googleads.googleapis.com/{cfg.GOOGLE_ADS_API_VERSION}/customers:listAccessibleCustomers",
+        headers={"Authorization": f"Bearer {access_token}", "developer-token": developer_token},
+        timeout=15,
+    )
+    if not ads_resp.ok:
+        raise HTTPException(status_code=502, detail=f"Google API error: {ads_resp.status_code} {ads_resp.text[:300]}")
+
+    resource_names = ads_resp.json().get("resourceNames", [])
+    candidates = [r.split("/")[-1] for r in resource_names]
+
+    current_cid = str(conn_row.get("customer_id") or "")
+    accounts = []
+    for cid in candidates:
+        name = cid  # default — shown if GAQL fails (test token)
+        is_manager = False
+        # Try GAQL for descriptive name; fails gracefully with test developer token
+        try:
+            gaql_resp = rq.post(
+                f"https://googleads.googleapis.com/{cfg.GOOGLE_ADS_API_VERSION}"
+                f"/customers/{cid}/googleAds:searchStream",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "developer-token": developer_token,
+                    "login-customer-id": cid,
+                    "Content-Type": "application/json",
+                },
+                json={"query": "SELECT customer.id, customer.descriptive_name, customer.manager FROM customer LIMIT 1"},
+                timeout=10,
+            )
+            if gaql_resp.status_code == 200:
+                for line in gaql_resp.text.strip().splitlines():
+                    try:
+                        batch = _json.loads(line)
+                        for result_row in batch.get("results", []):
+                            customer = result_row.get("customer", {})
+                            name = customer.get("descriptiveName", cid) or cid
+                            is_manager = customer.get("manager", False)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        accounts.append({
+            "customer_id": cid,
+            "name": name,
+            "is_manager": is_manager,
+            "is_current": cid == current_cid,
+        })
+
+    return {"workspace_id": workspace_id, "current_customer_id": current_cid, "accounts": accounts}
+
+
+@app.post("/google/select-customer")
+async def google_select_customer(request: Request):
+    """Update the active Google Ads customer_id for a workspace (account switcher)."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    customer_id = body.get("customer_id")
+    if not workspace_id or not customer_id:
+        raise HTTPException(status_code=400, detail="workspace_id and customer_id required")
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE google_auth_tokens SET customer_id=%s, updated_at=NOW() WHERE workspace_id=%s",
+                (str(customer_id), workspace_id),
+            )
+        conn.commit()
+    return {"ok": True, "customer_id": customer_id}
+
+
+@app.post("/google/rediscover-customer")
+async def google_rediscover_customer(request: Request):
+    """
+    Re-discover the correct Google Ads customer_id using the stored refresh token.
+    Prefers non-manager (real ad) accounts over manager (MCC) accounts.
+    Updates google_auth_tokens in the DB.
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    conn_row = _get_google_conn_from_db(workspace_id)
+    if not conn_row:
+        raise HTTPException(status_code=404, detail="No Google credentials found")
+
+    import json as _json, requests as rq
+    from services.agent_swarm import config as cfg
+    from services.agent_swarm.connectors.google import GoogleConnector
+    workspace = get_workspace(workspace_id) or {}
+
+    gc = GoogleConnector(conn_row, workspace)
+    try:
+        access_token = gc._refresh_access_token()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Token refresh failed: {e}")
+
+    developer_token = conn_row.get("metadata", {}).get("developer_token", "")
+
+    # List all accessible customers
+    ads_resp = rq.get(
+        f"https://googleads.googleapis.com/{cfg.GOOGLE_ADS_API_VERSION}"
+        "/customers:listAccessibleCustomers",
+        headers={"Authorization": f"Bearer {access_token}", "developer-token": developer_token},
+        timeout=15,
+    )
+    if not ads_resp.ok:
+        raise HTTPException(status_code=502, detail=f"Google API error: {ads_resp.status_code}")
+
+    resource_names = ads_resp.json().get("resourceNames", [])
+    candidates = [r.split("/")[-1] for r in resource_names]
+
+    non_managers, managers = [], []
+    for cid in candidates:
+        try:
+            qr = rq.post(
+                f"https://googleads.googleapis.com/{cfg.GOOGLE_ADS_API_VERSION}"
+                f"/customers/{cid}/googleAds:searchStream",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "developer-token": developer_token,
+                    "Content-Type": "application/json",
+                },
+                json={"query": "SELECT customer.id, customer.manager, customer.descriptive_name FROM customer LIMIT 1"},
+                timeout=10,
+            )
+            if qr.ok:
+                for line in qr.text.strip().splitlines():
+                    try:
+                        batch = _json.loads(line)
+                        for result_row in batch.get("results", []):
+                            is_mgr = result_row.get("customer", {}).get("manager", False)
+                            (managers if is_mgr else non_managers).append(cid)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    new_customer_id = (non_managers or managers or candidates[:1] or [None])[0]
+    if not new_customer_id:
+        raise HTTPException(status_code=422, detail="No accessible customer IDs found")
+
+    old_customer_id = conn_row.get("customer_id")
+
+    from services.agent_swarm.db import get_conn as _db
+    with _db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE google_auth_tokens SET customer_id = %s, updated_at = NOW() WHERE workspace_id = %s",
+                (new_customer_id, workspace_id),
+            )
+
+    return {
+        "ok": True,
+        "workspace_id": workspace_id,
+        "old_customer_id": old_customer_id,
+        "new_customer_id": new_customer_id,
+        "all_candidates": candidates,
+        "non_managers": non_managers,
+        "managers": managers,
+        "updated": old_customer_id != new_customer_id,
+    }
+
+
 @app.get("/google/campaigns")
 async def google_list_campaigns(request: Request, workspace_id: str = None):
     """List active Google campaigns for a workspace."""
@@ -2156,7 +2603,9 @@ async def kpi_summary(
     from services.agent_swarm.db import get_conn
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # Daily breakdown by platform
+            # Daily breakdown by platform.
+            # Use the most granular entity_level available per platform to avoid
+            # double-counting: Meta ingests at 'ad' level, Google at 'campaign'.
             cur.execute(
                 """
                 SELECT platform,
@@ -2175,7 +2624,10 @@ async def kpi_summary(
                 FROM kpi_hourly
                 WHERE workspace_id = %s
                   AND hour_ts >= NOW() - INTERVAL '%s days'
-                  AND entity_level = 'ad'
+                  AND (
+                    (platform = 'meta'   AND entity_level IN ('ad', 'campaign'))
+                    OR (platform = 'google' AND entity_level = 'campaign')
+                  )
                 GROUP BY platform, DATE_TRUNC('day', hour_ts)::DATE
                 ORDER BY date ASC, platform
                 """,
@@ -2184,7 +2636,10 @@ async def kpi_summary(
             cols = [d[0] for d in cur.description]
             daily = [dict(zip(cols, r)) for r in cur.fetchall()]
 
-            # Platform-level totals
+            # Platform-level totals — uses the same time window as the daily chart
+            # so the filter buttons actually change the numbers shown.
+            # For excel-upload Google data (stored with historical hour_ts), it will
+            # naturally appear when the selected window covers those dates (e.g. 90d / 365d).
             cur.execute(
                 """
                 SELECT platform,
@@ -2202,7 +2657,10 @@ async def kpi_summary(
                 FROM kpi_hourly
                 WHERE workspace_id = %s
                   AND hour_ts >= NOW() - INTERVAL '%s days'
-                  AND entity_level = 'ad'
+                  AND (
+                    (platform = 'meta'   AND entity_level IN ('ad', 'campaign'))
+                    OR (platform = 'google' AND entity_level = 'campaign')
+                  )
                 GROUP BY platform
                 """,
                 (workspace_id, days),
@@ -2839,9 +3297,60 @@ async def youtube_channel_stats(
 
     yc, workspace = _get_youtube_connector(workspace_id)
 
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone as _tz
     since = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
     until = datetime.utcnow().strftime("%Y-%m-%d")
+
+    # ── Cache check: return from DB if data is < 4 hours old ──────────────────
+    try:
+        from services.agent_swarm.db import get_conn
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT MAX(updated_at) FROM youtube_channel_stats
+                    WHERE workspace_id = %s
+                    """,
+                    (workspace_id,),
+                )
+                last_updated = cur.fetchone()[0]
+
+        if last_updated and (datetime.now(_tz.utc) - last_updated.replace(tzinfo=_tz.utc)).total_seconds() < 14400:
+            # Return cached data from DB
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT date, views, watch_time_minutes, subscribers_gained,
+                               subscribers_lost, impressions, impression_ctr
+                        FROM youtube_channel_stats
+                        WHERE workspace_id = %s
+                          AND date >= %s::date AND date <= %s::date
+                        ORDER BY date
+                        """,
+                        (workspace_id, since, until),
+                    )
+                    cols = ["date", "views", "watch_time_minutes", "subscribers_gained",
+                            "subscribers_lost", "impressions", "impression_ctr"]
+                    cached_daily = [dict(zip(cols, r)) for r in cur.fetchall()]
+                    for row in cached_daily:
+                        if hasattr(row["date"], "strftime"):
+                            row["date"] = row["date"].strftime("%Y-%m-%d")
+                        row["impression_ctr"] = float(row["impression_ctr"] or 0)
+
+            channel_info = yc.get_channel_info()  # lightweight API key call
+            return {
+                "channel": channel_info,
+                "daily": cached_daily,
+                "analytics_available": yc.has_oauth,
+                "since": since,
+                "until": until,
+                "workspace_id": workspace_id,
+                "from_cache": True,
+            }
+    except Exception as e:
+        print(f"YouTube cache check error (non-fatal): {e}")
+    # ── End cache check ────────────────────────────────────────────────────────
 
     # Channel info
     try:
@@ -2918,6 +3427,42 @@ async def youtube_videos(request: Request, workspace_id: str = None):
         raise HTTPException(status_code=400, detail="workspace_id required")
 
     yc, workspace = _get_youtube_connector(workspace_id)
+
+    # ── Cache check: return from DB if videos were refreshed < 4 hours ago ────
+    try:
+        from services.agent_swarm.db import get_conn
+        from datetime import datetime, timezone as _tz2
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT MAX(updated_at) FROM youtube_videos WHERE workspace_id = %s",
+                    (workspace_id,),
+                )
+                last_vid_update = cur.fetchone()[0]
+
+        if last_vid_update and (datetime.now(_tz2.utc) - last_vid_update.replace(tzinfo=_tz2.utc)).total_seconds() < 14400:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT video_id, title, description, tags, thumbnail_url,
+                               published_at, duration_seconds, view_count, like_count, comment_count
+                        FROM youtube_videos
+                        WHERE workspace_id = %s
+                        ORDER BY view_count DESC LIMIT 50
+                        """,
+                        (workspace_id,),
+                    )
+                    cols = ["video_id","title","description","tags","thumbnail_url",
+                            "published_at","duration_seconds","view_count","like_count","comment_count"]
+                    cached_videos = [dict(zip(cols, r)) for r in cur.fetchall()]
+                    for v in cached_videos:
+                        if hasattr(v.get("published_at"), "isoformat"):
+                            v["published_at"] = v["published_at"].isoformat()
+            return {"videos": cached_videos, "count": len(cached_videos), "workspace_id": workspace_id, "from_cache": True}
+    except Exception as e:
+        print(f"YouTube videos cache check error (non-fatal): {e}")
+    # ── End cache check ────────────────────────────────────────────────────────
 
     try:
         videos = yc.fetch_video_list(limit=50)
@@ -3224,21 +3769,39 @@ async def google_oauth_save(request: Request):
     from services.agent_swarm import config as cfg
     import requests as rq
 
-    client_id = cfg.GOOGLE_CLIENT_ID
-    client_secret = cfg.GOOGLE_CLIENT_SECRET
+    # Accept client credentials from request body (sent by dashboard callback)
+    # so that agent-swarm doesn't need GOOGLE_CLIENT_ID/SECRET as its own env vars.
+    def _is_real(v: str) -> bool:
+        return bool(v and v.strip().upper() not in ("", "PLACEHOLDER"))
+
+    client_id = cfg.GOOGLE_CLIENT_ID if _is_real(cfg.GOOGLE_CLIENT_ID) else body.get("client_id", "")
+    client_secret = cfg.GOOGLE_CLIENT_SECRET if _is_real(cfg.GOOGLE_CLIENT_SECRET) else body.get("client_secret", "")
     developer_token = cfg.GOOGLE_DEVELOPER_TOKEN
 
-    if not client_id or not client_secret or not developer_token:
+    if not _is_real(client_id) or not _is_real(client_secret):
         raise HTTPException(
             status_code=500,
             detail=(
-                "GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_DEVELOPER_TOKEN "
-                "must be set in the server environment"
+                "Google OAuth client credentials not found. "
+                "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET on the dashboard service."
+            ),
+        )
+
+    if not _is_real(developer_token):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "GOOGLE_DEVELOPER_TOKEN must be set in the agent-swarm environment. "
+                "Get it from Google Ads → Tools → API Center → Developer Token."
             ),
         )
 
     # ── Auto-discover Google Ads customer IDs ────────────────────
+    # Prefer non-manager (real ad account) over manager (MCC) accounts.
+    # listAccessibleCustomers may return the MCC first — always check each
+    # candidate with a GAQL query for customer.manager flag.
     customer_id = None
+    import json as _json
     try:
         ads_resp = rq.get(
             f"https://googleads.googleapis.com/{cfg.GOOGLE_ADS_API_VERSION}"
@@ -3249,11 +3812,43 @@ async def google_oauth_save(request: Request):
             },
             timeout=15,
         )
+        print(f"[oauth/save] Ads API status={ads_resp.status_code} body={ads_resp.text[:500]}")
         if ads_resp.status_code == 200:
             resource_names = ads_resp.json().get("resourceNames", [])
-            if resource_names:
-                # "customers/1234567890" → extract the ID
-                customer_id = resource_names[0].split("/")[-1]
+            candidates = [r.split("/")[-1] for r in resource_names]
+            print(f"[oauth/save] accessible customers: {candidates}")
+            non_managers, managers = [], []
+            for cid in candidates:
+                try:
+                    qr = rq.post(
+                        f"https://googleads.googleapis.com/{cfg.GOOGLE_ADS_API_VERSION}"
+                        f"/customers/{cid}/googleAds:searchStream",
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "developer-token": developer_token,
+                            "Content-Type": "application/json",
+                        },
+                        json={"query": "SELECT customer.id, customer.manager, customer.descriptive_name FROM customer LIMIT 1"},
+                        timeout=10,
+                    )
+                    if qr.ok:
+                        for line in qr.text.strip().splitlines():
+                            try:
+                                batch = _json.loads(line)
+                                for result_row in batch.get("results", []):
+                                    cust = result_row.get("customer", {})
+                                    is_mgr = cust.get("manager", False)
+                                    name = cust.get("descriptiveName", cid)
+                                    print(f"[oauth/save] cid={cid} name={name!r} manager={is_mgr}")
+                                    (managers if is_mgr else non_managers).append(cid)
+                            except Exception:
+                                pass
+                    else:
+                        print(f"[oauth/save] cid={cid} GAQL {qr.status_code}: {qr.text[:200]}")
+                except Exception as ce:
+                    print(f"[oauth/save] cid={cid} check error: {ce}")
+            customer_id = (non_managers or managers or candidates[:1] or [None])[0]
+            print(f"[oauth/save] chosen customer_id={customer_id} non_managers={non_managers} managers={managers}")
     except Exception as e:
         print(f"[oauth/save] customer discovery error: {e}")
 
@@ -3273,6 +3868,15 @@ async def google_oauth_save(request: Request):
     except Exception as e:
         print(f"[oauth/save] YouTube channel discovery error: {e}")
 
+    # ── Auto-discover GA4 property ID ────────────────────────────
+    ga4_property_id = None
+    try:
+        from services.agent_swarm.connectors.ga4 import GA4Connector
+        ga4_property_id = GA4Connector.discover_property_id(access_token)
+        print(f"[oauth/save] GA4 property_id={ga4_property_id}")
+    except Exception as e:
+        print(f"[oauth/save] GA4 property discovery error: {e}")
+
     if not customer_id:
         raise HTTPException(
             status_code=422,
@@ -3285,42 +3889,46 @@ async def google_oauth_save(request: Request):
     from services.agent_swarm.db import get_conn
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # Save to google_auth_tokens (same schema as manual /google/connect)
+            # Delete existing row for this workspace, then insert fresh.
+            # Avoids ON CONFLICT which requires a DB-level UNIQUE constraint.
+            cur.execute(
+                "DELETE FROM google_auth_tokens WHERE workspace_id = %s",
+                (workspace_id,),
+            )
             cur.execute(
                 """
                 INSERT INTO google_auth_tokens
                     (workspace_id, customer_id, developer_token,
-                     client_id, client_secret, refresh_token, access_token)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (workspace_id, customer_id)
-                DO UPDATE SET
-                    developer_token = EXCLUDED.developer_token,
-                    client_id       = EXCLUDED.client_id,
-                    client_secret   = EXCLUDED.client_secret,
-                    refresh_token   = EXCLUDED.refresh_token,
-                    access_token    = EXCLUDED.access_token,
-                    updated_at      = NOW()
+                     client_id, client_secret, refresh_token, access_token,
+                     ga4_property_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     workspace_id, customer_id, developer_token,
                     client_id, client_secret, refresh_token, access_token,
+                    ga4_property_id,
                 ),
             )
 
-            # Auto-save YouTube channel ID to platform_connections if discovered
+            # Auto-save YouTube channel ID to platform_connections if discovered.
+            # Clear stale YouTube data so the new channel loads fresh on next visit.
             if youtube_channel_id:
+                cur.execute(
+                    "DELETE FROM platform_connections WHERE workspace_id = %s AND platform = 'youtube'",
+                    (workspace_id,),
+                )
                 cur.execute(
                     """
                     INSERT INTO platform_connections
                         (workspace_id, platform, account_id)
                     VALUES (%s, 'youtube', %s)
-                    ON CONFLICT (workspace_id, platform)
-                    DO UPDATE SET
-                        account_id = EXCLUDED.account_id,
-                        updated_at = NOW()
                     """,
                     (workspace_id, youtube_channel_id),
                 )
+                # Clear cached YouTube analytics so stale data from a previous
+                # channel doesn't show until the new channel is fetched.
+                for tbl in ("youtube_video_stats", "youtube_videos", "youtube_channel_stats", "youtube_growth_actions"):
+                    cur.execute(f"DELETE FROM {tbl} WHERE workspace_id = %s", (workspace_id,))
 
     result: dict = {
         "ok": True,
@@ -3329,4 +3937,3221 @@ async def google_oauth_save(request: Request):
     }
     if youtube_channel_id:
         result["youtube_channel_id"] = youtube_channel_id
+    if ga4_property_id:
+        result["ga4_property_id"] = ga4_property_id
     return result
+
+
+# ── Excel KPI Upload ─────────────────────────────────────────────────────────
+
+def _slugify(text: str) -> str:
+    """Convert campaign name to a stable slug for entity_id."""
+    import re
+    text = text.lower().strip()
+    text = re.sub(r'[^a-z0-9\s-]', '', text)
+    text = re.sub(r'[\s-]+', '-', text)
+    return text[:120]
+
+
+@app.post("/upload/excel-kpis")
+async def upload_excel_kpis(request: Request):
+    """
+    Upsert KPI rows from an Excel/CSV upload into kpi_hourly + entities_snapshot.
+    Body: { workspace_id, platform, entity_level, rows: [{date, campaign_name, spend, ...}] }
+    entity_level: "campaign" (default) | "ad_group" | "keyword" | "search_term"
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    platform = body.get("platform", "meta")
+    entity_level = body.get("entity_level", "campaign")
+    rows = body.get("rows", [])
+
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    if not rows:
+        raise HTTPException(status_code=400, detail="No rows provided")
+    if entity_level not in ("campaign", "ad_group", "keyword", "search_term", "geo", "device", "hour_of_day", "asset"):
+        raise HTTPException(status_code=400, detail=f"Invalid entity_level: {entity_level}")
+
+    from services.agent_swarm.db import get_conn
+    from datetime import datetime, date as _date
+    import json as _json
+
+    upserted = 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for row in rows:
+                # ── Date parsing ─────────────────────────────────────────────
+                date_str = str(row.get("date", "")).strip()
+                try:
+                    dt = datetime.strptime(date_str, "%Y-%m-%d")
+                    hour_ts = dt.replace(hour=12)
+                except ValueError:
+                    # Use today as fallback for aggregate rows without dates
+                    hour_ts = datetime.combine(_date.today(), datetime.min.time()).replace(hour=12)
+
+                spend = float(row.get("spend") or 0)
+                impressions = int(row.get("impressions") or 0)
+                clicks = int(row.get("clicks") or 0)
+                conversions = float(row.get("conversions") or 0)
+                revenue = float(row.get("revenue") or 0)
+                ctr = round(clicks / impressions * 100, 4) if impressions > 0 else 0.0
+                cpm = round(spend / impressions * 1000, 4) if impressions > 0 else 0.0
+                cpc = round(spend / clicks, 4) if clicks > 0 else 0.0
+                roas = round(revenue / spend, 4) if spend > 0 else 0.0
+
+                # ── Per-level entity resolution ───────────────────────────────
+                extra_json = None
+                qs = None
+
+                if entity_level == "campaign":
+                    campaign_name = str(row.get("campaign_name", "")).strip()
+                    if not campaign_name:
+                        continue
+                    entity_id = _slugify(campaign_name)
+                    entity_name = campaign_name
+
+                elif entity_level == "ad_group":
+                    campaign_name = str(row.get("campaign_name", "")).strip()
+                    ad_group_name = str(row.get("ad_group_name", "")).strip()
+                    if not campaign_name or not ad_group_name:
+                        continue
+                    campaign_id = _slugify(campaign_name)
+                    entity_id = _slugify(campaign_name + "__" + ad_group_name)
+                    entity_name = ad_group_name
+                    extra_json = _json.dumps({
+                        "campaign_id": campaign_id,
+                        "campaign_name": campaign_name,
+                        "ad_group_name": ad_group_name,
+                    })
+
+                elif entity_level == "keyword":
+                    campaign_name = str(row.get("campaign_name", "")).strip()
+                    ad_group_name = str(row.get("ad_group_name", "")).strip()
+                    keyword = str(row.get("keyword", "")).strip()
+                    match_type = str(row.get("match_type", "BROAD")).strip().upper() or "BROAD"
+                    if not keyword:
+                        continue
+                    qs_raw = row.get("quality_score")
+                    try:
+                        qs = int(float(qs_raw)) if qs_raw not in (None, "", "--", " --") else None
+                    except (ValueError, TypeError):
+                        qs = None
+                    imp_share = row.get("impression_share")
+                    campaign_id = _slugify(campaign_name) if campaign_name else ""
+                    ad_group_id = _slugify(campaign_name + "__" + ad_group_name) if ad_group_name else campaign_id
+                    entity_id = _slugify(campaign_name + "__" + ad_group_name + "__" + keyword + "__" + match_type)
+                    entity_name = keyword
+                    extra_json = _json.dumps({
+                        "campaign_id": campaign_id,
+                        "ad_group_id": ad_group_id,
+                        "ad_group_name": ad_group_name,
+                        "keyword": keyword,
+                        "match_type": match_type,
+                        "quality_score": qs,
+                        "impression_share": str(imp_share) if imp_share not in (None, "") else None,
+                    })
+
+                elif entity_level == "search_term":
+                    search_term = str(row.get("search_term", "")).strip()
+                    if not search_term:
+                        continue
+                    campaign_name = str(row.get("campaign_name", "")).strip()
+                    campaign_id = _slugify(campaign_name) if campaign_name else ""
+                    keyword = str(row.get("keyword", "")).strip()
+                    match_type = str(row.get("match_type", "")).strip().upper()
+                    ad_group_name = str(row.get("ad_group_name", "")).strip()
+                    entity_id = _slugify(search_term[:100])
+                    entity_name = search_term[:200]
+                    extra_json = _json.dumps({
+                        "campaign_id": campaign_id,
+                        "campaign_name": campaign_name,
+                        "search_term": search_term,
+                        "keyword": keyword,
+                        "match_type": match_type,
+                        "ad_group_name": ad_group_name,
+                    })
+
+                elif entity_level == "geo":
+                    region = str(row.get("region", "Unknown")).strip() or "Unknown"
+                    campaign_name = str(row.get("campaign_name", "")).strip()
+                    entity_id = _slugify(f"{campaign_name}__{region}")
+                    entity_name = region
+                    extra_json = _json.dumps({
+                        "campaign_name": campaign_name,
+                        "region": region,
+                    })
+
+                elif entity_level == "device":
+                    device = str(row.get("device", "Unknown")).strip() or "Unknown"
+                    campaign_name = str(row.get("campaign_name", "")).strip()
+                    entity_id = _slugify(f"{campaign_name}__{device}")
+                    entity_name = device
+                    extra_json = _json.dumps({
+                        "campaign_name": campaign_name,
+                        "device": device,
+                    })
+
+                elif entity_level == "hour_of_day":
+                    try:
+                        hour = int(float(row.get("hour") or 0))
+                    except (ValueError, TypeError):
+                        hour = 0
+                    day = str(row.get("day_of_week", "Monday")).strip() or "Monday"
+                    campaign_name = str(row.get("campaign_name", "")).strip()
+                    entity_id = f"{day[:3].lower()}_{hour:02d}"
+                    entity_name = f"{day} {hour:02d}:00"
+                    extra_json = _json.dumps({
+                        "hour": hour,
+                        "day_of_week": day,
+                        "campaign_name": campaign_name,
+                    })
+
+                elif entity_level == "asset":
+                    asset_text = str(row.get("asset_text", ""))[:200].strip()
+                    if not asset_text:
+                        continue
+                    asset_type = str(row.get("asset_type", "Headline")).strip() or "Headline"
+                    perf_label = str(row.get("performance_label", "N/A")).upper().strip() or "N/A"
+                    campaign_name = str(row.get("campaign_name", "")).strip()
+                    ad_group_name = str(row.get("ad_group_name", "")).strip()
+                    entity_id = _slugify(f"{campaign_name}__{ad_group_name}__{asset_type}__{asset_text[:50]}")
+                    entity_name = asset_text
+                    # Override: assets have no spend/revenue metrics
+                    spend = 0.0
+                    revenue = 0.0
+                    roas = 0.0
+                    cpc = 0.0
+                    extra_json = _json.dumps({
+                        "campaign_name": campaign_name,
+                        "ad_group_name": ad_group_name,
+                        "asset_type": asset_type,
+                        "performance_label": perf_label,
+                    })
+
+                else:
+                    continue  # unknown level — skip
+
+                # ── kpi_hourly upsert ─────────────────────────────────────────
+                if extra_json is not None:
+                    cur.execute(
+                        """
+                        INSERT INTO kpi_hourly
+                            (workspace_id, platform, account_id, entity_level, entity_id,
+                             entity_name, hour_ts, spend, impressions, clicks, conversions,
+                             revenue, ctr, cpm, cpc, roas, quality_score, raw_json)
+                        VALUES (%s,%s,'excel_upload',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CAST(%s AS jsonb))
+                        ON CONFLICT (platform, account_id, entity_level, entity_id, hour_ts)
+                        DO UPDATE SET
+                            spend = EXCLUDED.spend,
+                            impressions = EXCLUDED.impressions,
+                            clicks = EXCLUDED.clicks,
+                            conversions = EXCLUDED.conversions,
+                            revenue = EXCLUDED.revenue,
+                            ctr = EXCLUDED.ctr,
+                            cpm = EXCLUDED.cpm,
+                            cpc = EXCLUDED.cpc,
+                            roas = EXCLUDED.roas,
+                            entity_name = EXCLUDED.entity_name,
+                            quality_score = EXCLUDED.quality_score,
+                            raw_json = EXCLUDED.raw_json
+                        """,
+                        (workspace_id, platform, entity_level, entity_id, entity_name, hour_ts,
+                         spend, impressions, clicks, conversions, revenue,
+                         ctr, cpm, cpc, roas, qs, extra_json),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO kpi_hourly
+                            (workspace_id, platform, account_id, entity_level, entity_id,
+                             entity_name, hour_ts, spend, impressions, clicks, conversions,
+                             revenue, ctr, cpm, cpc, roas)
+                        VALUES (%s,%s,'excel_upload',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (platform, account_id, entity_level, entity_id, hour_ts)
+                        DO UPDATE SET
+                            spend = EXCLUDED.spend,
+                            impressions = EXCLUDED.impressions,
+                            clicks = EXCLUDED.clicks,
+                            conversions = EXCLUDED.conversions,
+                            revenue = EXCLUDED.revenue,
+                            ctr = EXCLUDED.ctr,
+                            cpm = EXCLUDED.cpm,
+                            cpc = EXCLUDED.cpc,
+                            roas = EXCLUDED.roas,
+                            entity_name = EXCLUDED.entity_name
+                        """,
+                        (workspace_id, platform, entity_level, entity_id, entity_name, hour_ts,
+                         spend, impressions, clicks, conversions, revenue,
+                         ctr, cpm, cpc, roas),
+                    )
+
+                # ── entities_snapshot upsert ──────────────────────────────────
+                cur.execute(
+                    """
+                    INSERT INTO entities_snapshot
+                        (workspace_id, platform, account_id, entity_level, entity_id, name, status)
+                    VALUES (%s,%s,'excel_upload',%s,%s,%s,'ACTIVE')
+                    ON CONFLICT (platform, entity_level, entity_id)
+                    DO UPDATE SET name = EXCLUDED.name, workspace_id = EXCLUDED.workspace_id
+                    """,
+                    (workspace_id, platform, entity_level, entity_id, entity_name),
+                )
+                upserted += 1
+
+        conn.commit()
+
+    return {"ok": True, "rows_upserted": upserted, "entity_level": entity_level, "platform": platform}
+
+
+# ── Auction Insights upload (separate table) ──────────────────────────────────
+
+@app.post("/upload/auction-insights")
+async def upload_auction_insights(request: Request):
+    """
+    Upload Auction Insights report to google_auction_insights table.
+    Body: { workspace_id, rows: [{competitor_domain, campaign_name?, impression_share, overlap_rate, ...}] }
+    Auto-detects account-level (no campaign_name) vs per-campaign rows.
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    rows = body.get("rows", [])
+
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    if not rows:
+        raise HTTPException(status_code=400, detail="No rows provided")
+
+    from services.agent_swarm.db import get_conn
+
+    def _pct(val):
+        """Parse percentage string like '32%' or decimal '0.32'."""
+        if val is None:
+            return None
+        s = str(val).replace('%', '').strip()
+        if s in ('', '--', ' --'):
+            return None
+        try:
+            v = float(s)
+            if v < 2:  # decimal fraction → convert to percentage
+                v = v * 100
+            return round(v, 2)
+        except (ValueError, TypeError):
+            return None
+
+    upserted = 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for row in rows:
+                competitor = str(row.get("competitor_domain", "")).strip()
+                if not competitor:
+                    continue
+                campaign_name = str(row.get("campaign_name", "")).strip()
+
+                cur.execute(
+                    """
+                    INSERT INTO google_auction_insights
+                        (workspace_id, campaign_name, competitor_domain,
+                         impression_share, overlap_rate, position_above_rate,
+                         top_of_page_rate, abs_top_impression_pct, outranking_share,
+                         uploaded_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (workspace_id, campaign_name, competitor_domain)
+                    DO UPDATE SET
+                        impression_share    = EXCLUDED.impression_share,
+                        overlap_rate        = EXCLUDED.overlap_rate,
+                        position_above_rate = EXCLUDED.position_above_rate,
+                        top_of_page_rate    = EXCLUDED.top_of_page_rate,
+                        abs_top_impression_pct = EXCLUDED.abs_top_impression_pct,
+                        outranking_share    = EXCLUDED.outranking_share,
+                        uploaded_at         = NOW()
+                    """,
+                    (
+                        workspace_id, campaign_name, competitor,
+                        _pct(row.get("impression_share")),
+                        _pct(row.get("overlap_rate")),
+                        _pct(row.get("position_above_rate")),
+                        _pct(row.get("top_of_page_rate")),
+                        _pct(row.get("abs_top_impression_pct")),
+                        _pct(row.get("outranking_share")),
+                    ),
+                )
+                upserted += 1
+        conn.commit()
+
+    return {"ok": True, "rows_upserted": upserted}
+
+
+# ── GET endpoints for individual report types ─────────────────────────────────
+
+@app.get("/upload/google-report-status")
+async def upload_google_report_status(request: Request, workspace_id: str = None):
+    """Return last upload date + has_data for each Google Ads report type."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+
+    kpi_levels = ("campaign", "keyword", "search_term", "geo", "device", "hour_of_day", "asset")
+    status: dict = {}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for level in kpi_levels:
+                cur.execute(
+                    """
+                    SELECT MAX(hour_ts), COUNT(*)
+                    FROM kpi_hourly
+                    WHERE workspace_id = %s AND account_id = 'excel_upload' AND entity_level = %s
+                    """,
+                    (workspace_id, level),
+                )
+                last_ts, count = cur.fetchone()
+                status[level] = {
+                    "has_data": int(count or 0) > 0,
+                    "last_upload_date": last_ts.isoformat() if last_ts else None,
+                }
+
+            # Auction insights from separate table
+            cur.execute(
+                "SELECT MAX(uploaded_at), COUNT(*) FROM google_auction_insights WHERE workspace_id = %s",
+                (workspace_id,),
+            )
+            last_ts, count = cur.fetchone()
+            status["auction_insight"] = {
+                "has_data": int(count or 0) > 0,
+                "last_upload_date": last_ts.isoformat() if last_ts else None,
+            }
+
+    return status
+
+
+@app.get("/upload/google-geo")
+async def upload_google_geo(request: Request, workspace_id: str = None, days: int = 365):
+    """Return geographic breakdown from uploaded Geo report."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    entity_name AS region,
+                    raw_json->>'campaign_name' AS campaign_name,
+                    SUM(spend)       AS spend,
+                    SUM(impressions) AS impressions,
+                    SUM(clicks)      AS clicks,
+                    SUM(conversions) AS conversions,
+                    SUM(revenue)     AS revenue,
+                    CASE WHEN SUM(spend) > 0
+                         THEN ROUND(SUM(revenue)::NUMERIC / SUM(spend), 2) ELSE 0 END AS roas,
+                    CASE WHEN SUM(conversions) > 0
+                         THEN ROUND(SUM(spend)::NUMERIC / SUM(conversions), 2) ELSE NULL END AS cpa
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND account_id   = 'excel_upload'
+                  AND entity_level = 'geo'
+                  AND hour_ts >= NOW() - INTERVAL '%s days'
+                GROUP BY entity_name, raw_json->>'campaign_name'
+                ORDER BY spend DESC
+                LIMIT 50
+                """,
+                (workspace_id, days),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            cur.execute(
+                "SELECT MAX(hour_ts) FROM kpi_hourly WHERE workspace_id=%s AND account_id='excel_upload' AND entity_level='geo'",
+                (workspace_id,),
+            )
+            last_upload = cur.fetchone()[0]
+
+    geos = [
+        {
+            "region":        r["region"],
+            "campaign_name": r["campaign_name"] or "",
+            "spend":         float(r["spend"] or 0),
+            "impressions":   int(r["impressions"] or 0),
+            "clicks":        int(r["clicks"] or 0),
+            "conversions":   float(r["conversions"] or 0),
+            "revenue":       float(r["revenue"] or 0),
+            "roas":          float(r["roas"] or 0),
+            "cpa":           float(r["cpa"]) if r["cpa"] is not None else None,
+        }
+        for r in rows
+    ]
+    return {
+        "has_data": len(geos) > 0,
+        "last_upload_date": last_upload.isoformat() if last_upload else None,
+        "geos": geos,
+    }
+
+
+@app.get("/upload/google-devices")
+async def upload_google_devices(request: Request, workspace_id: str = None, days: int = 365):
+    """Return device breakdown from uploaded Device report."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    entity_name AS device,
+                    SUM(spend)       AS spend,
+                    SUM(impressions) AS impressions,
+                    SUM(clicks)      AS clicks,
+                    SUM(conversions) AS conversions,
+                    SUM(revenue)     AS revenue,
+                    CASE WHEN SUM(spend) > 0
+                         THEN ROUND(SUM(revenue)::NUMERIC / SUM(spend), 2) ELSE 0 END AS roas,
+                    CASE WHEN SUM(conversions) > 0
+                         THEN ROUND(SUM(spend)::NUMERIC / SUM(conversions), 2) ELSE NULL END AS cpa
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND account_id   = 'excel_upload'
+                  AND entity_level = 'device'
+                  AND hour_ts >= NOW() - INTERVAL '%s days'
+                GROUP BY entity_name
+                ORDER BY spend DESC
+                """,
+                (workspace_id, days),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            cur.execute(
+                "SELECT MAX(hour_ts) FROM kpi_hourly WHERE workspace_id=%s AND account_id='excel_upload' AND entity_level='device'",
+                (workspace_id,),
+            )
+            last_upload = cur.fetchone()[0]
+
+    total_spend = sum(float(r["spend"] or 0) for r in rows)
+    devices = [
+        {
+            "device":      r["device"],
+            "spend":       float(r["spend"] or 0),
+            "impressions": int(r["impressions"] or 0),
+            "clicks":      int(r["clicks"] or 0),
+            "conversions": float(r["conversions"] or 0),
+            "revenue":     float(r["revenue"] or 0),
+            "roas":        float(r["roas"] or 0),
+            "cpa":         float(r["cpa"]) if r["cpa"] is not None else None,
+            "spend_pct":   round(float(r["spend"] or 0) / total_spend * 100, 1) if total_spend > 0 else 0,
+        }
+        for r in rows
+    ]
+    return {
+        "has_data": len(devices) > 0,
+        "last_upload_date": last_upload.isoformat() if last_upload else None,
+        "devices": devices,
+    }
+
+
+@app.get("/upload/google-time-of-day")
+async def upload_google_time_of_day(request: Request, workspace_id: str = None, days: int = 365):
+    """Return time-of-day slots from uploaded Time of Day report."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    (raw_json->>'hour')::INT      AS hour,
+                    raw_json->>'day_of_week'       AS day_of_week,
+                    SUM(spend)       AS spend,
+                    SUM(conversions) AS conversions,
+                    SUM(clicks)      AS clicks,
+                    SUM(impressions) AS impressions
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND account_id   = 'excel_upload'
+                  AND entity_level = 'hour_of_day'
+                  AND hour_ts >= NOW() - INTERVAL '%s days'
+                  AND raw_json IS NOT NULL
+                GROUP BY raw_json->>'hour', raw_json->>'day_of_week'
+                ORDER BY raw_json->>'day_of_week', (raw_json->>'hour')::INT
+                """,
+                (workspace_id, days),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            cur.execute(
+                "SELECT MAX(hour_ts) FROM kpi_hourly WHERE workspace_id=%s AND account_id='excel_upload' AND entity_level='hour_of_day'",
+                (workspace_id,),
+            )
+            last_upload = cur.fetchone()[0]
+
+    slots = [
+        {
+            "hour":        int(r["hour"] or 0),
+            "day_of_week": r["day_of_week"] or "Monday",
+            "spend":       float(r["spend"] or 0),
+            "conversions": float(r["conversions"] or 0),
+            "clicks":      int(r["clicks"] or 0),
+            "impressions": int(r["impressions"] or 0),
+        }
+        for r in rows
+    ]
+    return {
+        "has_data": len(slots) > 0,
+        "last_upload_date": last_upload.isoformat() if last_upload else None,
+        "slots": slots,
+    }
+
+
+@app.get("/upload/google-assets")
+async def upload_google_assets(request: Request, workspace_id: str = None, days: int = 365):
+    """Return Ad Asset (RSA) performance from uploaded asset report."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    entity_name                       AS asset_text,
+                    raw_json->>'asset_type'           AS asset_type,
+                    raw_json->>'performance_label'    AS performance_label,
+                    raw_json->>'campaign_name'        AS campaign_name,
+                    raw_json->>'ad_group_name'        AS ad_group_name,
+                    SUM(impressions) AS impressions,
+                    SUM(clicks)      AS clicks
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND account_id   = 'excel_upload'
+                  AND entity_level = 'asset'
+                  AND hour_ts >= NOW() - INTERVAL '%s days'
+                GROUP BY entity_name,
+                         raw_json->>'asset_type',
+                         raw_json->>'performance_label',
+                         raw_json->>'campaign_name',
+                         raw_json->>'ad_group_name'
+                ORDER BY
+                    CASE raw_json->>'performance_label'
+                        WHEN 'BEST' THEN 0
+                        WHEN 'GOOD' THEN 1
+                        WHEN 'LOW'  THEN 2
+                        ELSE 3
+                    END,
+                    SUM(impressions) DESC
+                LIMIT 100
+                """,
+                (workspace_id, days),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            cur.execute(
+                "SELECT MAX(hour_ts) FROM kpi_hourly WHERE workspace_id=%s AND account_id='excel_upload' AND entity_level='asset'",
+                (workspace_id,),
+            )
+            last_upload = cur.fetchone()[0]
+
+    assets = [
+        {
+            "asset_text":        r["asset_text"] or "",
+            "asset_type":        r["asset_type"] or "Headline",
+            "performance_label": r["performance_label"] or "N/A",
+            "campaign_name":     r["campaign_name"] or "",
+            "ad_group_name":     r["ad_group_name"] or "",
+            "impressions":       int(r["impressions"] or 0),
+            "clicks":            int(r["clicks"] or 0),
+        }
+        for r in rows
+    ]
+    return {
+        "has_data": len(assets) > 0,
+        "last_upload_date": last_upload.isoformat() if last_upload else None,
+        "assets": assets,
+    }
+
+
+@app.get("/upload/google-auction")
+async def upload_google_auction(request: Request, workspace_id: str = None):
+    """Return Auction Insights data."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    competitor_domain,
+                    campaign_name,
+                    impression_share,
+                    overlap_rate,
+                    position_above_rate,
+                    top_of_page_rate,
+                    abs_top_impression_pct,
+                    outranking_share,
+                    uploaded_at
+                FROM google_auction_insights
+                WHERE workspace_id = %s
+                ORDER BY overlap_rate DESC NULLS LAST
+                LIMIT 50
+                """,
+                (workspace_id,),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            cur.execute(
+                "SELECT MAX(uploaded_at) FROM google_auction_insights WHERE workspace_id = %s",
+                (workspace_id,),
+            )
+            last_upload = cur.fetchone()[0]
+
+    competitors = [
+        {
+            "competitor_domain":    r["competitor_domain"],
+            "campaign_name":        r["campaign_name"] or "",
+            "impression_share":     float(r["impression_share"])     if r["impression_share"]     is not None else None,
+            "overlap_rate":         float(r["overlap_rate"])         if r["overlap_rate"]         is not None else None,
+            "position_above_rate":  float(r["position_above_rate"])  if r["position_above_rate"]  is not None else None,
+            "top_of_page_rate":     float(r["top_of_page_rate"])     if r["top_of_page_rate"]     is not None else None,
+            "abs_top_impression_pct": float(r["abs_top_impression_pct"]) if r["abs_top_impression_pct"] is not None else None,
+            "outranking_share":     float(r["outranking_share"])     if r["outranking_share"]     is not None else None,
+        }
+        for r in rows
+    ]
+    return {
+        "has_data": len(competitors) > 0,
+        "last_upload_date": last_upload.isoformat() if last_upload else None,
+        "competitors": competitors,
+    }
+
+
+# ── Amazon Ads Upload ─────────────────────────────────────────────────────────
+
+@app.post("/upload/amazon-ads")
+async def upload_amazon_ads(request: Request):
+    """
+    Parse and store Amazon Advertising CSV rows (Sponsored Products / Sponsored Brands).
+    Body: { workspace_id, rows: [{campaign_name, spend, impressions, clicks, orders, sales,
+            acos, roas, date, ad_type, campaign_status}] }
+    Stores in kpi_hourly with platform='amazon', account_id='amazon_upload', entity_level='campaign'.
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "").strip()
+    rows = body.get("rows", [])
+    ad_type = body.get("ad_type", "Sponsored Products")  # default
+
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    if not rows:
+        raise HTTPException(status_code=400, detail="rows required")
+
+    from services.agent_swarm.db import get_conn
+
+    inserted = 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for row in rows:
+                campaign_name = str(row.get("campaign_name") or "Unknown Campaign").strip()
+                entity_id = _slugify(campaign_name)
+                entity_name = campaign_name
+
+                # Parse date — Amazon reports may not have a date column (totals only)
+                date_str = row.get("date") or row.get("day") or ""
+                try:
+                    from datetime import datetime as _dt
+                    hour_ts = _dt.strptime(str(date_str).strip(), "%Y-%m-%d")
+                except Exception:
+                    hour_ts = _dt.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+
+                def _num(v):
+                    if v is None or str(v).strip() in ("", "--", "N/A", "n/a"):
+                        return 0.0
+                    try:
+                        return float(str(v).replace(",", "").replace("%", "").strip())
+                    except Exception:
+                        return 0.0
+
+                spend       = _num(row.get("spend"))
+                impressions = _num(row.get("impressions"))
+                clicks      = _num(row.get("clicks"))
+                conversions = _num(row.get("orders") or row.get("conversions"))
+                revenue     = _num(row.get("sales") or row.get("revenue"))
+                acos_val    = _num(row.get("acos"))
+                roas_val    = _num(row.get("roas")) if _num(row.get("roas")) > 0 else (
+                    round(revenue / spend, 4) if spend > 0 else 0.0
+                )
+                ctr_val     = round(clicks / impressions * 100, 4) if impressions > 0 else 0.0
+                campaign_status = str(row.get("campaign_status") or row.get("status") or "ENABLED").upper().strip()
+                row_ad_type = str(row.get("ad_type") or ad_type).strip()
+
+                raw_json = {
+                    "campaign_name": campaign_name,
+                    "ad_type": row_ad_type,
+                    "campaign_status": campaign_status,
+                    "acos": acos_val,
+                }
+
+                cur.execute(
+                    """
+                    INSERT INTO kpi_hourly
+                        (workspace_id, platform, account_id, entity_level, entity_id, entity_name,
+                         hour_ts, spend, impressions, clicks, conversions, revenue, roas, ctr, raw_json)
+                    VALUES (%s, 'amazon', 'amazon_upload', 'campaign', %s, %s,
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (platform, account_id, entity_level, entity_id, hour_ts)
+                    DO UPDATE SET
+                        spend       = EXCLUDED.spend,
+                        impressions = EXCLUDED.impressions,
+                        clicks      = EXCLUDED.clicks,
+                        conversions = EXCLUDED.conversions,
+                        revenue     = EXCLUDED.revenue,
+                        roas        = EXCLUDED.roas,
+                        ctr         = EXCLUDED.ctr,
+                        raw_json    = EXCLUDED.raw_json,
+                        entity_name = EXCLUDED.entity_name,
+                        workspace_id= EXCLUDED.workspace_id
+                    """,
+                    (
+                        workspace_id, entity_id, entity_name,
+                        hour_ts, spend, impressions, clicks, conversions, revenue,
+                        roas_val, ctr_val, json.dumps(raw_json),
+                    ),
+                )
+                inserted += 1
+        conn.commit()
+
+    return {"inserted": inserted, "workspace_id": workspace_id}
+
+
+@app.get("/marketplace/campaigns")
+async def marketplace_campaigns(request: Request, workspace_id: str = None, days: int = 365):
+    """Return Amazon Ads campaigns from uploaded data."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    entity_id,
+                    MAX(entity_name)            AS name,
+                    MAX(raw_json->>'ad_type')   AS ad_type,
+                    MAX(raw_json->>'campaign_status') AS campaign_status,
+                    SUM(spend)                  AS spend,
+                    SUM(impressions)            AS impressions,
+                    SUM(clicks)                 AS clicks,
+                    SUM(conversions)            AS orders,
+                    SUM(revenue)                AS sales,
+                    CASE WHEN SUM(spend) > 0
+                         THEN ROUND(SUM(revenue)::NUMERIC / SUM(spend), 4)
+                         ELSE 0 END             AS roas,
+                    CASE WHEN SUM(revenue) > 0
+                         THEN ROUND(SUM(spend)::NUMERIC / SUM(revenue) * 100, 2)
+                         ELSE 0 END             AS acos,
+                    CASE WHEN SUM(impressions) > 0
+                         THEN ROUND(SUM(clicks)::NUMERIC / SUM(impressions) * 100, 4)
+                         ELSE 0 END             AS ctr,
+                    CASE WHEN SUM(clicks) > 0
+                         THEN ROUND(SUM(spend)::NUMERIC / SUM(clicks), 2)
+                         ELSE 0 END             AS cpc
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND platform     = 'amazon'
+                  AND account_id   = 'amazon_upload'
+                  AND entity_level = 'campaign'
+                  AND hour_ts >= NOW() - INTERVAL '%s days'
+                GROUP BY entity_id
+                ORDER BY spend DESC
+                """,
+                (workspace_id, days),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            cur.execute(
+                "SELECT MAX(hour_ts) FROM kpi_hourly WHERE workspace_id=%s AND platform='amazon' AND account_id='amazon_upload'",
+                (workspace_id,),
+            )
+            last_upload = cur.fetchone()[0]
+
+    campaigns = [
+        {
+            "id":               r["entity_id"],
+            "name":             r["name"],
+            "ad_type":          r["ad_type"] or "Sponsored Products",
+            "campaign_status":  r["campaign_status"] or "ENABLED",
+            "spend":            float(r["spend"] or 0),
+            "impressions":      int(r["impressions"] or 0),
+            "clicks":           int(r["clicks"] or 0),
+            "orders":           float(r["orders"] or 0),
+            "sales":            float(r["sales"] or 0),
+            "roas":             float(r["roas"] or 0),
+            "acos":             float(r["acos"] or 0),
+            "ctr":              float(r["ctr"] or 0),
+            "cpc":              float(r["cpc"] or 0),
+        }
+        for r in rows
+    ]
+
+    total_spend  = sum(c["spend"] for c in campaigns)
+    total_sales  = sum(c["sales"] for c in campaigns)
+    total_orders = sum(c["orders"] for c in campaigns)
+    total_clicks = sum(c["clicks"] for c in campaigns)
+    avg_roas     = round(total_sales / total_spend, 4) if total_spend > 0 else 0
+    avg_acos     = round(total_spend / total_sales * 100, 2) if total_sales > 0 else 0
+
+    return {
+        "has_data":        len(campaigns) > 0,
+        "last_upload_date": last_upload.isoformat() if last_upload else None,
+        "campaigns":       campaigns,
+        "summary": {
+            "total_spend":   total_spend,
+            "total_sales":   total_sales,
+            "total_orders":  total_orders,
+            "total_clicks":  total_clicks,
+            "avg_roas":      avg_roas,
+            "avg_acos":      avg_acos,
+        },
+    }
+
+
+@app.get("/upload/campaigns")
+async def upload_campaigns(request: Request, workspace_id: str = None, days: int = 365):
+    """
+    Return campaigns from excel-uploaded data (account_id='excel_upload').
+    Groups by entity_id, returns aggregate KPIs.
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    platform,
+                    entity_id,
+                    MAX(entity_name) AS name,
+                    SUM(spend)       AS spend,
+                    SUM(impressions) AS impressions,
+                    SUM(clicks)      AS clicks,
+                    SUM(conversions) AS conversions,
+                    SUM(revenue)     AS revenue,
+                    CASE WHEN SUM(spend) > 0
+                         THEN ROUND(SUM(revenue)::NUMERIC / SUM(spend), 4)
+                         ELSE 0 END AS roas,
+                    CASE WHEN SUM(impressions) > 0
+                         THEN ROUND(SUM(clicks)::NUMERIC / SUM(impressions) * 100, 4)
+                         ELSE 0 END AS ctr,
+                    CASE WHEN SUM(clicks) > 0
+                         THEN ROUND(SUM(spend)::NUMERIC / SUM(clicks), 4)
+                         ELSE 0 END AS cpc
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND account_id = 'excel_upload'
+                  AND entity_level = 'campaign'
+                  AND hour_ts >= NOW() - INTERVAL '%s days'
+                GROUP BY platform, entity_id
+                ORDER BY spend DESC
+                """,
+                (workspace_id, days),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    platforms = list({r["platform"] for r in rows})
+    campaigns = [
+        {
+            "id": r["entity_id"],
+            "name": r["name"],
+            "status": "ACTIVE",
+            "effective_status": "ACTIVE",
+            "platform": r["platform"],
+            "spend": float(r["spend"] or 0),
+            "impressions": int(r["impressions"] or 0),
+            "clicks": int(r["clicks"] or 0),
+            "conversions": float(r["conversions"] or 0),
+            "revenue": float(r["revenue"] or 0),
+            "roas": float(r["roas"] or 0),
+            "ctr": float(r["ctr"] or 0),
+            "cpc": float(r["cpc"] or 0),
+            "_source": "excel_upload",
+        }
+        for r in rows
+    ]
+
+    return {"campaigns": campaigns, "platforms": platforms, "source": "excel_upload"}
+
+
+@app.get("/upload/campaign-insights/{entity_id}")
+async def upload_campaign_insights(
+    request: Request,
+    entity_id: str,
+    workspace_id: str = None,
+    days: int = 365,
+):
+    """
+    Per-campaign insights for an excel-uploaded campaign + Claude AI suggestions.
+    Returns same shape as /meta/campaign-insights so CampaignDetailPanel renders unchanged.
+    Default days=365 so historical reports (e.g. January export uploaded in February) always show.
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    import re
+    import json
+    from services.agent_swarm.db import get_conn
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # ── Daily campaign rows for chart ─────────────────────────────────
+            cur.execute(
+                """
+                SELECT
+                    DATE_TRUNC('day', hour_ts)::DATE AS date,
+                    MAX(entity_name) AS name,
+                    SUM(spend)       AS spend,
+                    SUM(impressions) AS impressions,
+                    SUM(clicks)      AS clicks,
+                    SUM(conversions) AS conversions,
+                    SUM(revenue)     AS revenue
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND account_id = 'excel_upload'
+                  AND entity_level = 'campaign'
+                  AND entity_id = %s
+                  AND hour_ts >= NOW() - INTERVAL '%s days'
+                GROUP BY DATE_TRUNC('day', hour_ts)::DATE
+                ORDER BY date ASC
+                """,
+                (workspace_id, entity_id, days),
+            )
+            cols = [d[0] for d in cur.description]
+            daily_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            # ── Ad groups for this campaign ───────────────────────────────────
+            cur.execute(
+                """
+                SELECT entity_id, MAX(entity_name) AS name,
+                       SUM(spend) AS spend, SUM(clicks) AS clicks,
+                       SUM(conversions) AS conversions, SUM(revenue) AS revenue,
+                       CASE WHEN SUM(spend)>0
+                            THEN ROUND(SUM(revenue)::NUMERIC/SUM(spend),2) ELSE 0
+                       END AS roas
+                FROM kpi_hourly
+                WHERE workspace_id = %s AND account_id = 'excel_upload'
+                  AND entity_level = 'ad_group'
+                  AND raw_json->>'campaign_id' = %s
+                  AND hour_ts >= NOW() - INTERVAL '%s days'
+                GROUP BY entity_id ORDER BY spend DESC
+                """,
+                (workspace_id, entity_id, days),
+            )
+            ad_group_cols = [d[0] for d in cur.description]
+            ad_group_rows = [dict(zip(ad_group_cols, r)) for r in cur.fetchall()]
+
+            # ── Keywords for this campaign ────────────────────────────────────
+            cur.execute(
+                """
+                SELECT entity_id, MAX(entity_name) AS keyword,
+                       MAX(raw_json->>'match_type') AS match_type,
+                       MAX(raw_json->>'ad_group_name') AS ad_group_name,
+                       MAX(raw_json->>'quality_score') AS quality_score,
+                       SUM(spend) AS spend, SUM(clicks) AS clicks,
+                       SUM(conversions) AS conversions, SUM(impressions) AS impressions,
+                       CASE WHEN SUM(clicks)>0
+                            THEN ROUND(SUM(spend)::NUMERIC/SUM(clicks),2) ELSE 0
+                       END AS cpc,
+                       CASE WHEN SUM(impressions)>0
+                            THEN ROUND(SUM(clicks)::NUMERIC/SUM(impressions)*100,2) ELSE 0
+                       END AS ctr
+                FROM kpi_hourly
+                WHERE workspace_id = %s AND account_id = 'excel_upload'
+                  AND entity_level = 'keyword'
+                  AND raw_json->>'campaign_id' = %s
+                  AND hour_ts >= NOW() - INTERVAL '%s days'
+                GROUP BY entity_id ORDER BY spend DESC LIMIT 50
+                """,
+                (workspace_id, entity_id, days),
+            )
+            kw_cols = [d[0] for d in cur.description]
+            keyword_rows = [dict(zip(kw_cols, r)) for r in cur.fetchall()]
+
+            # ── Search terms for this campaign ────────────────────────────────
+            cur.execute(
+                """
+                SELECT entity_id, MAX(entity_name) AS search_term,
+                       MAX(raw_json->>'keyword') AS keyword,
+                       MAX(raw_json->>'match_type') AS match_type,
+                       SUM(spend) AS spend, SUM(clicks) AS clicks,
+                       SUM(conversions) AS conversions
+                FROM kpi_hourly
+                WHERE workspace_id = %s AND account_id = 'excel_upload'
+                  AND entity_level = 'search_term'
+                  AND raw_json->>'campaign_id' = %s
+                  AND hour_ts >= NOW() - INTERVAL '%s days'
+                GROUP BY entity_id ORDER BY spend DESC LIMIT 100
+                """,
+                (workspace_id, entity_id, days),
+            )
+            st_cols = [d[0] for d in cur.description]
+            search_term_rows = [dict(zip(st_cols, r)) for r in cur.fetchall()]
+
+    campaign_name = daily_rows[0]["name"] if daily_rows else entity_id
+
+    spend_total = sum(float(r["spend"] or 0) for r in daily_rows)
+    impressions_total = sum(int(r["impressions"] or 0) for r in daily_rows)
+    clicks_total = sum(int(r["clicks"] or 0) for r in daily_rows)
+    conversions_total = sum(float(r["conversions"] or 0) for r in daily_rows)
+    revenue_total = sum(float(r["revenue"] or 0) for r in daily_rows)
+    roas_total = round(revenue_total / spend_total, 4) if spend_total > 0 else 0.0
+    ctr_total = round(clicks_total / impressions_total * 100, 4) if impressions_total > 0 else 0.0
+
+    daily = [
+        {
+            "date": str(r["date"]),
+            "spend": float(r["spend"] or 0),
+            "impressions": int(r["impressions"] or 0),
+            "clicks": int(r["clicks"] or 0),
+            "conversions": float(r["conversions"] or 0),
+            "revenue": float(r["revenue"] or 0),
+            "roas": round(float(r["revenue"] or 0) / float(r["spend"]) if float(r["spend"] or 0) > 0 else 0, 4),
+            "ctr": round(int(r["clicks"] or 0) / int(r["impressions"]) * 100 if int(r["impressions"] or 0) > 0 else 0, 4),
+        }
+        for r in daily_rows
+    ]
+
+    # Spend today
+    from datetime import date as _date
+    spend_today = 0.0
+    today_str = _date.today().isoformat()
+    for r in daily_rows:
+        if str(r["date"]) == today_str:
+            spend_today = float(r["spend"] or 0)
+
+    # Build serialisable sub-entity lists
+    ad_groups = [
+        {
+            "id": r["entity_id"],
+            "name": r["name"],
+            "spend": float(r["spend"] or 0),
+            "clicks": int(r["clicks"] or 0),
+            "conversions": float(r["conversions"] or 0),
+            "revenue": float(r["revenue"] or 0),
+            "roas": float(r["roas"] or 0),
+        }
+        for r in ad_group_rows
+    ]
+
+    keywords = [
+        {
+            "id": r["entity_id"],
+            "keyword": r["keyword"],
+            "match_type": r["match_type"] or "BROAD",
+            "ad_group_name": r["ad_group_name"] or "",
+            "quality_score": int(r["quality_score"]) if r["quality_score"] not in (None, "") else None,
+            "spend": float(r["spend"] or 0),
+            "clicks": int(r["clicks"] or 0),
+            "conversions": float(r["conversions"] or 0),
+            "impressions": int(r["impressions"] or 0),
+            "cpc": float(r["cpc"] or 0),
+            "ctr": float(r["ctr"] or 0),
+        }
+        for r in keyword_rows
+    ]
+
+    search_terms = [
+        {
+            "id": r["entity_id"],
+            "search_term": r["search_term"],
+            "keyword": r["keyword"] or "",
+            "match_type": r["match_type"] or "",
+            "spend": float(r["spend"] or 0),
+            "clicks": int(r["clicks"] or 0),
+            "conversions": float(r["conversions"] or 0),
+        }
+        for r in search_term_rows
+    ]
+
+    has_keyword_data = len(keywords) > 0
+    has_search_term_data = len(search_terms) > 0
+
+    # ── Claude AI suggestions ─────────────────────────────────────────────────
+    suggestions = []
+    try:
+        import anthropic as _anthropic
+        _client = _anthropic.Anthropic()
+
+        # Build context sections
+        ag_section = ""
+        if ad_groups:
+            lines = []
+            for ag in ad_groups[:5]:
+                roas_v = ag["roas"]
+                emoji = "✅" if roas_v >= 2.5 else ("⚠️" if roas_v >= 1.0 else "🚨")
+                lines.append(
+                    f"  {emoji} {ag['name']}: spend ₹{ag['spend']:,.0f}, "
+                    f"ROAS {roas_v:.2f}x, conv {int(ag['conversions'])}"
+                )
+            ag_section = "AD GROUPS:\n" + "\n".join(lines) + "\n\n"
+
+        kw_section = ""
+        if keywords:
+            lines = []
+            for kw in keywords[:10]:
+                qs_str = f"QS:{kw['quality_score']}/10" if kw['quality_score'] is not None else "QS:—"
+                lines.append(
+                    f"  {kw['keyword']} [{kw['match_type']}] {qs_str}: "
+                    f"spend ₹{kw['spend']:,.0f}, CPC ₹{kw['cpc']:.0f}, conv {int(kw['conversions'])}"
+                )
+            kw_section = "TOP KEYWORDS:\n" + "\n".join(lines) + "\n\n"
+
+        wasted = [kw for kw in keywords if float(kw["spend"]) > 500 and int(kw["conversions"]) == 0]
+        waste_section = ""
+        if wasted:
+            lines = [
+                f"  '{kw['keyword']} [{kw['match_type']}]' — ₹{kw['spend']:,.0f} with 0 conversions"
+                for kw in wasted[:5]
+            ]
+            waste_section = "WASTED SPEND (0 conv):\n" + "\n".join(lines) + "\n\n"
+
+        st_section = ""
+        if search_terms:
+            lines = [
+                f"  '{st['search_term']}' → [{st['keyword']}]: "
+                f"spend ₹{st['spend']:,.0f}, conv {int(st['conversions'])}"
+                for st in search_terms[:5]
+            ]
+            st_section = "SEARCH TERMS:\n" + "\n".join(lines) + "\n\n"
+
+        prompt = (
+            f"You are an expert Google Ads manager for Indian ecommerce brands.\n"
+            f"Campaign: {campaign_name}\nPeriod: Last {days} days\n"
+            f"Spend: ₹{spend_total:,.0f} | Impressions: {impressions_total:,} | "
+            f"Clicks: {clicks_total:,} | CTR: {ctr_total:.2f}%\n"
+            f"Conversions: {int(conversions_total)} | Revenue: ₹{revenue_total:,.0f} | "
+            f"ROAS: {roas_total:.2f}x\n\n"
+            f"{ag_section}{kw_section}{waste_section}{st_section}"
+            "Provide exactly 3 specific, actionable optimization suggestions. "
+            "Reference specific keyword names, ad groups, or search terms from the data above where relevant. "
+            "Each suggestion must be 1-2 sentences, concrete, and immediately actionable. "
+            "Format your response ONLY as a JSON array: [\"suggestion1\", \"suggestion2\", \"suggestion3\"]"
+        )
+        msg = _client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = msg.content[0].text
+        match = re.search(r'\[.*?\]', text, re.DOTALL)
+        if match:
+            suggestions = json.loads(match.group())
+    except Exception:
+        suggestions = [
+            f"CTR is {ctr_total:.2f}% — test new creatives with stronger hooks to push above 2%.",
+            f"ROAS of {roas_total:.2f}x is {'below' if roas_total < 2.5 else 'above'} the 2.5x target — "
+            f"{'tighten your audience to high-intent buyers' if roas_total < 2.5 else 'consider scaling budget to high-performing ad sets'}.",
+            "Add a retargeting segment for visitors who viewed product pages but didn't convert.",
+        ]
+
+    return {
+        "campaign_id": entity_id,
+        "campaign": {"id": entity_id, "name": campaign_name, "status": "ACTIVE", "effective_status": "ACTIVE"},
+        "spend_today": round(spend_today, 2),
+        "spend_total": round(spend_total, 2),
+        "impressions_total": impressions_total,
+        "clicks_total": clicks_total,
+        "conversions_total": int(conversions_total),
+        "revenue_total": round(revenue_total, 2),
+        "roas_total": roas_total,
+        "ctr_total": ctr_total,
+        "daily": daily,
+        "suggestions": suggestions,
+        "days": days,
+        "source": "excel_upload",
+        "ad_groups": ad_groups,
+        "keywords": keywords,
+        "search_terms": search_terms,
+        "has_keyword_data": has_keyword_data,
+        "has_search_term_data": has_search_term_data,
+    }
+
+
+@app.get("/upload/google-intelligence")
+async def upload_google_intelligence(request: Request, workspace_id: str = None):
+    """
+    Google Ads Intelligence: aggregates campaigns + keywords + search terms from
+    excel-uploaded data. Falls back to inferring campaigns from keyword raw_json
+    when no entity_level='campaign' rows exist (keyword-only exports).
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    import re
+    import json
+    from services.agent_swarm.db import get_conn
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # ── Step 1: Try campaign-level rows first ─────────────────────────
+            cur.execute(
+                """
+                SELECT entity_id,
+                       MAX(entity_name) AS name,
+                       SUM(spend)       AS spend,
+                       SUM(impressions) AS impressions,
+                       SUM(clicks)      AS clicks,
+                       SUM(conversions) AS conversions,
+                       SUM(revenue)     AS revenue,
+                       MAX(hour_ts)     AS last_seen
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND account_id = 'excel_upload'
+                  AND entity_level = 'campaign'
+                  AND hour_ts >= NOW() - INTERVAL '365 days'
+                GROUP BY entity_id
+                ORDER BY SUM(spend) DESC
+                """,
+                (workspace_id,),
+            )
+            cols = [d[0] for d in cur.description]
+            campaign_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            # ── Fallback: aggregate campaigns from keyword raw_json ───────────
+            if not campaign_rows:
+                cur.execute(
+                    """
+                    SELECT raw_json->>'campaign_id'        AS entity_id,
+                           MAX(raw_json->>'campaign_name') AS name,
+                           SUM(spend)       AS spend,
+                           SUM(impressions) AS impressions,
+                           SUM(clicks)      AS clicks,
+                           SUM(conversions) AS conversions,
+                           SUM(revenue)     AS revenue,
+                           MAX(hour_ts)     AS last_seen
+                    FROM kpi_hourly
+                    WHERE workspace_id = %s
+                      AND account_id = 'excel_upload'
+                      AND entity_level = 'keyword'
+                      AND hour_ts >= NOW() - INTERVAL '365 days'
+                    GROUP BY raw_json->>'campaign_id'
+                    ORDER BY SUM(spend) DESC
+                    """,
+                    (workspace_id,),
+                )
+                cols = [d[0] for d in cur.description]
+                campaign_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            # ── No data at all ────────────────────────────────────────────────
+            if not campaign_rows:
+                cur.execute(
+                    "SELECT MAX(hour_ts) FROM kpi_hourly WHERE workspace_id = %s AND account_id = 'excel_upload'",
+                    (workspace_id,),
+                )
+                ts_row = cur.fetchone()
+                return {
+                    "has_data": False,
+                    "last_upload_date": ts_row[0].strftime("%Y-%m-%d") if ts_row and ts_row[0] else None,
+                    "total_spend": 0, "total_revenue": 0,
+                    "total_conversions": 0, "total_clicks": 0,
+                    "avg_roas": 0, "wasted_spend_total": 0,
+                    "campaigns": [], "keywords": [], "search_terms": [], "action_plan": [],
+                }
+
+            # ── Step 2: Keywords (LIMIT 200, spend desc) ──────────────────────
+            cur.execute(
+                """
+                SELECT entity_id,
+                       MAX(entity_name)                AS keyword,
+                       MAX(raw_json->>'campaign_id')   AS campaign_id,
+                       MAX(raw_json->>'campaign_name') AS campaign_name,
+                       MAX(raw_json->>'ad_group_name') AS ad_group_name,
+                       MAX(raw_json->>'match_type')    AS match_type,
+                       MAX(quality_score)              AS quality_score,
+                       SUM(spend)                     AS spend,
+                       SUM(clicks)                    AS clicks,
+                       SUM(conversions)               AS conversions,
+                       SUM(impressions)               AS impressions
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND account_id = 'excel_upload'
+                  AND entity_level = 'keyword'
+                  AND hour_ts >= NOW() - INTERVAL '365 days'
+                GROUP BY entity_id
+                ORDER BY SUM(spend) DESC
+                LIMIT 200
+                """,
+                (workspace_id,),
+            )
+            cols = [d[0] for d in cur.description]
+            kw_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            # ── Step 3: Search terms (LIMIT 100) ──────────────────────────────
+            cur.execute(
+                """
+                SELECT entity_id,
+                       MAX(entity_name)             AS search_term,
+                       MAX(raw_json->>'keyword')    AS keyword,
+                       MAX(raw_json->>'match_type') AS match_type,
+                       SUM(spend)                  AS spend,
+                       SUM(conversions)            AS conversions,
+                       SUM(clicks)                 AS clicks
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND account_id = 'excel_upload'
+                  AND entity_level = 'search_term'
+                  AND hour_ts >= NOW() - INTERVAL '365 days'
+                GROUP BY entity_id
+                ORDER BY SUM(spend) DESC
+                LIMIT 100
+                """,
+                (workspace_id,),
+            )
+            cols = [d[0] for d in cur.description]
+            st_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            # ── Last upload date ──────────────────────────────────────────────
+            cur.execute(
+                "SELECT MAX(hour_ts) FROM kpi_hourly WHERE workspace_id = %s AND account_id = 'excel_upload'",
+                (workspace_id,),
+            )
+            ts_row = cur.fetchone()
+            last_upload_date = ts_row[0].strftime("%Y-%m-%d") if ts_row and ts_row[0] else None
+
+    # ── Build campaign objects with health scoring ─────────────────────────────
+    campaigns = []
+    for r in campaign_rows:
+        spend = float(r["spend"] or 0)
+        revenue = float(r["revenue"] or 0)
+        conversions = float(r["conversions"] or 0)
+        clicks = int(r["clicks"] or 0)
+        impressions = int(r["impressions"] or 0)
+        roas = round(revenue / spend, 2) if spend > 0 else 0
+        ctr = round(clicks / impressions * 100, 2) if impressions > 0 else 0
+        cpc = round(spend / clicks, 2) if clicks > 0 else 0
+
+        if roas >= 2.5:
+            health, health_reason = "good", f"ROAS {roas:.2f}x ≥ 2.5x target"
+        elif spend > 0 and conversions == 0:
+            health, health_reason = "critical", f"₹{spend:,.0f} spent, 0 conversions"
+        elif roas < 1.0:
+            health, health_reason = "critical", f"ROAS {roas:.2f}x — losing money"
+        else:
+            health, health_reason = "warning", f"ROAS {roas:.2f}x below 2.5x target"
+
+        campaigns.append({
+            "id": r["entity_id"] or "",
+            "name": r["name"] or "Unknown Campaign",
+            "spend": spend, "roas": roas, "conversions": conversions,
+            "clicks": clicks, "ctr": ctr, "cpc": cpc,
+            "health": health, "health_reason": health_reason,
+        })
+
+    # ── Build keyword objects ──────────────────────────────────────────────────
+    keywords = []
+    for r in kw_rows:
+        spend = float(r["spend"] or 0)
+        conversions = float(r["conversions"] or 0)
+        clicks = int(r["clicks"] or 0)
+        impressions = int(r["impressions"] or 0)
+        cpc = round(spend / clicks, 2) if clicks > 0 else 0
+        ctr = round(clicks / impressions * 100, 2) if impressions > 0 else 0
+        keywords.append({
+            "keyword": r["keyword"] or "",
+            "campaign_name": r["campaign_name"] or "",
+            "ad_group_name": r["ad_group_name"] or "",
+            "match_type": r["match_type"] or "BROAD",
+            "quality_score": int(r["quality_score"]) if r["quality_score"] is not None else None,
+            "spend": spend, "clicks": clicks, "conversions": conversions,
+            "cpc": cpc, "ctr": ctr,
+            "is_wasted": spend > 200 and conversions == 0,
+        })
+
+    # ── Build search term objects ──────────────────────────────────────────────
+    search_terms = []
+    for r in st_rows:
+        spend = float(r["spend"] or 0)
+        conversions = float(r["conversions"] or 0)
+        search_terms.append({
+            "search_term": r["search_term"] or "",
+            "keyword": r["keyword"] or "",
+            "match_type": r["match_type"] or "",
+            "spend": spend, "conversions": conversions,
+            "is_negative_candidate": spend > 100 and conversions == 0,
+        })
+
+    # ── Summary metrics ────────────────────────────────────────────────────────
+    total_spend = sum(c["spend"] for c in campaigns)
+    total_revenue = sum(float(r["revenue"] or 0) for r in campaign_rows)
+    total_conversions = sum(c["conversions"] for c in campaigns)
+    total_clicks = sum(c["clicks"] for c in campaigns)
+    avg_roas = round(total_revenue / total_spend, 2) if total_spend > 0 else 0
+    wasted_keywords = [kw for kw in keywords if kw["is_wasted"]]
+    wasted_spend_total = sum(kw["spend"] for kw in wasted_keywords)
+
+    return {
+        "has_data": True,
+        "last_upload_date": last_upload_date,
+        "total_spend": round(total_spend, 2),
+        "total_revenue": round(total_revenue, 2),
+        "total_conversions": int(total_conversions),
+        "total_clicks": total_clicks,
+        "avg_roas": avg_roas,
+        "wasted_spend_total": round(wasted_spend_total, 2),
+        "campaigns": campaigns,
+        "keywords": keywords,
+        "search_terms": search_terms,
+        "action_plan": [],  # fetched separately via /upload/google-action-plan
+    }
+
+
+@app.get("/upload/google-action-plan")
+async def upload_google_action_plan(request: Request, workspace_id: str = None):
+    """
+    Separate endpoint for Claude AI action plan — called async from the client
+    after the main intelligence page loads. Avoids blocking the initial page render.
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    import re
+    import json
+    from services.agent_swarm.db import get_conn
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Get campaigns (try campaign-level first, fallback to keyword aggregation)
+            cur.execute(
+                """
+                SELECT entity_id, MAX(entity_name) AS name,
+                       SUM(spend) AS spend, SUM(conversions) AS conversions,
+                       SUM(revenue) AS revenue
+                FROM kpi_hourly
+                WHERE workspace_id=%s AND account_id='excel_upload' AND entity_level='campaign'
+                  AND hour_ts >= NOW() - INTERVAL '365 days'
+                GROUP BY entity_id ORDER BY SUM(spend) DESC
+                """, (workspace_id,),
+            )
+            cols = [d[0] for d in cur.description]
+            camp_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            if not camp_rows:
+                cur.execute(
+                    """
+                    SELECT raw_json->>'campaign_id' AS entity_id,
+                           MAX(raw_json->>'campaign_name') AS name,
+                           SUM(spend) AS spend, SUM(conversions) AS conversions,
+                           SUM(revenue) AS revenue
+                    FROM kpi_hourly
+                    WHERE workspace_id=%s AND account_id='excel_upload' AND entity_level='keyword'
+                      AND hour_ts >= NOW() - INTERVAL '365 days'
+                    GROUP BY raw_json->>'campaign_id' ORDER BY SUM(spend) DESC
+                    """, (workspace_id,),
+                )
+                cols = [d[0] for d in cur.description]
+                camp_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            # Get top keywords for context
+            cur.execute(
+                """
+                SELECT MAX(entity_name) AS keyword, MAX(raw_json->>'match_type') AS match_type,
+                       MAX(quality_score) AS quality_score,
+                       SUM(spend) AS spend, SUM(conversions) AS conversions
+                FROM kpi_hourly
+                WHERE workspace_id=%s AND account_id='excel_upload' AND entity_level='keyword'
+                  AND hour_ts >= NOW() - INTERVAL '365 days'
+                GROUP BY entity_id ORDER BY SUM(spend) DESC LIMIT 50
+                """, (workspace_id,),
+            )
+            cols = [d[0] for d in cur.description]
+            kw_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            # Get top negative candidate search terms
+            cur.execute(
+                """
+                SELECT MAX(entity_name) AS search_term, SUM(spend) AS spend, SUM(conversions) AS conversions
+                FROM kpi_hourly
+                WHERE workspace_id=%s AND account_id='excel_upload' AND entity_level='search_term'
+                  AND hour_ts >= NOW() - INTERVAL '365 days'
+                GROUP BY entity_id HAVING SUM(spend) > 100 AND SUM(conversions) = 0
+                ORDER BY SUM(spend) DESC LIMIT 10
+                """, (workspace_id,),
+            )
+            cols = [d[0] for d in cur.description]
+            neg_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    if not camp_rows:
+        return {"action_plan": []}
+
+    # Build summary
+    total_spend = sum(float(r["spend"] or 0) for r in camp_rows)
+    total_revenue = sum(float(r["revenue"] or 0) for r in camp_rows)
+    total_conv = sum(float(r["conversions"] or 0) for r in camp_rows)
+    avg_roas = round(total_revenue / total_spend, 2) if total_spend > 0 else 0
+
+    # Build prompt sections
+    camp_lines = []
+    for r in camp_rows[:8]:
+        spend = float(r["spend"] or 0)
+        revenue = float(r["revenue"] or 0)
+        conv = float(r["conversions"] or 0)
+        roas = round(revenue / spend, 2) if spend > 0 else 0
+        emoji = "✅" if roas >= 2.5 else ("⚠️" if roas >= 1.0 else "🚨")
+        camp_lines.append(f"  {emoji} {r['name']}: ₹{spend:,.0f} spend, ROAS {roas:.2f}x, {int(conv)} conv")
+
+    wasted = [r for r in kw_rows if float(r["spend"] or 0) > 200 and float(r["conversions"] or 0) == 0]
+    wasted_lines = [
+        f"  '{r['keyword']} [{r['match_type'] or 'BROAD'}]' — ₹{float(r['spend']):,.0f} spent, 0 conv"
+        for r in wasted[:10]
+    ]
+    low_qs = [r for r in kw_rows if r["quality_score"] is not None and int(r["quality_score"]) <= 3]
+    low_qs_lines = [
+        f"  '{r['keyword']} [{r['match_type'] or 'BROAD'}]' — QS:{r['quality_score']}/10, ₹{float(r['spend']):,.0f} spent"
+        for r in low_qs[:5]
+    ]
+    neg_lines = [
+        f"  '{r['search_term']}' — ₹{float(r['spend']):,.0f} wasted"
+        for r in neg_rows[:5]
+    ]
+
+    sections = [
+        "You are a Google Ads optimization expert for Indian brands.",
+        "ACCOUNT SUMMARY (last 365 days):",
+        f"Total Spend: ₹{total_spend:,.0f} | Total Conversions: {int(total_conv)} | Avg ROAS: {avg_roas:.2f}x",
+        "", "CAMPAIGNS:",
+    ] + (camp_lines or ["  No campaign data"])
+
+    if wasted_lines:
+        sections += ["", "WASTED SPEND KEYWORDS (spend > ₹200, 0 conversions):"] + wasted_lines
+    if low_qs_lines:
+        sections += ["", "LOW QUALITY SCORE KEYWORDS (QS ≤ 3):"] + low_qs_lines
+    if neg_lines:
+        sections += ["", "SEARCH TERMS TO CONSIDER AS NEGATIVES (spent > ₹100, 0 conv):"] + neg_lines
+
+    sections += [
+        "",
+        "Provide 8-10 specific, immediately actionable recommendations covering:",
+        "1) Campaigns to scale or pause (by exact name), 2) Keywords to pause or change match type,",
+        "3) Negative keywords to add from the search terms list, 4) Budget reallocation between campaigns,",
+        "5) Quality Score improvements, 6) Bid strategy suggestions, 7) Any quick wins.",
+        "Be specific with numbers (spend amounts, ROAS values). Write each action as a complete sentence.",
+        'Respond with ONLY a JSON array, nothing else. Example: ["Action one here.", "Action two here."]',
+    ]
+
+    action_plan = []
+    try:
+        import anthropic as _anthropic
+        _client = _anthropic.Anthropic()
+        msg = _client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1500,
+            messages=[{"role": "user", "content": "\n".join(sections)}],
+        )
+        text = msg.content[0].text.strip()
+        # Robust extraction: find outermost [ ... ] to avoid breaking on [BROAD]/[EXACT] inside strings
+        start = text.find('[')
+        end = text.rfind(']')
+        if start != -1 and end != -1 and end > start:
+            action_plan = json.loads(text[start:end + 1])
+    except Exception:
+        # Fallback: build rule-based plan
+        if wasted:
+            kw = wasted[0]
+            action_plan.append(
+                f"Pause '{kw['keyword']} [{kw['match_type'] or 'BROAD'}]' — ₹{float(kw['spend']):,.0f} spent with 0 conversions."
+            )
+        if low_qs:
+            kw = low_qs[0]
+            action_plan.append(
+                f"Improve ad relevance for '{kw['keyword']}' — Quality Score {kw['quality_score']}/10. Align ad copy and landing page to the keyword intent."
+            )
+        if neg_rows:
+            terms = ', '.join(f"'{r['search_term']}'" for r in neg_rows[:3])
+            action_plan.append(f"Add as negative keywords: {terms} — these triggered clicks with zero conversions.")
+        if avg_roas < 2.5 and total_spend > 0:
+            action_plan.append(
+                f"Overall ROAS {avg_roas:.2f}x is below 2.5x target. Shift budget from low-ROAS campaigns to the top performer."
+            )
+        best = max(camp_rows, key=lambda r: float(r.get("revenue") or 0) / max(float(r.get("spend") or 1), 1), default=None)
+        if best:
+            best_roas = round(float(best.get("revenue") or 0) / max(float(best.get("spend") or 1), 1), 2)
+            action_plan.append(f"Increase daily budget for '{best['name']}' — your highest-ROAS campaign at {best_roas:.2f}x.")
+        if not action_plan:
+            action_plan = [f"ROAS: {avg_roas:.2f}x on ₹{total_spend:,.0f} spend. Review keyword match types and add negatives from Search Terms report."]
+
+    return {"action_plan": action_plan}
+
+
+# ── Meta campaign breakdown (frequency / placement / age-gender) ────────────
+
+@app.get("/meta/campaign-breakdown/{campaign_id}")
+async def meta_campaign_breakdown(
+    campaign_id: str,
+    request: Request,
+    workspace_id: str = None,
+):
+    """
+    Return the most recent fb_deep_insights row for the workspace.
+    Fields: frequency[], placement[], age_gender[].
+    Data is account-level (not per-campaign) but is contextualised per campaign panel.
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT frequency, placement, age_gender, analysis_date
+                FROM fb_deep_insights
+                WHERE workspace_id = %s
+                ORDER BY analysis_date DESC
+                LIMIT 1
+                """,
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return {
+            "campaign_id": campaign_id,
+            "has_data": False,
+            "frequency": [],
+            "placement": [],
+            "age_gender": [],
+        }
+
+    frequency, placement, age_gender, analysis_date = row
+    return {
+        "campaign_id": campaign_id,
+        "has_data": True,
+        "analysis_date": analysis_date.isoformat() if analysis_date else None,
+        "frequency": frequency or [],
+        "placement": placement or [],
+        "age_gender": age_gender or [],
+    }
+
+
+# ── Generic action log create ────────────────────────────────────────────────
+
+@app.post("/actions/create")
+async def create_action(request: Request):
+    """
+    Create a pending action in the action_log.
+    Body: {workspace_id, platform, entity_id, entity_name, entity_level,
+           action_type, description, suggested_value, triggered_by}
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    platform = body.get("platform", "meta")
+    entity_id = body.get("entity_id", "manual")
+    entity_name = body.get("entity_name", "")
+    entity_level = body.get("entity_level", "campaign")
+    action_type = body.get("action_type", "review")
+    description = body.get("description", "")
+    suggested_value = body.get("suggested_value")
+    triggered_by = body.get("triggered_by", "dashboard_user")
+
+    new_value = {"description": description, "entity_name": entity_name}
+    if suggested_value is not None:
+        new_value["suggested_value"] = suggested_value
+
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO action_log
+                    (workspace_id, platform, account_id, entity_level, entity_id,
+                     action_type, new_value, triggered_by, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, 'pending')
+                RETURNING id, status, ts
+                """,
+                (
+                    workspace_id, platform,
+                    entity_id,  # account_id reused as entity ref
+                    entity_level, entity_id,
+                    action_type,
+                    __import__("json").dumps(new_value),
+                    triggered_by,
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+
+    action_id, status, ts = row
+    return {
+        "id": str(action_id),
+        "status": status,
+        "ts": ts.isoformat() if ts else None,
+    }
+
+
+# ── Search Trends (from kpi_hourly search_term data) ────────────────────────
+
+@app.get("/search-trends")
+async def search_trends(
+    request: Request,
+    workspace_id: str = None,
+    days: int = 90,
+):
+    """
+    Compute growth signals from kpi_hourly search_term data.
+    Returns: [{term, volume, spend, ctr, growth_pct, signal}]
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    import json as _json
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH base AS (
+                    SELECT
+                        COALESCE(entity_name, raw_json->>'search_term', raw_json->>'entity_name') AS term,
+                        date_trunc('day', hour_ts) AS day,
+                        SUM(COALESCE((raw_json->>'clicks')::numeric, 0)) AS clicks,
+                        SUM(COALESCE((raw_json->>'spend')::numeric, 0)) AS spend,
+                        SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) AS imps,
+                        SUM(COALESCE((raw_json->>'conversions')::numeric, 0)) AS convs
+                    FROM kpi_hourly
+                    WHERE workspace_id = %s
+                      AND entity_level = 'search_term'
+                      AND hour_ts >= NOW() - INTERVAL '90 days'
+                    GROUP BY 1, 2
+                ),
+                periods AS (
+                    SELECT
+                        term,
+                        SUM(CASE WHEN day >= NOW() - INTERVAL '30 days' THEN clicks ELSE 0 END) AS clicks_l30,
+                        SUM(CASE WHEN day < NOW() - INTERVAL '30 days' THEN clicks ELSE 0 END) AS clicks_p30,
+                        SUM(clicks) AS volume,
+                        SUM(spend) AS spend,
+                        SUM(imps) AS imps_total,
+                        SUM(convs) AS convs_total
+                    FROM base
+                    GROUP BY 1
+                    HAVING SUM(clicks) > 0
+                )
+                SELECT
+                    term,
+                    volume,
+                    spend,
+                    CASE WHEN imps_total > 0 THEN ROUND(volume::numeric / imps_total * 100, 2) ELSE 0 END AS ctr,
+                    clicks_l30,
+                    clicks_p30,
+                    convs_total,
+                    CASE
+                        WHEN clicks_p30 = 0 AND clicks_l30 > 0 THEN 9999
+                        WHEN clicks_p30 = 0 THEN 0
+                        ELSE ROUND((clicks_l30 - clicks_p30)::numeric / clicks_p30 * 100, 1)
+                    END AS growth_pct
+                FROM periods
+                ORDER BY volume DESC
+                LIMIT 200
+                """,
+                (workspace_id,),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    results = []
+    for r in rows:
+        growth = float(r["growth_pct"] or 0)
+        if growth > 100:
+            signal = "breakout"
+        elif growth > 20:
+            signal = "up"
+        elif growth < -20:
+            signal = "down"
+        else:
+            signal = "stable"
+        results.append({
+            "term": r["term"],
+            "volume": int(r["volume"] or 0),
+            "spend": float(r["spend"] or 0),
+            "ctr": float(r["ctr"] or 0),
+            "growth_pct": growth,
+            "signal": signal,
+            "conversions": int(r["convs_total"] or 0),
+        })
+
+    # Wasted spend: spend > 500, conversions = 0
+    wasted = [r for r in results if r["spend"] > 500 and r["conversions"] == 0]
+    rising = [r for r in results if r["signal"] in ("breakout", "up")]
+
+    return {
+        "has_data": len(results) > 0,
+        "terms": results,
+        "rising": rising,
+        "wasted": wasted,
+        "workspace_id": workspace_id,
+    }
+
+
+# ── Competitor Intel (from google_auction_insights) ──────────────────────────
+
+@app.get("/competitor-intel")
+async def competitor_intel(
+    request: Request,
+    workspace_id: str = None,
+):
+    """Return auction insight rows for the workspace."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT competitor_domain, campaign_name,
+                       ROUND(AVG(impression_share)::numeric, 2) AS impression_share,
+                       ROUND(AVG(overlap_rate)::numeric, 2) AS overlap_rate,
+                       ROUND(AVG(position_above_rate)::numeric, 2) AS position_above_rate,
+                       ROUND(AVG(top_of_page_rate)::numeric, 2) AS top_of_page_rate,
+                       ROUND(AVG(outranking_share)::numeric, 2) AS outranking_share
+                FROM google_auction_insights
+                WHERE workspace_id = %s
+                GROUP BY competitor_domain, campaign_name
+                ORDER BY impression_share DESC NULLS LAST
+                LIMIT 20
+                """,
+                (workspace_id,),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    competitors = [
+        {k: (float(v) if v is not None else None) if k not in ("competitor_domain", "campaign_name") else v
+         for k, v in r.items()}
+        for r in rows
+    ]
+
+    return {
+        "has_data": len(competitors) > 0,
+        "competitors": competitors,
+        "workspace_id": workspace_id,
+    }
+
+
+@app.post("/competitor-intel/ai-analysis")
+async def competitor_intel_ai(request: Request):
+    """
+    Generate a 4-point beat-them strategy using top auction insight competitors.
+    Body: {workspace_id}
+    Cached result served if generated today.
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    import json as _json
+    from services.agent_swarm.db import get_conn
+
+    # Check for today's cached analysis
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT new_value FROM action_log
+                WHERE workspace_id = %s
+                  AND action_type = 'competitor_ai_analysis'
+                  AND ts::date = CURRENT_DATE
+                ORDER BY ts DESC LIMIT 1
+                """,
+                (workspace_id,),
+            )
+            cached = cur.fetchone()
+            if cached and cached[0]:
+                cached_data = cached[0] if isinstance(cached[0], dict) else _json.loads(cached[0])
+                if "strategies" in cached_data:
+                    return {"strategies": cached_data["strategies"], "from_cache": True}
+
+    # Fetch top competitors
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT competitor_domain,
+                       ROUND(AVG(impression_share)::numeric, 1) AS impression_share,
+                       ROUND(AVG(overlap_rate)::numeric, 1) AS overlap_rate,
+                       ROUND(AVG(position_above_rate)::numeric, 1) AS position_above_rate
+                FROM google_auction_insights
+                WHERE workspace_id = %s
+                GROUP BY competitor_domain
+                ORDER BY impression_share DESC NULLS LAST
+                LIMIT 3
+                """,
+                (workspace_id,),
+            )
+            top = cur.fetchall()
+
+    if not top:
+        return {"strategies": [], "has_data": False}
+
+    comp_lines = "\n".join(
+        f"- {r[0]}: Imp Share {r[1]}%, Overlap {r[2]}%, Position Above {r[3]}%"
+        for r in top
+    )
+
+    import anthropic as _anthropic
+    from services.agent_swarm.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+    client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    prompt = f"""You are a Google Ads strategist. Based on auction insight data, generate 4 concrete, actionable counter-strategies.
+
+Top competitors (from Google Auction Insights):
+{comp_lines}
+
+Output exactly 4 strategies as a JSON array of strings. Each strategy should be 1-2 sentences and highly specific.
+Example format: ["Strategy 1 text.", "Strategy 2 text.", "Strategy 3 text.", "Strategy 4 text."]
+Return ONLY the JSON array, no other text."""
+
+    try:
+        msg = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = msg.content[0].text.strip()
+        start, end = text.find("["), text.rfind("]")
+        strategies = _json.loads(text[start:end + 1]) if start != -1 else [text]
+    except Exception:
+        strategies = [
+            f"Bid aggressively against {top[0][0]} — they hold {top[0][1]}% impression share. Increase bids on your top keywords by 20%.",
+            "Add competitor brand names as keywords with dedicated landing pages highlighting your advantages.",
+            "Run RLSA campaigns targeting users who searched competitor terms — these are high-intent prospects.",
+            "Analyse competitor ad copy and create ads emphasising your unique differentiators (price, accuracy, support).",
+        ]
+
+    # Cache result
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO action_log
+                    (workspace_id, platform, account_id, entity_level, entity_id,
+                     action_type, new_value, triggered_by, status)
+                VALUES (%s, 'google', 'system', 'account', 'system',
+                        'competitor_ai_analysis', %s::jsonb, 'ai', 'executed')
+                """,
+                (workspace_id, _json.dumps({"strategies": strategies})),
+            )
+        conn.commit()
+
+    return {"strategies": strategies, "from_cache": False}
+
+
+# ── Comments / Voice of Customer (from search terms) ────────────────────────
+
+@app.get("/comments/insights")
+async def comments_insights(
+    request: Request,
+    workspace_id: str = None,
+):
+    """
+    Derive Voice of Customer signals from kpi_hourly search_term data.
+    pain_terms: spend > ₹500 and conversions = 0 (objection/barrier signals)
+    winning_terms: conversions > 0, sorted by conversion rate
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(entity_name, raw_json->>'search_term', raw_json->>'entity_name') AS term,
+                    SUM(COALESCE((raw_json->>'spend')::numeric, 0)) AS spend,
+                    SUM(COALESCE((raw_json->>'clicks')::numeric, 0)) AS clicks,
+                    SUM(COALESCE((raw_json->>'conversions')::numeric, 0)) AS conversions,
+                    SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) AS impressions
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND entity_level = 'search_term'
+                  AND hour_ts >= NOW() - INTERVAL '90 days'
+                GROUP BY 1
+                HAVING COALESCE(entity_name, raw_json->>'search_term', raw_json->>'entity_name') IS NOT NULL
+                """,
+                (workspace_id,),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    pain_terms = []
+    winning_terms = []
+
+    for r in rows:
+        spend = float(r["spend"] or 0)
+        conversions = float(r["conversions"] or 0)
+        clicks = float(r["clicks"] or 0)
+        term = r["term"]
+
+        if spend > 500 and conversions == 0:
+            pain_terms.append({
+                "term": term,
+                "spend": spend,
+                "clicks": int(clicks),
+                "signal": "Customer Barrier",
+                "insight": f"₹{spend:,.0f} spent with 0 conversions — likely an objection or irrelevant intent",
+            })
+        elif conversions > 0:
+            conv_rate = conversions / clicks * 100 if clicks > 0 else 0
+            winning_terms.append({
+                "term": term,
+                "spend": spend,
+                "clicks": int(clicks),
+                "conversions": int(conversions),
+                "conv_rate": round(conv_rate, 2),
+                "signal": "Resonating Message",
+                "insight": f"{int(conversions)} conversions at {conv_rate:.1f}% CVR — this message resonates",
+            })
+
+    pain_terms.sort(key=lambda x: -x["spend"])
+    winning_terms.sort(key=lambda x: -x["conv_rate"])
+
+    return {
+        "has_data": len(pain_terms) + len(winning_terms) > 0,
+        "pain_terms": pain_terms[:20],
+        "winning_terms": winning_terms[:20],
+        "workspace_id": workspace_id,
+    }
+
+
+# ── Campaign Planner ─────────────────────────────────────────────────────────
+
+@app.get("/campaign-planner/plans")
+async def campaign_planner_plans(
+    request: Request,
+    workspace_id: str = None,
+    limit: int = 20,
+):
+    """Return create_campaign actions from action_log for the workspace."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, action_type, new_value, triggered_by, status, ts
+                FROM action_log
+                WHERE workspace_id = %s
+                  AND action_type = 'create_campaign'
+                ORDER BY ts DESC
+                LIMIT %s
+                """,
+                (workspace_id, limit),
+            )
+            cols = [d[0] for d in cur.description]
+            plans = []
+            for r in cur.fetchall():
+                row = dict(zip(cols, r))
+                row["id"] = str(row["id"])
+                if row.get("ts"):
+                    row["ts"] = row["ts"].isoformat()
+                plans.append(row)
+
+    return {"plans": plans, "count": len(plans), "workspace_id": workspace_id}
+
+
+@app.post("/campaign-planner/create-brief")
+async def campaign_planner_create_brief(request: Request):
+    """
+    Accept a campaign brief, call Claude to generate a concept,
+    insert into action_log as a draft, and return the concept.
+    Body: {workspace_id, product_name, product_price, audience_description,
+           goal, budget_daily, duration_days, channels[]}
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    product_name = body.get("product_name", "")
+    product_price = body.get("product_price", "")
+    audience = body.get("audience_description", "")
+    goal = body.get("goal", "conversions")
+    budget_daily = body.get("budget_daily", 0)
+    duration_days = body.get("duration_days", 14)
+    channels = body.get("channels", ["meta"])
+
+    import json as _json
+    import anthropic as _anthropic
+    from services.agent_swarm.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+
+    prompt = f"""You are an expert performance marketing strategist for an Indian health tech brand.
+Create a complete campaign concept for the following brief:
+
+Product: {product_name} (Price: ₹{product_price})
+Target Audience: {audience}
+Campaign Goal: {goal}
+Daily Budget: ₹{budget_daily}
+Duration: {duration_days} days
+Channels: {', '.join(channels)}
+
+Generate a JSON object with exactly these keys:
+- headline: (string) Primary ad headline, max 40 chars
+- body_copy: (string) 2-3 sentence ad body copy
+- hook: (string) Opening hook for video/reel, 1 sentence
+- creative_direction: (string) Visual/creative guidance, 2-3 sentences
+- recommended_format: (string) e.g. "Carousel + Reel" or "Search + Display"
+- kpi_targets: {{expected_roas: number, expected_cpa: number, expected_ctr: number}}
+- rationale: (string) Why this approach for this audience
+
+Return ONLY valid JSON, no markdown."""
+
+    client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    concept = {}
+    try:
+        msg = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = msg.content[0].text.strip()
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        concept = _json.loads(text[start:end]) if start != -1 else {}
+    except Exception as e:
+        concept = {
+            "headline": f"Discover {product_name}",
+            "body_copy": f"Transform your health with {product_name}. Trusted by thousands of Indians.",
+            "hook": "What if you could monitor your health anywhere, anytime?",
+            "creative_direction": "Show the product in use by a relatable Indian family. Focus on ease and peace of mind.",
+            "recommended_format": "Video + Carousel",
+            "kpi_targets": {"expected_roas": 2.5, "expected_cpa": 800, "expected_ctr": 2.0},
+            "rationale": "Benefit-led creative with social proof performs best in health tech category.",
+            "error": str(e),
+        }
+
+    new_value = {
+        "brief": {
+            "product_name": product_name,
+            "product_price": product_price,
+            "audience_description": audience,
+            "goal": goal,
+            "budget_daily": budget_daily,
+            "duration_days": duration_days,
+            "channels": channels,
+        },
+        "concept": concept,
+    }
+
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO action_log
+                    (workspace_id, platform, account_id, entity_level, entity_id,
+                     action_type, new_value, triggered_by, status)
+                VALUES (%s, %s, 'manual', 'campaign', 'new',
+                        'create_campaign', %s::jsonb, 'dashboard_user', 'pending')
+                RETURNING id, ts
+                """,
+                (
+                    workspace_id,
+                    channels[0] if channels else "meta",
+                    _json.dumps(new_value),
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+
+    plan_id, ts = row
+    return {
+        "plan_id": str(plan_id),
+        "concept": concept,
+        "ts": ts.isoformat() if ts else None,
+        "status": "pending",
+    }
+
+
+# ── Campaign Planner — AI Auto-Generate (uses workspace context) ─────────────
+
+@app.post("/campaign-planner/auto-generate")
+async def campaign_planner_auto_generate(request: Request):
+    """
+    One-click AI campaign generation. No user input needed — Claude reads
+    the workspace's products, recent KPIs and growth data to recommend
+    a complete multi-platform campaign plan.
+    Body: {workspace_id}
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    import json as _json
+    import anthropic as _anthropic
+    from services.agent_swarm.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+    from services.agent_swarm.db import get_conn
+
+    # Gather workspace context
+    context_parts = []
+
+    # 1. Products from catalog
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT name, description, price, product_url
+                       FROM products WHERE workspace_id = %s
+                       ORDER BY updated_at DESC LIMIT 5""",
+                    (workspace_id,),
+                )
+                products = cur.fetchall()
+        if products:
+            context_parts.append("PRODUCTS IN CATALOG:\n" + "\n".join(
+                f"- {p[0]}: {p[1][:120] if p[1] else ''} | Price: ₹{p[2] or '?'} | URL: {p[3] or '—'}"
+                for p in products
+            ))
+    except Exception as e:
+        print(f"Auto-generate products fetch error: {e}")
+
+    # 2. Recent KPI performance (last 30 days)
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT platform,
+                           ROUND(SUM(COALESCE(spend,0))::numeric,0) AS spend,
+                           ROUND(SUM(COALESCE(conversions,0))::numeric,0) AS convs,
+                           ROUND(SUM(COALESCE(revenue,0))::numeric,0) AS revenue,
+                           ROUND(SUM(COALESCE(clicks,0))::numeric,0) AS clicks
+                    FROM kpi_hourly
+                    WHERE workspace_id = %s
+                      AND entity_level = 'campaign'
+                      AND hour_ts >= NOW() - INTERVAL '30 days'
+                    GROUP BY platform
+                    """,
+                    (workspace_id,),
+                )
+                kpis = cur.fetchall()
+        if kpis:
+            context_parts.append("RECENT KPI PERFORMANCE (30 days):\n" + "\n".join(
+                f"- {k[0].upper()}: Spend ₹{k[1]:,.0f} | Conversions {k[2]} | Revenue ₹{k[3]:,.0f} | Clicks {k[4]:,.0f}"
+                for k in kpis
+            ))
+    except Exception as e:
+        print(f"Auto-generate KPI fetch error: {e}")
+
+    # 3. Best-performing campaigns
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT entity_name, platform,
+                           ROUND(SUM(COALESCE(spend,0))::numeric,0) AS spend,
+                           ROUND(SUM(COALESCE(conversions,0))::numeric,0) AS convs,
+                           ROUND(CASE WHEN SUM(COALESCE(spend,0))>0
+                                 THEN SUM(COALESCE(revenue,0))/SUM(COALESCE(spend,0))
+                                 ELSE 0 END::numeric, 2) AS roas
+                    FROM kpi_hourly
+                    WHERE workspace_id = %s
+                      AND entity_level = 'campaign'
+                      AND hour_ts >= NOW() - INTERVAL '90 days'
+                    GROUP BY entity_name, platform
+                    HAVING SUM(COALESCE(spend,0)) > 100
+                    ORDER BY roas DESC LIMIT 5
+                    """,
+                    (workspace_id,),
+                )
+                best = cur.fetchall()
+        if best:
+            context_parts.append("TOP PERFORMING CAMPAIGNS (90 days):\n" + "\n".join(
+                f"- [{b[1]}] {b[0]}: Spend ₹{b[2]:,.0f} | Conversions {b[3]} | ROAS {b[4]}x"
+                for b in best
+            ))
+    except Exception as e:
+        print(f"Auto-generate best campaigns fetch error: {e}")
+
+    workspace_context = "\n\n".join(context_parts) if context_parts else "No historical data available yet."
+
+    prompt = f"""You are a senior performance marketing strategist for an Indian health tech brand.
+Based on the workspace data below, generate a COMPLETE AI-recommended campaign plan to maximise growth.
+
+{workspace_context}
+
+Generate a JSON object with exactly these keys:
+- headline: (string) Primary campaign headline, max 40 chars
+- body_copy: (string) 2-3 sentence campaign rationale/copy
+- hook: (string) Opening hook for video/reel, 1 sentence
+- creative_direction: (string) Specific visual + messaging guidance, 2-3 sentences
+- recommended_format: (string) e.g. "Meta Reels + Google Search + YouTube Pre-roll"
+- recommended_channels: (array of strings) e.g. ["meta","google","youtube"]
+- recommended_budget_daily: (number) INR daily budget recommendation based on current spend
+- recommended_duration_days: (number) e.g. 30
+- kpi_targets: {{expected_roas: number, expected_cpa: number, expected_ctr: number}}
+- rationale: (string) Detailed reasoning — what to scale, what to fix, what's the growth lever
+- growth_insights: (array of strings) 3-5 specific actionable insights from the data
+
+Return ONLY valid JSON, no markdown."""
+
+    client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    concept = {}
+    try:
+        msg = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = msg.content[0].text.strip()
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        concept = _json.loads(text[start:end]) if start != -1 else {}
+    except Exception as e:
+        concept = {
+            "headline": "Scale What's Working",
+            "body_copy": "Based on your performance data, focus on increasing budget on top ROAS campaigns while testing new creatives.",
+            "hook": "Your data shows a clear growth lever — here's how to unlock it.",
+            "creative_direction": "Benefit-led video content with real user testimonials. Lead with the health outcome, not the product.",
+            "recommended_format": "Meta Reels + Google Search",
+            "recommended_channels": ["meta", "google"],
+            "recommended_budget_daily": 5000,
+            "recommended_duration_days": 30,
+            "kpi_targets": {"expected_roas": 2.5, "expected_cpa": 600, "expected_ctr": 2.5},
+            "rationale": "Double down on channels with proven ROAS > 2x while reducing spend on underperforming campaigns.",
+            "growth_insights": [
+                "Scale spend on campaigns with ROAS > 2x",
+                "Pause campaigns with 0 conversions after 7 days",
+                "Test video creative for awareness stage",
+            ],
+            "error": str(e),
+        }
+
+    new_value = {"concept": concept, "auto_generated": True, "context_used": bool(context_parts)}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            channels = concept.get("recommended_channels", ["meta"])
+            cur.execute(
+                """
+                INSERT INTO action_log
+                    (workspace_id, platform, account_id, entity_level, entity_id,
+                     action_type, new_value, triggered_by, status)
+                VALUES (%s, %s, 'auto', 'campaign', 'new',
+                        'create_campaign', %s::jsonb, 'ai_auto', 'pending')
+                RETURNING id, ts
+                """,
+                (workspace_id, channels[0] if channels else "meta", _json.dumps(new_value)),
+            )
+            row = cur.fetchone()
+        conn.commit()
+
+    plan_id, ts = row
+    return {
+        "plan_id": str(plan_id),
+        "concept": concept,
+        "ts": ts.isoformat() if ts else None,
+        "status": "pending",
+        "auto_generated": True,
+        "context_used": bool(context_parts),
+    }
+
+
+# ── Organic Posts signals (Meta campaign CTR as content signals) ─────────────
+
+@app.get("/organic-posts/signals")
+async def organic_posts_signals(
+    request: Request,
+    workspace_id: str = None,
+):
+    """
+    Return Meta campaign CTR signals and hour-of-day data.
+    High CTR campaigns are proxies for engaging content themes.
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Check if Meta is connected (live API or uploaded data)
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM platform_connections
+                WHERE workspace_id = %s AND platform = 'meta'
+                """,
+                (workspace_id,),
+            )
+            meta_live_count = cur.fetchone()[0]
+
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM kpi_hourly
+                WHERE workspace_id = %s AND (platform = 'meta' OR platform IS NULL)
+                  AND entity_level = 'campaign'
+                LIMIT 1
+                """,
+                (workspace_id,),
+            )
+            meta_upload_count = cur.fetchone()[0]
+
+            meta_connected = (meta_live_count > 0) or (meta_upload_count > 0)
+
+            # Top campaigns by CTR (Meta, last 365 days — covers uploaded historical data)
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(entity_name, raw_json->>'campaign_name', raw_json->>'name') AS name,
+                    SUM(COALESCE((raw_json->>'clicks')::numeric, 0)) AS clicks,
+                    SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) AS impressions,
+                    SUM(COALESCE((raw_json->>'spend')::numeric, 0)) AS spend,
+                    CASE
+                        WHEN SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) > 0
+                        THEN ROUND(
+                            SUM(COALESCE((raw_json->>'clicks')::numeric, 0)) /
+                            SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) * 100, 2
+                        )
+                        ELSE 0
+                    END AS ctr
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND (platform = 'meta' OR platform IS NULL)
+                  AND entity_level = 'campaign'
+                  AND hour_ts >= NOW() - INTERVAL '365 days'
+                GROUP BY 1
+                HAVING SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) > 100
+                ORDER BY ctr DESC
+                LIMIT 10
+                """,
+                (workspace_id,),
+            )
+            cols = [d[0] for d in cur.description]
+            top_campaigns = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            # Best hours from hour_of_day entity level (365 days)
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(entity_name, raw_json->>'hour', (raw_json->>'hour_of_day')) AS hour,
+                    ROUND(AVG(COALESCE((raw_json->>'ctr')::numeric, 0)), 2) AS avg_ctr,
+                    SUM(COALESCE((raw_json->>'conversions')::numeric, 0)) AS conversions
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND entity_level = 'hour_of_day'
+                  AND hour_ts >= NOW() - INTERVAL '365 days'
+                GROUP BY 1
+                HAVING hour IS NOT NULL
+                ORDER BY avg_ctr DESC
+                LIMIT 5
+                """,
+                (workspace_id,),
+            )
+            cols2 = [d[0] for d in cur.description]
+            best_hours = [dict(zip(cols2, r)) for r in cur.fetchall()]
+
+    campaigns_clean = []
+    for c in top_campaigns:
+        campaigns_clean.append({
+            "name": c["name"],
+            "ctr": float(c["ctr"] or 0),
+            "clicks": int(c["clicks"] or 0),
+            "impressions": int(c["impressions"] or 0),
+            "spend": float(c["spend"] or 0),
+        })
+
+    hours_clean = []
+    for h in best_hours:
+        hours_clean.append({
+            "hour": h["hour"],
+            "avg_ctr": float(h["avg_ctr"] or 0),
+            "conversions": int(h["conversions"] or 0),
+        })
+
+    return {
+        "meta_connected": meta_connected,
+        "has_meta_data": len(campaigns_clean) > 0,
+        "has_timing_data": len(hours_clean) > 0,
+        "top_campaigns": campaigns_clean,
+        "best_hours": hours_clean,
+        "workspace_id": workspace_id,
+    }
+
+
+# ── KPI Summary for Awareness page blended CAC ──────────────────────────────
+
+@app.get("/kpi/summary")
+async def kpi_summary(
+    request: Request,
+    workspace_id: str = None,
+    days: int = 365,
+):
+    """
+    Aggregate spend + conversions across all platforms for blended CAC.
+    Returns: {total_spend, total_conversions, blended_cac, total_revenue, blended_roas}
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    SUM(COALESCE((raw_json->>'spend')::numeric, 0)) AS total_spend,
+                    SUM(COALESCE((raw_json->>'conversions')::numeric, 0)) AS total_conversions,
+                    SUM(COALESCE((raw_json->>'revenue')::numeric, 0)) AS total_revenue
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND entity_level = 'campaign'
+                  AND hour_ts >= NOW() - (%s * INTERVAL '1 day')
+                """,
+                (workspace_id, days),
+            )
+            row = cur.fetchone()
+
+    total_spend = float(row[0] or 0)
+    total_conversions = float(row[1] or 0)
+    total_revenue = float(row[2] or 0)
+    blended_cac = total_spend / total_conversions if total_conversions > 0 else None
+    blended_roas = total_revenue / total_spend if total_spend > 0 else None
+
+    return {
+        "total_spend": total_spend,
+        "total_conversions": int(total_conversions),
+        "total_revenue": total_revenue,
+        "blended_cac": round(blended_cac, 2) if blended_cac else None,
+        "blended_roas": round(blended_roas, 2) if blended_roas else None,
+        "workspace_id": workspace_id,
+        "days": days,
+    }
+
+
+# ── GA4 Analytics ────────────────────────────────────────────────────────────
+
+def _get_ga4_connector(workspace_id: str):
+    """
+    Load GA4 credentials from google_auth_tokens and return a GA4Connector.
+    Raises HTTPException(400) if not connected or no property found.
+    """
+    from services.agent_swarm.connectors.ga4 import GA4Connector
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT access_token, refresh_token, client_id, client_secret, ga4_property_id
+                FROM google_auth_tokens
+                WHERE workspace_id = %s
+                LIMIT 1
+                """,
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=400, detail="Google not connected for this workspace")
+    access_token, refresh_token, client_id, client_secret, ga4_property_id = row
+    if not ga4_property_id:
+        raise HTTPException(
+            status_code=400,
+            detail="GA4 property not found. Reconnect Google (disconnect + reconnect in Settings) to auto-discover your GA4 property.",
+        )
+    return GA4Connector(
+        access_token=access_token or "",
+        refresh_token=refresh_token or "",
+        property_id=ga4_property_id,
+        client_id=client_id or "",
+        client_secret=client_secret or "",
+    )
+
+
+@app.get("/ga4/status")
+async def ga4_status(request: Request, workspace_id: str = None):
+    """
+    Return GA4 connection status for the workspace.
+    If Google is connected but ga4_property_id is missing, attempt lazy discovery
+    using the stored access token — so the user doesn't need to reconnect.
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT access_token, refresh_token, client_id, client_secret,
+                       ga4_property_id, updated_at
+                FROM google_auth_tokens
+                WHERE workspace_id = %s
+                LIMIT 1
+                """,
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+
+    if not row or not row[0]:
+        return {"connected": False, "property_id": None, "has_property": False}
+
+    access_token, refresh_token, client_id, client_secret, property_id, updated_at = row
+
+    # ── Lazy GA4 property discovery ─────────────────────────────────────────
+    # If Google is connected but we don't have the property_id yet, try to
+    # discover it now (e.g. user connected before this feature was added).
+    if not property_id and access_token:
+        from services.agent_swarm.connectors.ga4 import GA4Connector
+        from services.agent_swarm.db import get_conn as _gc
+        try:
+            # Try with stored access token first; if expired GA4Connector will
+            # refresh it internally when the next API call is made.
+            discovered = GA4Connector.discover_property_id(access_token)
+            if not discovered and refresh_token and client_id and client_secret:
+                # Refresh token and retry
+                import requests as rq
+                tr = rq.post(
+                    "https://oauth2.googleapis.com/token",
+                    data={
+                        "client_id": client_id, "client_secret": client_secret,
+                        "refresh_token": refresh_token, "grant_type": "refresh_token",
+                    },
+                    timeout=15,
+                )
+                if tr.ok:
+                    new_token = tr.json().get("access_token", "")
+                    discovered = GA4Connector.discover_property_id(new_token)
+                    if discovered:
+                        access_token = new_token  # use refreshed token below
+
+            if discovered:
+                property_id = discovered
+                with _gc() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE google_auth_tokens SET ga4_property_id = %s WHERE workspace_id = %s",
+                            (property_id, workspace_id),
+                        )
+                    conn.commit()
+                print(f"[ga4/status] Lazy-discovered property_id={property_id} for workspace {workspace_id}")
+        except Exception as e:
+            print(f"[ga4/status] Lazy discovery failed: {e}")
+
+    return {
+        "connected": bool(access_token),
+        "property_id": property_id,
+        "has_property": bool(property_id),
+        "last_synced": updated_at.isoformat() if updated_at else None,
+    }
+
+
+@app.get("/ga4/properties")
+async def ga4_properties(request: Request, workspace_id: str = None):
+    """List all GA4 properties available for the connected Google account."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.connectors.ga4 import GA4Connector
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT access_token, refresh_token, client_id, client_secret FROM google_auth_tokens WHERE workspace_id = %s LIMIT 1",
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+
+    if not row or not row[0]:
+        raise HTTPException(status_code=400, detail="Google not connected")
+
+    access_token, refresh_token, client_id, client_secret = row
+
+    # Try current token, refresh if it fails
+    props = GA4Connector.list_all_properties(access_token)
+    if not props and refresh_token and client_id and client_secret:
+        import requests as rq
+        tr = rq.post("https://oauth2.googleapis.com/token", data={
+            "client_id": client_id, "client_secret": client_secret,
+            "refresh_token": refresh_token, "grant_type": "refresh_token",
+        }, timeout=15)
+        if tr.ok:
+            props = GA4Connector.list_all_properties(tr.json().get("access_token", ""))
+
+    return {"properties": props, "count": len(props)}
+
+
+@app.post("/ga4/set-property")
+async def ga4_set_property(request: Request):
+    """Manually set a GA4 property_id for the workspace."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    property_id = body.get("property_id")
+    if not workspace_id or not property_id:
+        raise HTTPException(status_code=400, detail="workspace_id and property_id required")
+
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE google_auth_tokens SET ga4_property_id = %s WHERE workspace_id = %s",
+                (property_id, workspace_id),
+            )
+        conn.commit()
+    return {"ok": True, "property_id": property_id}
+
+
+@app.get("/ga4/overview")
+async def ga4_overview(request: Request, workspace_id: str = None, days: int = 30):
+    """Return GA4 session/user/conversion overview with period-over-period change."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    try:
+        ga4 = _get_ga4_connector(workspace_id)
+        return ga4.get_overview(days=days)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/ga4/conversions")
+async def ga4_conversions(request: Request, workspace_id: str = None, days: int = 30):
+    """Return GA4 conversions grouped by event name."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    try:
+        ga4 = _get_ga4_connector(workspace_id)
+        return {"conversions": ga4.get_conversions(days=days), "days": days}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/ga4/landing-pages")
+async def ga4_landing_pages(request: Request, workspace_id: str = None, days: int = 30):
+    """Return GA4 landing page data with drop-off percentages."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    try:
+        ga4 = _get_ga4_connector(workspace_id)
+        return {"landing_pages": ga4.get_landing_pages(days=days), "days": days}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/ga4/traffic-sources")
+async def ga4_traffic_sources(request: Request, workspace_id: str = None, days: int = 30):
+    """Return GA4 traffic source breakdown."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    try:
+        ga4 = _get_ga4_connector(workspace_id)
+        return {"sources": ga4.get_traffic_sources(days=days), "days": days}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/ga4/devices")
+async def ga4_devices(request: Request, workspace_id: str = None, days: int = 30):
+    """Return GA4 device category breakdown."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    try:
+        ga4 = _get_ga4_connector(workspace_id)
+        return {"devices": ga4.get_devices(days=days), "days": days}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/ga4/geo")
+async def ga4_geo(request: Request, workspace_id: str = None, days: int = 30):
+    """Return GA4 geographic breakdown (country + city)."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    try:
+        ga4 = _get_ga4_connector(workspace_id)
+        return {"geo": ga4.get_geo(days=days), "days": days}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/migrate")
+async def admin_migrate(request: Request):
+    """
+    One-time migration endpoint — runs safe idempotent ALTER TABLE statements.
+    Protected by X-Admin-Token header.
+    """
+    token = request.headers.get("X-Admin-Token", "")
+    if not token or token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    from services.agent_swarm.db import get_conn
+    results = []
+    migrations = [
+        "ALTER TABLE kpi_hourly ADD COLUMN IF NOT EXISTS entity_name TEXT",
+        "ALTER TABLE google_auth_tokens ADD COLUMN IF NOT EXISTS ga4_property_id TEXT",
+        """CREATE TABLE IF NOT EXISTS google_auction_insights (
+            id                     BIGSERIAL PRIMARY KEY,
+            workspace_id           UUID REFERENCES workspaces(id),
+            campaign_name          TEXT NOT NULL DEFAULT '',
+            competitor_domain      TEXT NOT NULL,
+            impression_share       NUMERIC,
+            overlap_rate           NUMERIC,
+            position_above_rate    NUMERIC,
+            top_of_page_rate       NUMERIC,
+            abs_top_impression_pct NUMERIC,
+            outranking_share       NUMERIC,
+            uploaded_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (workspace_id, campaign_name, competitor_domain)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_auction_ws ON google_auction_insights(workspace_id)",
+    ]
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for sql in migrations:
+                try:
+                    cur.execute(sql)
+                    results.append({"sql": sql, "ok": True})
+                except Exception as e:
+                    results.append({"sql": sql, "ok": False, "error": str(e)})
+        conn.commit()
+    return {"migrations": results}
+
+
+# ── AI Daily Brief (Growth Engine — dashboard action items) ──────────────────
+
+@app.get("/ai/daily-brief")
+async def ai_daily_brief(
+    request: Request,
+    workspace_id: str = None,
+):
+    """
+    Generate 4 specific, actionable growth opportunities using Claude.
+    Analyzes real KPIs, campaigns, competitor intel, and GA4 data.
+    Cached for 6 hours to avoid redundant Claude calls.
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    import json as _json
+    import anthropic as _anthropic
+    from datetime import timezone as _tz
+    from services.agent_swarm.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+    from services.agent_swarm.db import get_conn
+
+    # ── Check 6-hour cache ────────────────────────────────────────────────────
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT new_value, ts FROM action_log
+                WHERE workspace_id = %s
+                  AND triggered_by = 'ai_brief'
+                  AND ts >= NOW() - INTERVAL '6 hours'
+                ORDER BY ts DESC LIMIT 1
+                """,
+                (workspace_id,),
+            )
+            cached = cur.fetchone()
+
+    if cached:
+        try:
+            payload = _json.loads(cached[0]) if isinstance(cached[0], str) else cached[0]
+            opportunities = payload.get("opportunities", [])
+            if opportunities:
+                return {
+                    "opportunities": opportunities,
+                    "generated_at": cached[1].isoformat() if cached[1] else None,
+                    "cached": True,
+                }
+        except Exception:
+            pass  # fall through to regenerate
+
+    # ── Gather context data ───────────────────────────────────────────────────
+    context_parts = []
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # KPI summary: 7d
+            cur.execute(
+                """
+                SELECT
+                    SUM(spend) AS spend,
+                    SUM(impressions) AS impressions,
+                    SUM(clicks) AS clicks,
+                    SUM(conversions) AS conversions,
+                    SUM(revenue) AS revenue,
+                    CASE WHEN SUM(spend)>0 THEN ROUND(SUM(revenue)/SUM(spend),2) ELSE 0 END AS roas,
+                    CASE WHEN SUM(impressions)>0 THEN ROUND(SUM(clicks)/SUM(impressions)*100,2) ELSE 0 END AS ctr,
+                    platform
+                FROM kpi_hourly
+                WHERE workspace_id = %s AND hour_ts >= NOW() - INTERVAL '7 days'
+                GROUP BY platform
+                """,
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+            kpi_7d = [dict(zip(cols, r)) for r in rows]
+            context_parts.append(f"KPI last 7 days by platform:\n{_json.dumps([{k: float(v) if isinstance(v, __builtins__.__class__) else v for k, v in r.items()} for r in kpi_7d], default=str)}")
+
+            # Top 5 campaigns by spend (last 30d)
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(entity_name, raw_json->>'campaign_name', 'Unknown') AS name,
+                    platform,
+                    SUM(spend) AS spend,
+                    SUM(conversions) AS conversions,
+                    CASE WHEN SUM(spend)>0 THEN ROUND(SUM(revenue)/SUM(spend),2) ELSE 0 END AS roas,
+                    CASE WHEN SUM(impressions)>0 THEN ROUND(SUM(clicks)/SUM(impressions)*100,2) ELSE 0 END AS ctr
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND entity_level = 'campaign'
+                  AND hour_ts >= NOW() - INTERVAL '30 days'
+                GROUP BY 1, 2
+                HAVING SUM(spend) > 0
+                ORDER BY spend DESC
+                LIMIT 5
+                """,
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+            top_campaigns = [dict(zip(cols, r)) for r in rows]
+            if top_campaigns:
+                context_parts.append(f"Top campaigns last 30 days:\n{_json.dumps(top_campaigns, default=str)}")
+
+            # Worst campaigns (low ROAS, still spending)
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(entity_name, raw_json->>'campaign_name', 'Unknown') AS name,
+                    platform,
+                    SUM(spend) AS spend,
+                    CASE WHEN SUM(spend)>0 THEN ROUND(SUM(revenue)/SUM(spend),2) ELSE 0 END AS roas
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND entity_level = 'campaign'
+                  AND hour_ts >= NOW() - INTERVAL '7 days'
+                GROUP BY 1, 2
+                HAVING SUM(spend) > 500
+                  AND (SUM(spend)=0 OR SUM(revenue)/SUM(spend) < 1.5)
+                ORDER BY spend DESC
+                LIMIT 3
+                """,
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+            weak_campaigns = [dict(zip(cols, r)) for r in rows]
+            if weak_campaigns:
+                context_parts.append(f"Underperforming campaigns (ROAS<1.5x, last 7 days):\n{_json.dumps(weak_campaigns, default=str)}")
+
+            # Competitor intel (auction insights)
+            cur.execute(
+                """
+                SELECT competitor_domain, impression_share, overlap_rate, position_above_rate
+                FROM google_auction_insights
+                WHERE workspace_id = %s
+                ORDER BY impression_share DESC LIMIT 5
+                """,
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+            if rows:
+                cols = [d[0] for d in cur.description]
+                comps = [dict(zip(cols, r)) for r in rows]
+                context_parts.append(f"Top Google competitors (auction insights):\n{_json.dumps(comps, default=str)}")
+
+            # Recent search terms (high impressions, low conversions = opportunity)
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(entity_name, raw_json->>'search_term') AS term,
+                    SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) AS impressions,
+                    SUM(COALESCE((raw_json->>'clicks')::numeric, 0)) AS clicks,
+                    SUM(COALESCE((raw_json->>'conversions')::numeric, 0)) AS conversions
+                FROM kpi_hourly
+                WHERE workspace_id = %s
+                  AND entity_level = 'search_term'
+                  AND hour_ts >= NOW() - INTERVAL '30 days'
+                GROUP BY 1
+                HAVING SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) > 50
+                ORDER BY impressions DESC
+                LIMIT 10
+                """,
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+            if rows:
+                cols = [d[0] for d in cur.description]
+                terms = [dict(zip(cols, r)) for r in rows]
+                context_parts.append(f"Top search terms last 30 days:\n{_json.dumps(terms, default=str)}")
+
+            # GA4 traffic sources (if connected)
+            cur.execute(
+                "SELECT ga4_property_id FROM google_auth_tokens WHERE workspace_id=%s LIMIT 1",
+                (workspace_id,),
+            )
+            ga4_row = cur.fetchone()
+            if ga4_row and ga4_row[0]:
+                try:
+                    from services.agent_swarm.connectors.ga4 import GA4Connector
+                    g_row = _get_google_conn_from_db(workspace_id)
+                    if g_row:
+                        ga4 = GA4Connector(
+                            access_token=g_row["access_token"],
+                            refresh_token=g_row.get("refresh_token", ""),
+                            property_id=ga4_row[0],
+                            client_id=g_row.get("client_id", ""),
+                            client_secret=g_row.get("client_secret", ""),
+                        )
+                        overview = ga4.get_overview(days=7)
+                        context_parts.append(
+                            f"GA4 website last 7 days: sessions={overview.get('sessions')}, "
+                            f"conversions={overview.get('conversions')}, revenue={overview.get('revenue')}, "
+                            f"bounce_rate={overview.get('bounce_rate')}"
+                        )
+                except Exception:
+                    pass
+
+    context_str = "\n\n---\n\n".join(context_parts) if context_parts else "No performance data yet."
+
+    prompt = f"""You are a senior growth strategist for an Indian D2C health brand.
+Analyze this real marketing performance data and generate exactly 4 specific, actionable growth opportunities.
+
+PERFORMANCE DATA:
+{context_str}
+
+Generate a JSON array of exactly 4 objects. Each object MUST have these exact keys:
+- action_type: one of "increase_budget", "pause_campaign", "new_creative", "geographic_expansion", "keyword_addition", "bid_adjustment", "reduce_budget"
+- title: max 6 words, action-focused (e.g. "Scale SanketLife Budget 25%")
+- detail: exactly 2 sentences. First sentence: what the data shows (with specific numbers). Second sentence: what to do and why.
+- expected_impact: "High", "Medium", or "Low"
+- platform: "meta", "google", "youtube", or "all"
+- entity_name: the specific campaign/keyword/product name this applies to, or "" if general
+
+Prioritize: High-ROAS campaigns that can be scaled > Underperforming campaigns to pause > New keyword/creative opportunities.
+Be specific with rupee amounts and percentages from the actual data.
+Return ONLY the JSON array, no other text."""
+
+    try:
+        client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        resp = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        opportunities = _json.loads(raw.strip())
+        if not isinstance(opportunities, list):
+            opportunities = opportunities.get("opportunities", []) if isinstance(opportunities, dict) else []
+    except Exception as e:
+        # Fallback: return empty with error note
+        return {
+            "opportunities": [],
+            "generated_at": None,
+            "cached": False,
+            "error": str(e)[:200],
+        }
+
+    # ── Cache the result for 6 hours ──────────────────────────────────────────
+    cache_payload = _json.dumps({"opportunities": opportunities})
+    import uuid as _uuid
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO action_log
+                        (workspace_id, platform, account_id, entity_level, entity_id,
+                         action_type, new_value, triggered_by, status)
+                    VALUES (%s, 'all', 'ai_brief', 'brief', 'daily', 'ai_brief',
+                            CAST(%s AS jsonb), 'ai_brief', 'executed')
+                    """,
+                    (workspace_id, cache_payload),
+                )
+            conn.commit()
+    except Exception:
+        pass  # cache failure is non-fatal
+
+    from datetime import datetime as _datetime
+    return {
+        "opportunities": opportunities,
+        "generated_at": _datetime.utcnow().isoformat(),
+        "cached": False,
+    }

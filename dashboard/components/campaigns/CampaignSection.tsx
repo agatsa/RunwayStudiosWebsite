@@ -10,7 +10,7 @@ import BudgetEditDialog from './BudgetEditDialog'
 import CampaignDetailPanel from './CampaignDetailPanel'
 import type { MetaCampaign, GoogleCampaign } from '@/lib/types'
 
-type EnrichedCampaign = (MetaCampaign | GoogleCampaign) & { _platform: 'meta' | 'google' }
+type EnrichedCampaign = (MetaCampaign | GoogleCampaign) & { _platform: 'meta' | 'google'; _source?: 'excel_upload' }
 
 interface Props {
   title: string
@@ -33,6 +33,7 @@ function CampaignRow({
   const [isPending, startTransition] = useTransition()
   const router = useRouter()
 
+  const isUploaded = campaign._source === 'excel_upload'
   const isActive =
     campaign.status === 'ACTIVE' ||
     (campaign as MetaCampaign).effective_status === 'ACTIVE'
@@ -76,16 +77,23 @@ function CampaignRow({
         </p>
       </td>
       <td className="py-3 pr-4">
-        <span
-          className={cn(
-            'rounded-full px-2.5 py-0.5 text-xs font-medium',
-            isActive
-              ? 'bg-green-100 text-green-800'
-              : 'bg-yellow-100 text-yellow-800',
+        <div className="flex items-center gap-1.5">
+          <span
+            className={cn(
+              'rounded-full px-2.5 py-0.5 text-xs font-medium',
+              isActive
+                ? 'bg-green-100 text-green-800'
+                : 'bg-yellow-100 text-yellow-800',
+            )}
+          >
+            {campaign.status}
+          </span>
+          {isUploaded && (
+            <span className="rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-700">
+              Uploaded
+            </span>
           )}
-        >
-          {campaign.status}
-        </span>
+        </div>
       </td>
       <td className="py-3 pr-4 font-mono text-sm text-gray-700">
         {dailyBudget != null ? formatINR(dailyBudget) : '—'}
@@ -95,30 +103,34 @@ function CampaignRow({
       </td>
       <td className="py-3" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-2">
-          <button
-            onClick={toggleStatus}
-            disabled={isPending}
-            className={cn(
-              'flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50',
-              isActive
-                ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'
-                : 'bg-green-100 text-green-700 hover:bg-green-200',
-            )}
-          >
-            {isPending ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : isActive ? (
-              <Pause className="h-3 w-3" />
-            ) : (
-              <Play className="h-3 w-3" />
-            )}
-            {isActive ? 'Pause' : 'Resume'}
-          </button>
+          {!isUploaded && (
+            <button
+              onClick={toggleStatus}
+              disabled={isPending}
+              className={cn(
+                'flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50',
+                isActive
+                  ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'
+                  : 'bg-green-100 text-green-700 hover:bg-green-200',
+              )}
+            >
+              {isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : isActive ? (
+                <Pause className="h-3 w-3" />
+              ) : (
+                <Play className="h-3 w-3" />
+              )}
+              {isActive ? 'Pause' : 'Resume'}
+            </button>
+          )}
           <BudgetEditDialog
             platform={campaign._platform}
             workspaceId={workspaceId}
             entityId={campaign.id}
+            entityName={campaign.name}
             currentBudgetInr={dailyBudget}
+            isUploaded={isUploaded}
           />
         </div>
       </td>

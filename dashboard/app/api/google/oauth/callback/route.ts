@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { fetchFromFastAPI } from '@/lib/api'
 
 export async function GET(req: NextRequest) {
-  const { searchParams, origin } = req.nextUrl
+  const { searchParams } = req.nextUrl
+
+  // Inside a Cloud Run container, req.nextUrl.origin resolves to the internal
+  // address (0.0.0.0:3000). Use x-forwarded-host to get the real public URL.
+  const fwdHost = req.headers.get('x-forwarded-host')
+  const fwdProto = req.headers.get('x-forwarded-proto') ?? 'https'
+  const origin = fwdHost ? `${fwdProto}://${fwdHost}` : req.nextUrl.origin
   const code = searchParams.get('code')
   const state = searchParams.get('state')
   const error = searchParams.get('error')
@@ -72,7 +78,8 @@ export async function GET(req: NextRequest) {
     )
   }
 
-  // Ask FastAPI to auto-discover customer_id + youtube_channel_id and save
+  // Ask FastAPI to auto-discover customer_id + youtube_channel_id and save.
+  // Pass client_id/secret from dashboard env so agent-swarm doesn't need them as its own env vars.
   try {
     const saveRes = await fetchFromFastAPI('/google/oauth/save', {
       method: 'POST',
@@ -80,13 +87,17 @@ export async function GET(req: NextRequest) {
         workspace_id: workspaceId,
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
+        client_id: clientId,
+        client_secret: clientSecret,
       }),
     })
     if (!saveRes.ok) {
       const msg = await saveRes.text()
-      console.error('[google/oauth/callback] FastAPI save failed:', msg)
+      console.error('[google/oauth/callback] FastAPI save failed:', saveRes.status, msg)
+      // 422 = no Google Ads account found; 500 = server misconfiguration
+      const errCode = saveRes.status === 422 ? 'no_ads_account' : 'save_failed'
       return NextResponse.redirect(
-        `${origin}/settings?ws=${workspaceId}&google_error=save_failed`,
+        `${origin}/settings?ws=${workspaceId}&google_error=${errCode}`,
       )
     }
   } catch (e) {

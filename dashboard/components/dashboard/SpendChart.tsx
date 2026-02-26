@@ -9,16 +9,20 @@ interface Props {
 
 function buildChartData(daily: DailyKpiRow[]) {
   const byDate: Record<string, { date: string; Meta: number; Google: number }> = {}
+  const hasGoogle = daily.some(r => r.platform === 'google' && r.spend > 0)
   for (const row of daily) {
     if (!byDate[row.date]) byDate[row.date] = { date: row.date, Meta: 0, Google: 0 }
     if (row.platform === 'meta')   byDate[row.date].Meta   += row.spend
     if (row.platform === 'google') byDate[row.date].Google += row.spend
   }
-  return Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date))
+  return {
+    data: Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date)),
+    hasGoogle,
+  }
 }
 
 export default function SpendChart({ daily }: Props) {
-  const data = buildChartData(daily)
+  const { data, hasGoogle } = buildChartData(daily)
 
   if (data.length === 0) {
     return (
@@ -28,12 +32,15 @@ export default function SpendChart({ daily }: Props) {
     )
   }
 
+  const categories = hasGoogle ? ['Meta', 'Google'] : ['Meta']
+  const colors     = hasGoogle ? ['blue', 'emerald'] : ['blue']
+
   return (
     <AreaChart
       data={data}
       index="date"
-      categories={['Meta', 'Google']}
-      colors={['blue', 'emerald']}
+      categories={categories}
+      colors={colors}
       valueFormatter={(v: number) =>
         new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(v)
       }

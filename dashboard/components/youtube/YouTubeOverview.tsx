@@ -65,7 +65,7 @@ export default function YouTubeOverview({ channel, daily, analyticsAvailable = t
           <div className={`mb-3 inline-flex rounded-lg p-2 ${bg}`}>
             <Icon className={`h-4 w-4 ${color}`} />
           </div>
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+          <p className="text-xs font-semibold text-gray-600">
             {label}
           </p>
           <p className="mt-1 text-xl font-bold text-gray-900">{value}</p>

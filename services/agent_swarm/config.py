@@ -56,7 +56,7 @@ GOOGLE_REFRESH_TOKEN = os.getenv("GOOGLE_REFRESH_TOKEN", "")
 GOOGLE_CUSTOMER_ID = os.getenv("GOOGLE_CUSTOMER_ID", "")       # no dashes
 GOOGLE_MERCHANT_ID = os.getenv("GOOGLE_MERCHANT_ID", "")
 GOOGLE_LOGIN_CUSTOMER_ID = os.getenv("GOOGLE_LOGIN_CUSTOMER_ID", "")  # MCC, if any
-GOOGLE_ADS_API_VERSION = os.getenv("GOOGLE_ADS_API_VERSION", "v18")
+GOOGLE_ADS_API_VERSION = os.getenv("GOOGLE_ADS_API_VERSION", "v20")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 
 # ── Meta Pixel (for conversion campaign creation) ──────────

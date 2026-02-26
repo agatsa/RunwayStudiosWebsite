@@ -11,16 +11,20 @@ interface Props {
 
 function buildChartData(daily: DailyKpiRow[]) {
   const byDate: Record<string, { date: string; Meta: number; Google: number; Target: number }> = {}
+  const hasGoogle = daily.some(r => r.platform === 'google' && r.roas > 0)
   for (const row of daily) {
     if (!byDate[row.date]) byDate[row.date] = { date: row.date, Meta: 0, Google: 0, Target: TARGET_ROAS }
     if (row.platform === 'meta')   byDate[row.date].Meta   = row.roas
     if (row.platform === 'google') byDate[row.date].Google = row.roas
   }
-  return Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date))
+  return {
+    data: Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date)),
+    hasGoogle,
+  }
 }
 
 export default function RoasChart({ daily }: Props) {
-  const data = buildChartData(daily)
+  const { data, hasGoogle } = buildChartData(daily)
 
   if (data.length === 0) {
     return (
@@ -30,12 +34,15 @@ export default function RoasChart({ daily }: Props) {
     )
   }
 
+  const categories = hasGoogle ? ['Meta', 'Google', 'Target'] : ['Meta', 'Target']
+  const colors     = hasGoogle ? ['blue', 'emerald', 'rose']  : ['blue', 'rose']
+
   return (
     <LineChart
       data={data}
       index="date"
-      categories={['Meta', 'Google', 'Target']}
-      colors={['blue', 'emerald', 'rose']}
+      categories={categories}
+      colors={colors}
       valueFormatter={(v: number) => `${v.toFixed(2)}x`}
       yAxisWidth={60}
       showAnimation

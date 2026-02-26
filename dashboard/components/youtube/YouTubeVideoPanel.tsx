@@ -111,7 +111,7 @@ export default function YouTubeVideoPanel({ video, workspaceId, onClose }: Props
           <div className="flex-1 space-y-6 p-5">
             {/* Metrics grid */}
             <div>
-              <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">
+              <h3 className="mb-3 text-sm font-semibold text-gray-700">
                 Last 30 Days
               </h3>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -147,7 +147,7 @@ export default function YouTubeVideoPanel({ video, workspaceId, onClose }: Props
             {/* Views trend */}
             {chartData.length > 0 && (
               <div>
-                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <h3 className="mb-3 text-sm font-semibold text-gray-700">
                   Daily Views Trend
                 </h3>
                 <AreaChart
@@ -168,7 +168,7 @@ export default function YouTubeVideoPanel({ video, workspaceId, onClose }: Props
               <div>
                 <div className="mb-3 flex items-center gap-1.5">
                   <Lightbulb className="h-3.5 w-3.5 text-yellow-500" />
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  <h3 className="text-sm font-semibold text-gray-700">
                     AI Suggestions
                   </h3>
                 </div>
