@@ -26,6 +26,8 @@ interface Plan {
       rationale?: string
       growth_insights?: string[]
       generated_image_url?: string
+      image_generation_mode?: string
+      product_reference_url?: string
     }
     meta_campaign_id?: string
     meta_adset_id?: string
@@ -69,6 +71,7 @@ function StatusBadge({ status }: { status: string }) {
 function PlanCard({ plan, workspaceId }: { plan: Plan; workspaceId?: string }) {
   const [expanded, setExpanded]         = useState(false)
   const [imageUrl, setImageUrl]         = useState(plan.new_value?.concept?.generated_image_url || '')
+  const [genMode, setGenMode]           = useState(plan.new_value?.concept?.image_generation_mode || '')
   const [adId, setAdId]                 = useState(plan.new_value?.meta_ad_id || '')
   const [generatingImage, setGeneratingImage] = useState(false)
   const [publishingAd, setPublishingAd]       = useState(false)
@@ -100,7 +103,11 @@ function PlanCard({ plan, workspaceId }: { plan: Plan; workspaceId?: string }) {
         return
       }
       setImageUrl(data.image_url)
-      toast.success('Creative image generated — review and publish as ad below')
+      setGenMode(data.generation_mode || '')
+      const modeLabel = data.generation_mode === 'ip_adapter'
+        ? '✓ Creative generated using your actual product image'
+        : '✓ Creative image generated — review and publish as ad below'
+      toast.success(modeLabel)
     } catch {
       toast.error('Image generation failed — try again')
     } finally {
@@ -220,6 +227,16 @@ function PlanCard({ plan, workspaceId }: { plan: Plan; workspaceId?: string }) {
                     alt="Generated ad creative"
                     className="rounded-lg border border-gray-200 w-full max-w-[260px] aspect-square object-cover"
                   />
+                  {genMode === 'ip_adapter' && (
+                    <p className="text-xs text-green-600 font-medium flex items-center gap-1">
+                      <Sparkles className="h-3 w-3" /> Product image used as reference
+                    </p>
+                  )}
+                  {genMode === 'text_to_image_fallback' && (
+                    <p className="text-xs text-amber-600 flex items-center gap-1">
+                      AI-generated (product image unavailable)
+                    </p>
+                  )}
                   {!adId && (
                     <button
                       onClick={handleGenerateImage}

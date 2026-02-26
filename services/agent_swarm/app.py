@@ -6715,21 +6715,23 @@ Return ONLY valid JSON, no markdown."""
 @app.post("/campaign-planner/generate-image")
 async def campaign_planner_generate_image(request: Request):
     """
-    Generate a creative image for a campaign plan using fal.ai Flux Pro.
-    Saves the image URL back into the plan's new_value.concept.generated_image_url.
+    Generate a creative image for a campaign plan.
+    - If a matching product image is found in the catalog → IP-Adapter (product-faithful)
+    - Otherwise → pure text-to-image (Flux Pro) fallback
+    Saves the image URL + source back into plan's new_value.concept.
     Body: {plan_id, workspace_id}
     """
     _auth(request)
     body = await request.json()
-    plan_id     = body.get("plan_id")
-    workspace_id= body.get("workspace_id")
+    plan_id      = body.get("plan_id")
+    workspace_id = body.get("workspace_id")
     if not plan_id or not workspace_id:
         raise HTTPException(status_code=400, detail="plan_id and workspace_id required")
 
     import json as _json
     from services.agent_swarm.db import get_conn
 
-    # Load plan
+    # ── Load plan ─────────────────────────────────────────────────────────────
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -6740,18 +6742,58 @@ async def campaign_planner_generate_image(request: Request):
     if not row:
         raise HTTPException(status_code=404, detail="Plan not found")
 
-    nv = row[0] if isinstance(row[0], dict) else _json.loads(row[0] or "{}")
+    nv      = row[0] if isinstance(row[0], dict) else _json.loads(row[0] or "{}")
     concept = nv.get("concept", {})
     brief   = nv.get("brief", {})
 
     creative_direction = concept.get("creative_direction", "")
-    headline           = concept.get("headline", "")
-    product_name       = brief.get("product_name", "health tech product")
+    product_name       = brief.get("product_name") or concept.get("headline") or "health tech product"
 
     if not creative_direction:
         raise HTTPException(status_code=400, detail="No creative_direction in plan — regenerate the brief first")
 
-    # Build a rich image prompt from the creative brief
+    # ── Look up product image from catalog ───────────────────────────────────
+    # 1. Try exact / fuzzy name match within this workspace
+    # 2. Fall back to any product with images in this workspace
+    product_image_url = None
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Fuzzy match: product name contains any word from plan's product_name
+            cur.execute(
+                """
+                SELECT images FROM products
+                WHERE workspace_id = %s
+                  AND images != '[]'::jsonb
+                  AND jsonb_array_length(images) > 0
+                  AND name ILIKE %s
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (workspace_id, f"%{product_name.split()[0]}%"),
+            )
+            prod_row = cur.fetchone()
+
+            if not prod_row:
+                # Fallback: any product with images for this workspace
+                cur.execute(
+                    """
+                    SELECT images FROM products
+                    WHERE workspace_id = %s
+                      AND images != '[]'::jsonb
+                      AND jsonb_array_length(images) > 0
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (workspace_id,),
+                )
+                prod_row = cur.fetchone()
+
+    if prod_row:
+        images_list = prod_row[0] if isinstance(prod_row[0], list) else _json.loads(prod_row[0] or "[]")
+        if images_list and isinstance(images_list[0], dict):
+            product_image_url = images_list[0].get("url") or images_list[0].get("src")
+
+    # ── Build prompt ──────────────────────────────────────────────────────────
     prompt = (
         f"Professional Indian health tech advertisement creative. "
         f"Product: {product_name}. "
@@ -6762,15 +6804,44 @@ async def campaign_planner_generate_image(request: Request):
         f"Square format, suitable for Instagram and Facebook feed ads."
     )
 
-    try:
-        from services.agent_swarm.creative.image_gen import generate_ad_image
-        image_url = generate_ad_image(prompt, size="square_hd")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Image generation failed: {e}")
+    # ── Generate ──────────────────────────────────────────────────────────────
+    from services.agent_swarm.creative.image_gen import (
+        generate_ad_image,
+        generate_ad_image_ip_adapter,
+    )
 
-    # Store image URL back in plan
+    generation_mode = "text_to_image"
+    try:
+        if product_image_url:
+            # IP-Adapter: preserves actual product shape, colour, texture in the scene
+            image_url = generate_ad_image_ip_adapter(
+                prompt=prompt,
+                product_image_url=product_image_url,
+                ip_scale=0.75,
+                size="square_hd",
+            )
+            generation_mode = "ip_adapter"
+        else:
+            image_url = generate_ad_image(prompt, size="square_hd")
+    except Exception as e:
+        # IP-Adapter failed (e.g. product image URL broken) → fall back to T2I
+        if product_image_url:
+            try:
+                image_url = generate_ad_image(prompt, size="square_hd")
+                generation_mode = "text_to_image_fallback"
+            except Exception as e2:
+                raise HTTPException(status_code=500, detail=f"Image generation failed: {e2}")
+        else:
+            raise HTTPException(status_code=500, detail=f"Image generation failed: {e}")
+
+    # ── Persist back into plan ────────────────────────────────────────────────
     nv_updated = dict(nv)
-    nv_updated["concept"] = {**concept, "generated_image_url": image_url}
+    nv_updated["concept"] = {
+        **concept,
+        "generated_image_url":  image_url,
+        "image_generation_mode": generation_mode,
+        "product_reference_url": product_image_url,
+    }
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -6779,7 +6850,13 @@ async def campaign_planner_generate_image(request: Request):
             )
         conn.commit()
 
-    return {"ok": True, "image_url": image_url, "plan_id": plan_id}
+    return {
+        "ok":                  True,
+        "image_url":           image_url,
+        "plan_id":             plan_id,
+        "generation_mode":     generation_mode,
+        "product_image_used":  product_image_url,
+    }
 
 
 @app.post("/campaign-planner/publish-ad")
