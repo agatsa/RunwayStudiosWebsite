@@ -78,21 +78,21 @@ export default async function ApprovalsPage({ searchParams }: PageProps) {
             <Clock className="h-5 w-5 text-yellow-600 shrink-0" />
             <div>
               <p className="text-xl font-bold text-yellow-700">{stats.pending}</p>
-              <p className="text-[10px] text-yellow-600">Pending approval</p>
+              <p className="text-xs text-yellow-600">Pending approval</p>
             </div>
           </div>
           <div className="flex items-center gap-3 rounded-xl border border-green-200 bg-green-50 px-4 py-3">
             <CheckCircle2 className="h-5 w-5 text-green-600 shrink-0" />
             <div>
               <p className="text-xl font-bold text-green-700">{stats.approved}</p>
-              <p className="text-[10px] text-green-600">Approved this week</p>
+              <p className="text-xs text-green-600">Approved this week</p>
             </div>
           </div>
           <div className="flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
             <Zap className="h-5 w-5 text-blue-600 shrink-0" />
             <div>
               <p className="text-xl font-bold text-blue-700">{stats.autoExecuted}</p>
-              <p className="text-[10px] text-blue-600">Auto-executed</p>
+              <p className="text-xs text-blue-600">Auto-executed</p>
             </div>
           </div>
         </div>

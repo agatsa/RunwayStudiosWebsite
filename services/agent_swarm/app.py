@@ -1220,14 +1220,15 @@ async def handle_creative_approval(request: Request):
 @app.post("/approval/respond")
 async def handle_approval(request: Request):
     """
-    Called by wa-bot when admin replies 'approve XXXXXXXX' or 'reject XXXXXXXX'.
-    Executes or cancels the pending budget-governor action.
-    Body: {action_id, decision, phone_number_id?}
+    Called by wa-bot when admin replies 'approve XXXXXXXX' or 'reject XXXXXXXX',
+    or by the dashboard UI with {action_id: full_uuid, decision: approve|reject}.
+    For directly executable action types (pause/resume/budget) it calls the Meta API.
+    For all other types it simply marks the action approved so it leaves the queue.
     """
     body = await request.json()
     # Accept both field name formats:
     # WhatsApp bot sends: {action_id: short_prefix, decision: approve/reject}
-    # Dashboard UI sends: {action_log_id: full_uuid, response: YES/NO}
+    # Dashboard UI sends: {action_id: full_uuid, decision: approve/reject}
     action_short_id = (body.get("action_id") or body.get("action_log_id") or "").strip().lower()
     decision_raw = body.get("decision") or body.get("response", "")
     decision = "approve" if str(decision_raw).upper() in ("APPROVE", "YES") else "reject"
@@ -1252,7 +1253,7 @@ async def handle_approval(request: Request):
             row = cur.fetchone()
 
     if not row:
-        return {"ok": False, "error": "Action not found or already resolved"}
+        raise HTTPException(status_code=404, detail="Action not found or already resolved")
 
     action_id, entity_id, action_type, new_value_raw, status = row
 
@@ -1260,7 +1261,7 @@ async def handle_approval(request: Request):
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE action_log SET status='rejected', approved_by='whatsapp' WHERE id=%s",
+                    "UPDATE action_log SET status='rejected', approved_by='dashboard' WHERE id=%s",
                     (action_id,),
                 )
                 cur.execute(
@@ -1269,18 +1270,35 @@ async def handle_approval(request: Request):
                 )
         return {"ok": True, "decision": "rejected", "action_id": str(action_id)}
 
+    # Approve path: determine if this action type is directly executable via API
+    EXECUTABLE_TYPES = {"pause", "resume", "increase_budget", "decrease_budget", "pause_campaign"}
     import json as _json
     new_value = _json.loads(new_value_raw) if isinstance(new_value_raw, str) else (new_value_raw or {})
-    success = _auto_execute_action(str(action_id), entity_id, action_type, new_value)
+
+    if action_type in EXECUTABLE_TYPES:
+        # Attempt live execution (updates action_log to 'executed' or 'failed' internally)
+        success = _auto_execute_action(str(action_id), entity_id, action_type, new_value)
+        final_status = "executed" if success else "failed"
+    else:
+        # Non-executable types (ai_brief, new_creative, keyword_addition, etc.):
+        # Mark approved so they leave the pending queue. Humans act on them manually.
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE action_log SET status='approved', approved_by='dashboard', executed_at=NOW() WHERE id=%s",
+                    (action_id,),
+                )
+        success = True
+        final_status = "approved"
 
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE pending_approvals SET status=%s, responded_at=NOW(), response='YES' WHERE action_log_id=%s",
-                ("approved" if success else "failed", action_id),
+                (final_status, action_id),
             )
 
-    return {"ok": True, "decision": "approved", "executed": success, "action_id": str(action_id)}
+    return {"ok": True, "decision": "approved", "executed": success, "status": final_status, "action_id": str(action_id)}
 
 
 # ── Sales Intelligence Layer ────────────────────────────────

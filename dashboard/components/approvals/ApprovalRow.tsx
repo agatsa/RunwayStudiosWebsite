@@ -74,8 +74,17 @@ export default function ApprovalRow({ action }: Props) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action_id: action.id, decision }),
         })
-        if (!res.ok) throw new Error('Request failed')
-        toast.success(decision === 'approve' ? '✓ Action approved and executed' : 'Action rejected')
+        const data = await res.json()
+        if (!res.ok || data.ok === false) {
+          toast.error(data.detail || data.error || 'Failed to respond — try again')
+          return
+        }
+        if (decision === 'approve') {
+          if (data.status === 'executed') toast.success('✓ Action approved and executed via API')
+          else toast.success('✓ Action approved — ready for manual execution')
+        } else {
+          toast.success('Action rejected')
+        }
         router.refresh()
       } catch {
         toast.error('Failed to respond — try again')
@@ -94,20 +103,20 @@ export default function ApprovalRow({ action }: Props) {
           <div>
             <p className="text-sm font-semibold text-gray-900">{meta.label}</p>
             {entityName && (
-              <p className="text-xs text-gray-500 truncate max-w-[220px]">{entityName}</p>
+              <p className="text-sm text-gray-500 truncate max-w-[260px]">{entityName}</p>
             )}
           </div>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
-          <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${PLATFORM_COLORS[action.platform] ?? 'bg-gray-100 text-gray-600'}`}>
+          <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${PLATFORM_COLORS[action.platform] ?? 'bg-gray-100 text-gray-600'}`}>
             {action.platform?.toUpperCase()}
           </span>
           {action.triggered_by && action.triggered_by !== 'dashboard_user' && (
-            <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500">
-              {action.triggered_by.replace(/_/g, ' ').toUpperCase()}
+            <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-500">
+              {action.triggered_by.replace(/_/g, ' ')}
             </span>
           )}
-          <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${STATUS_COLORS[action.status] ?? 'bg-gray-100 text-gray-600'}`}>
+          <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[action.status] ?? 'bg-gray-100 text-gray-600'}`}>
             {action.status}
           </span>
         </div>
@@ -115,7 +124,7 @@ export default function ApprovalRow({ action }: Props) {
 
       {/* Value change */}
       {(oldValue || suggestedValue) && (
-        <div className="mt-3 flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2 text-xs">
+        <div className="mt-3 flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2 text-sm">
           {oldValue && <span className="font-mono text-gray-400 line-through">{oldValue}</span>}
           {oldValue && suggestedValue && <span className="text-gray-400">→</span>}
           {suggestedValue && <span className="font-mono font-semibold text-gray-800">{suggestedValue}</span>}
@@ -124,13 +133,13 @@ export default function ApprovalRow({ action }: Props) {
 
       {/* Description */}
       {description && (
-        <p className="mt-2.5 text-xs text-gray-600 leading-relaxed">{description}</p>
+        <p className="mt-2.5 text-sm text-gray-600 leading-relaxed">{description}</p>
       )}
 
       {/* Footer */}
       <div className="mt-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-1 text-[10px] text-gray-400">
-          <Clock className="h-3 w-3" />
+        <div className="flex items-center gap-1 text-xs text-gray-400">
+          <Clock className="h-3.5 w-3.5" />
           <span>{timeAgo(action.ts)}</span>
         </div>
 
@@ -139,22 +148,22 @@ export default function ApprovalRow({ action }: Props) {
             <button
               onClick={() => respond('approve')}
               disabled={isPending}
-              className="flex items-center gap-1.5 rounded-lg bg-green-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
+              className="flex items-center gap-1.5 rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
             >
-              {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+              {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
               Approve
             </button>
             <button
               onClick={() => respond('reject')}
               disabled={isPending}
-              className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors"
+              className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors"
             >
-              <X className="h-3 w-3" />
+              <X className="h-4 w-4" />
               Reject
             </button>
           </div>
         ) : (
-          <span className="text-[10px] text-gray-400">
+          <span className="text-xs text-gray-400">
             {action.executed_at ? `Executed ${timeAgo(action.executed_at)}` : action.status}
           </span>
         )}
