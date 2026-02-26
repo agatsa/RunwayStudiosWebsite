@@ -336,6 +336,46 @@ async def import_shopify_catalog(request: Request):
     return {"ok": True, **result}
 
 
+@app.post("/catalog/scrape-url")
+async def scrape_product_url(request: Request):
+    """
+    Scrape a single product page URL and save it to the catalog.
+    Body: {workspace_id, url}
+    Returns: {ok, product: {...}}
+    """
+    _auth(request)
+    from services.agent_swarm.core.product_catalog import scrape_product_page
+    body = await request.json()
+    workspace = resolve_workspace(request, body)
+    url = (body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+    if not url.startswith("http"):
+        raise HTTPException(status_code=400, detail="url must start with http or https")
+    try:
+        product = scrape_product_page(workspace["id"], url)
+        return {"ok": True, "product": product}
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.delete("/catalog/product/{product_id}")
+async def delete_catalog_product(request: Request, product_id: str):
+    """
+    Hard-delete a product from the catalog.
+    Query param: workspace_id
+    """
+    _auth(request)
+    from services.agent_swarm.core.product_catalog import delete_product
+    workspace_id = request.query_params.get("workspace_id")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    deleted = delete_product(workspace_id, product_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return {"ok": True, "deleted": product_id}
+
+
 @app.post("/catalog/product-image")
 async def add_product_image(request: Request):
     """

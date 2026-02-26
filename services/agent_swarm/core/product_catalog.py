@@ -520,6 +520,277 @@ def discover_and_sync(
     }
 
 
+# ── URL scraper (single product page) ────────────────────────────────────
+
+def scrape_product_page(workspace_id: str, url: str) -> dict:
+    """
+    Scrape a single product page URL and upsert into the products table.
+    Strategy:
+      1. Shopify .json endpoint (append .json to product URL)
+      2. Open Graph / meta tags from page HTML
+      3. Claude extraction fallback
+    Returns the upserted product dict with at least {id, name, images}.
+    Raises ValueError if scraping fails or no meaningful data found.
+    """
+    url = url.strip().rstrip("/")
+
+    # ── 1. Try Shopify .json (works on any Shopify-hosted product URL) ────
+    if "/products/" in url:
+        json_url = url.split("?")[0]  # strip query params first
+        if not json_url.endswith(".json"):
+            json_url = json_url + ".json"
+        try:
+            r = _requests.get(json_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code == 200:
+                data = r.json()
+                p = data.get("product")
+                if p and p.get("title"):
+                    # Extract base store URL
+                    from urllib.parse import urlparse as _up
+                    parsed = _up(url)
+                    store_url = f"{parsed.scheme}://{parsed.netloc}"
+                    result = _upsert_scraped_product(workspace_id, url, p, "shopify_json")
+                    if result:
+                        return result
+        except Exception as e:
+            print(f"Shopify .json scrape failed for {url}: {e}")
+
+    # ── 2. Fetch HTML and extract OG tags ─────────────────────────────────
+    try:
+        r = _requests.get(
+            url,
+            timeout=20,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+            },
+        )
+        html = r.text
+    except Exception as e:
+        raise ValueError(f"Could not fetch URL: {e}")
+
+    og = _extract_og_tags(html)
+
+    # If OG gives us at least a title + image, use it
+    if og.get("title") and og.get("images"):
+        result = _upsert_scraped_product(workspace_id, url, og, "og_tags")
+        if result:
+            return result
+
+    # ── 3. Claude extraction fallback ─────────────────────────────────────
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    prompt = f"""You are extracting product info from a single product page.
+URL: {url}
+
+Below is the page HTML (truncated). Extract the product details and return ONLY a JSON object.
+
+Required fields:
+- title (string, required)
+- description (string)
+- price_inr (number — the selling price in INR, look for ₹ symbol)
+- mrp_inr (number — the MRP / original crossed-out price if shown)
+- images (array of absolute image URLs — product photos only, not icons/logos)
+- sku (string)
+- category (string)
+- key_features (array of short bullet strings)
+
+Return ONLY valid JSON object, no markdown fences.
+
+HTML:
+{html[:12000]}"""
+
+    try:
+        msg = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=2048,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = msg.content[0].text.strip()
+        # Strip markdown fences if present
+        raw = re.sub(r'^```(?:json)?\s*', '', raw)
+        raw = re.sub(r'\s*```$', '', raw)
+        p = json.loads(raw)
+        if not p.get("title"):
+            raise ValueError("Claude could not extract product title from this page")
+        result = _upsert_scraped_product(workspace_id, url, p, "claude")
+        if result:
+            return result
+    except json.JSONDecodeError:
+        pass
+    except ValueError:
+        raise
+    except Exception as e:
+        print(f"Claude scrape fallback error: {e}")
+
+    raise ValueError("Could not extract product data from this URL")
+
+
+def _extract_og_tags(html: str) -> dict:
+    """Extract Open Graph and meta product tags from HTML."""
+    import re as _re
+
+    def _meta(prop: str) -> str | None:
+        m = _re.search(
+            rf'<meta[^>]+(?:property|name)=["\'](?:og:|product:)?{_re.escape(prop)}["\'][^>]+content=["\']([^"\']+)["\']',
+            html, _re.IGNORECASE
+        )
+        if m:
+            return m.group(1).strip()
+        # Also try content before property (some sites reverse the order)
+        m = _re.search(
+            rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\'](?:og:|product:)?{_re.escape(prop)}["\']',
+            html, _re.IGNORECASE
+        )
+        return m.group(1).strip() if m else None
+
+    title = _meta("title")
+    description = _meta("description")
+    image = _meta("image")
+    price = _meta("price:amount") or _meta("price")
+    currency = _meta("price:currency") or "INR"
+
+    images = []
+    if image:
+        images.append(image)
+    # Also try og:image:secure_url and additional og:images
+    for m in _re.finditer(
+        r'<meta[^>]+(?:property|name)=["\']og:image(?::secure_url)?["\'][^>]+content=["\']([^"\']+)["\']',
+        html, _re.IGNORECASE
+    ):
+        img_url = m.group(1).strip()
+        if img_url not in images:
+            images.append(img_url)
+
+    price_inr = None
+    if price:
+        try:
+            price_inr = float(re.sub(r'[^\d.]', '', price))
+        except ValueError:
+            pass
+
+    return {
+        "title": title,
+        "description": description,
+        "images": images,
+        "price_inr": price_inr if currency in ("INR", "₹") else None,
+        "price_raw": price,
+    }
+
+
+def _upsert_scraped_product(workspace_id: str, url: str, p: dict, method: str) -> dict | None:
+    """
+    Insert/update a product scraped from a URL.
+    source_platform='scraped', source_product_id=url (the canonical identifier).
+    """
+    try:
+        title = p.get("title") or p.get("name") or ""
+        if not title:
+            return None
+
+        description = _strip_html(p.get("description") or p.get("body_html") or "")
+
+        # Price
+        price_inr = None
+        mrp_inr = None
+        if p.get("price_inr") is not None:
+            try:
+                price_inr = float(p["price_inr"])
+            except (ValueError, TypeError):
+                pass
+        if p.get("mrp_inr") is not None:
+            try:
+                mrp_inr = float(p["mrp_inr"])
+            except (ValueError, TypeError):
+                pass
+
+        # Images — handle both list-of-strings and Shopify list-of-dicts
+        raw_images = p.get("images", [])
+        images = []
+        for img in raw_images:
+            if isinstance(img, str) and img.startswith("http"):
+                images.append({"url": img, "alt": "", "position": len(images)})
+            elif isinstance(img, dict) and img.get("src"):
+                images.append({"url": img["src"], "alt": img.get("alt", ""), "position": img.get("position", len(images))})
+
+        # SKU, category, features
+        sku = p.get("sku") or None
+        category = p.get("category") or p.get("product_type") or None
+        key_features = p.get("key_features") or p.get("tags") or []
+        if isinstance(key_features, str):
+            key_features = [t.strip() for t in key_features.split(",") if t.strip()]
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO products (
+                        workspace_id, name, description, price_inr, mrp_inr,
+                        product_url, images, sku, category,
+                        key_features, source_platform, source_product_id,
+                        active, last_synced_at
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'scraped',%s,TRUE,NOW())
+                    ON CONFLICT (workspace_id, source_platform, source_product_id)
+                    DO UPDATE SET
+                        name            = EXCLUDED.name,
+                        description     = EXCLUDED.description,
+                        price_inr       = EXCLUDED.price_inr,
+                        mrp_inr         = EXCLUDED.mrp_inr,
+                        images          = EXCLUDED.images,
+                        sku             = EXCLUDED.sku,
+                        category        = EXCLUDED.category,
+                        key_features    = EXCLUDED.key_features,
+                        active          = TRUE,
+                        last_synced_at  = NOW(),
+                        updated_at      = NOW()
+                    RETURNING id
+                    """,
+                    (
+                        workspace_id, title, description or None,
+                        price_inr, mrp_inr,
+                        url, json.dumps(images),
+                        sku, category,
+                        json.dumps(key_features if isinstance(key_features, list) else []),
+                        url,  # source_product_id = the URL itself
+                    ),
+                )
+                row = cur.fetchone()
+                internal_id = str(row[0]) if row else None
+
+        print(f"Scraped product ({method}): '{title}' from {url} → id={internal_id}")
+        invalidate_workspace_cache(workspace_id)
+        return {
+            "id": internal_id,
+            "name": title,
+            "price_inr": price_inr,
+            "images": images,
+            "product_url": url,
+            "source_platform": "scraped",
+            "source_product_id": url,
+            "method": method,
+        }
+    except Exception as e:
+        print(f"Error upserting scraped product from {url}: {e}")
+        return None
+
+
+def delete_product(workspace_id: str, product_id: str) -> bool:
+    """Hard-delete a product by ID (only if it belongs to the workspace)."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM products WHERE id=%s AND workspace_id=%s RETURNING id",
+                    (product_id, workspace_id),
+                )
+                deleted = cur.fetchone()
+        invalidate_workspace_cache(workspace_id)
+        return deleted is not None
+    except Exception as e:
+        print(f"Error deleting product {product_id}: {e}")
+        return False
+
+
 # ── Utility ───────────────────────────────────────────────────────────────
 
 def _strip_html(html: str) -> str:

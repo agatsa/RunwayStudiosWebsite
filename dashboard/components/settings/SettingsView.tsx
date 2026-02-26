@@ -10,6 +10,7 @@ import GoogleAccountSelectDialog from './GoogleAccountSelectDialog'
 import YouTubeConnectDialog from './YouTubeConnectDialog'
 import ShopifyConnectDialog from './ShopifyConnectDialog'
 import ExcelUploadDialog from './ExcelUploadDialog'
+import ProductUrlsSection from './ProductUrlsSection'
 import type { PlatformConnection } from '@/lib/types'
 
 interface Props {
@@ -460,17 +461,7 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
           <p className="text-sm text-gray-500">Used for price monitoring, ad library tracking, and competitor intelligence</p>
         </div>
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <div className="rounded-xl border border-gray-200 bg-white p-4">
-            <p className="text-sm font-semibold text-gray-800 mb-2">Your Product URLs</p>
-            <div className="space-y-2 opacity-50">
-              {['https://agatsaone.com/products/sanketlife-2-0', 'https://agatsaone.com/products/easytouch-plus'].map(url => (
-                <div key={url} className="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
-                  <span className="flex-1 truncate">{url}</span>
-                </div>
-              ))}
-            </div>
-            <p className="mt-3 text-xs text-gray-400">URL management — coming soon</p>
-          </div>
+          <ProductUrlsSection workspaceId={workspaceId} />
           <div className="rounded-xl border border-gray-200 bg-white p-4">
             <p className="text-sm font-semibold text-gray-800 mb-2">Competitor URLs</p>
             <div className="space-y-2 opacity-50">
