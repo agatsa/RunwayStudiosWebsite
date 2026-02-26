@@ -573,13 +573,29 @@ def _fetch_shopify_json(json_url: str) -> dict | None:
         return None
 
 
+def _get_shopify_connection(workspace_id: str) -> tuple[str, str] | None:
+    """Return (shop_domain, access_token) from shopify_connections if connected."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT shop_domain, access_token FROM shopify_connections WHERE workspace_id=%s LIMIT 1",
+                    (workspace_id,),
+                )
+                row = cur.fetchone()
+        return (row[0], row[1]) if row else None
+    except Exception:
+        return None
+
+
 def scrape_product_page(workspace_id: str, url: str) -> dict:
     """
     Scrape a single product page URL and upsert into the products table.
 
     Strategy:
-      1a. Shopify .json on the custom domain
-      1b. Shopify .json on the .myshopify.com equivalent (bypasses Cloudflare)
+      0.  Shopify Admin API via stored token (works for headless/SPA/Cloudflare-protected stores)
+      1a. Shopify product .json on the custom domain
+      1b. Shopify product .json on the .myshopify.com equivalent
       2.  Open Graph / meta tags from HTML
       3.  Claude extraction fallback on the HTML
     """
@@ -587,33 +603,61 @@ def scrape_product_page(workspace_id: str, url: str) -> dict:
 
     url = url.strip().rstrip("/")
     parsed = _up(url)
-    path_no_qs = parsed.path.rstrip("/")
+    path_no_qs = parsed.path.rstrip("/")  # e.g. /products/sanketlife-2-0
 
-    # ── 1. Try Shopify .json ───────────────────────────────────────────────
+    # ── 0. Shopify Admin API (uses stored OAuth/token — works even for headless stores) ──
     if "/products/" in url:
-        # Build the .json URL for the custom domain
+        conn_info = _get_shopify_connection(workspace_id)
+        if conn_info:
+            shop_domain, access_token = conn_info
+            # Extract handle from path: /products/{handle}
+            parts = path_no_qs.split("/")
+            handle = parts[-1] if parts else None
+            if handle:
+                try:
+                    admin_url = f"https://{shop_domain}/admin/api/2024-01/products.json?handle={handle}&limit=1"
+                    r = _requests.get(
+                        admin_url,
+                        timeout=15,
+                        headers={
+                            "X-Shopify-Access-Token": access_token,
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    if r.status_code == 200:
+                        products_list = r.json().get("products", [])
+                        if products_list:
+                            p = products_list[0]
+                            # The product_url should point to the original custom domain
+                            result = _upsert_scraped_product(workspace_id, url, p, "shopify_admin")
+                            if result:
+                                print(f"Scraped via Shopify Admin API for handle '{handle}'")
+                                return result
+                except Exception as e:
+                    print(f"Shopify Admin API scrape failed: {e}")
+
+    # ── 1. Try public Shopify .json ───────────────────────────────────────
+    if "/products/" in url:
         base_json = f"{parsed.scheme}://{parsed.netloc}{path_no_qs}"
         if not base_json.endswith(".json"):
             base_json += ".json"
 
-        # 1a. Custom domain
-        p = _fetch_shopify_json(base_json)
+        p = _fetch_shopify_json(base_json)  # 1a: custom domain
 
-        # 1b. .myshopify.com fallback (avoids Cloudflare on custom domains)
-        if not p:
+        if not p:  # 1b: .myshopify.com (avoids Cloudflare)
             myshopify = _guess_myshopify_domain(parsed)
             if myshopify:
                 myshopify_json = f"https://{myshopify}{path_no_qs}.json"
                 p = _fetch_shopify_json(myshopify_json)
-                print(f"myshopify fallback tried: {myshopify_json} → {'ok' if p else 'failed'}")
 
         if p:
             result = _upsert_scraped_product(workspace_id, url, p, "shopify_json")
             if result:
                 return result
 
-    # ── 2. Fetch HTML and extract OG tags ─────────────────────────────────
+    # ── 2. Fetch HTML and extract OG / JSON-LD tags ───────────────────────
     html = None
+    is_spa = False
     cloudflare_blocked = False
     try:
         r = _requests.get(
@@ -632,13 +676,17 @@ def scrape_product_page(workspace_id: str, url: str) -> dict:
         html = r.text
         if _is_cloudflare_challenge(html):
             cloudflare_blocked = True
-            print(f"Cloudflare challenge detected for {url}")
+        # Detect pure client-side SPA (empty <div id="root"> or <div id="app">)
+        elif re.search(r'<div[^>]+id=["\'](?:root|app)["\'][^>]*>\s*</div>', html, re.IGNORECASE):
+            is_spa = True
+            print(f"Detected client-side SPA for {url}")
     except Exception as e:
         raise ValueError(f"Could not fetch URL: {e}")
 
-    if not cloudflare_blocked and html:
+    if not cloudflare_blocked and not is_spa and html:
         og = _extract_og_tags(html)
-        if og.get("title") and og.get("images"):
+        # Only use OG if it has product-specific title (not generic site name)
+        if og.get("title") and og.get("images") and og.get("images")[0] and not og["images"][0].endswith("favicon.png"):
             result = _upsert_scraped_product(workspace_id, url, og, "og_tags")
             if result:
                 return result
@@ -684,10 +732,19 @@ HTML:
         except Exception as e:
             print(f"Claude scrape fallback error: {e}")
 
-    if cloudflare_blocked:
+    # ── Helpful error messages ────────────────────────────────────────────
+    if is_spa or cloudflare_blocked:
+        conn_info = _get_shopify_connection(workspace_id)
+        if conn_info:
+            raise ValueError(
+                "This store's product page is a JavaScript app — product data isn't in the HTML. "
+                "Your Shopify store is connected, but the product handle in the URL may not match. "
+                "Try using the full product URL from your Shopify Admin (e.g. /products/sanketlife-2-0)."
+            )
         raise ValueError(
-            "This store uses Cloudflare protection. "
-            "Connect Shopify via Settings → Shopify Store (Admin API token) to sync products directly."
+            "This store's product page is a JavaScript app (no product data in HTML). "
+            "To sync products, go to Settings → Shopify Store → Connect with your Admin API token. "
+            "Once connected, all products sync automatically via the Admin API."
         )
 
     raise ValueError("Could not extract product data from this URL")
