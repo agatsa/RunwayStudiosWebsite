@@ -1,6 +1,6 @@
 'use client'
 
-import { useTransition } from 'react'
+import { useTransition, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { Check, X, Loader2, PauseCircle, Sparkles, MapPin, Hash, Target, Eye, Clock, Rocket } from 'lucide-react'
@@ -49,7 +49,17 @@ function timeAgo(ts: string) {
 }
 
 // ── Campaign plan detail card (shown for create_campaign action type) ─────────
-function CampaignPlanDetail({ newValue, platform }: { newValue: unknown; platform?: string }) {
+function CampaignPlanDetail({
+  newValue,
+  platform,
+  editedCopy,
+  onCopyChange,
+}: {
+  newValue: unknown
+  platform?: string
+  editedCopy: string
+  onCopyChange: (v: string) => void
+}) {
   let nv: Record<string, unknown> = {}
   try {
     if (typeof newValue === 'string') nv = JSON.parse(newValue)
@@ -64,11 +74,10 @@ function CampaignPlanDetail({ newValue, platform }: { newValue: unknown; platfor
   const format             = concept.recommended_format as string | undefined
   const channels           = (concept.recommended_channels ?? brief.channels) as string[] | undefined
   const budgetDaily        = (brief.budget_daily ?? concept.recommended_budget_daily) as number | undefined
-  const duration           = brief.duration_days        as number | undefined
+  const duration           = (brief.duration_days ?? concept.recommended_duration_days) as number | undefined
   const goal               = (brief.goal as string | undefined)?.replace('_', ' ')
   const kpi                = concept.kpi_targets        as { expected_roas?: number; expected_cpa?: number; expected_ctr?: number } | undefined
   const insights           = concept.growth_insights    as string[] | undefined
-  const bodyCopy           = concept.body_copy          as string | undefined
   const hook               = concept.hook               as string | undefined
   const creativeDirection  = concept.creative_direction as string | undefined
 
@@ -125,8 +134,8 @@ function CampaignPlanDetail({ newValue, platform }: { newValue: unknown; platfor
         </div>
       )}
 
-      {/* Creative Brief — hook, body copy, creative direction */}
-      {(hook || bodyCopy || creativeDirection) && (
+      {/* Creative Brief — hook, editable body copy, creative direction */}
+      {(hook || editedCopy || creativeDirection) && (
         <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 space-y-3">
           <p className="text-xs font-semibold uppercase text-gray-400">Creative Brief</p>
           {hook && (
@@ -135,12 +144,16 @@ function CampaignPlanDetail({ newValue, platform }: { newValue: unknown; platfor
               <p className="text-sm font-medium text-gray-800 italic">&ldquo;{hook}&rdquo;</p>
             </div>
           )}
-          {bodyCopy && (
-            <div>
-              <p className="text-xs font-medium text-gray-400 uppercase mb-0.5">Ad Copy</p>
-              <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{bodyCopy}</p>
-            </div>
-          )}
+          <div>
+            <p className="text-xs font-medium text-gray-400 uppercase mb-1">Ad Copy <span className="text-indigo-400 normal-case">(editable)</span></p>
+            <textarea
+              value={editedCopy}
+              onChange={e => onCopyChange(e.target.value)}
+              rows={3}
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 leading-relaxed focus:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 resize-none"
+              placeholder="Ad copy will appear here…"
+            />
+          </div>
           {creativeDirection && (
             <div>
               <p className="text-xs font-medium text-gray-400 uppercase mb-0.5">Creative Direction</p>
@@ -190,21 +203,30 @@ export default function ApprovalRow({ action }: Props) {
   // For create_campaign: headline is the entity name
   const isCampaignPlan = action.action_type === 'create_campaign'
   let planHeadline = ''
+  let initialCopy = ''
   if (isCampaignPlan) {
     try {
       const nv = typeof action.new_value === 'string' ? JSON.parse(action.new_value) : (action.new_value ?? {}) as Record<string, unknown>
       planHeadline = ((nv as Record<string, Record<string, string>>)?.concept?.headline ?? '') as string
+      initialCopy  = ((nv as Record<string, Record<string, string>>)?.concept?.body_copy  ?? '') as string
     } catch { /* ignore */ }
   }
   const displayName = isCampaignPlan ? (planHeadline || 'Campaign Plan') : entityName
 
+  // Editable body copy — only for campaign plans
+  const [editedCopy, setEditedCopy] = useState(initialCopy)
+
   const respond = (decision: 'approve' | 'reject') => {
     startTransition(async () => {
       try {
+        const body: Record<string, string> = { action_id: action.id, decision }
+        if (decision === 'approve' && isCampaignPlan && editedCopy) {
+          body.edited_body_copy = editedCopy
+        }
         const res = await fetch('/api/actions/respond', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action_id: action.id, decision }),
+          body: JSON.stringify(body),
         })
         const data = await res.json()
         if (!res.ok || data.ok === false) {
@@ -304,7 +326,12 @@ export default function ApprovalRow({ action }: Props) {
 
       {/* Campaign plan detail — replaces generic description for create_campaign */}
       {isCampaignPlan ? (
-        <CampaignPlanDetail newValue={action.new_value} platform={action.platform} />
+        <CampaignPlanDetail
+          newValue={action.new_value}
+          platform={action.platform}
+          editedCopy={editedCopy}
+          onCopyChange={setEditedCopy}
+        />
       ) : (
         <>
           {/* Value change */}

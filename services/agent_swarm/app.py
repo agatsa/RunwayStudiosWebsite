@@ -1550,6 +1550,18 @@ async def handle_approval(request: Request):
     action_id, workspace_id, platform, entity_id, action_type, new_value_raw, status = row
     new_value = _json.loads(new_value_raw) if isinstance(new_value_raw, str) else (new_value_raw or {})
 
+    # If the user edited the body copy in the approval view, apply it before executing
+    edited_body_copy = (body.get("edited_body_copy") or "").strip()
+    if edited_body_copy and action_type == "create_campaign":
+        if isinstance(new_value.get("concept"), dict):
+            new_value["concept"]["body_copy"] = edited_body_copy
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE action_log SET new_value=%s::jsonb WHERE id=%s",
+                    (_json.dumps(new_value), action_id),
+                )
+
     if decision == "reject":
         with get_conn() as conn:
             with conn.cursor() as cur:
@@ -7053,17 +7065,16 @@ Return ONLY valid JSON, no markdown."""
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            channels = concept.get("recommended_channels", ["meta"])
             cur.execute(
                 """
                 INSERT INTO action_log
                     (workspace_id, platform, account_id, entity_level, entity_id,
                      action_type, new_value, triggered_by, status)
-                VALUES (%s, %s, 'auto', 'campaign', 'new',
+                VALUES (%s, 'meta', 'auto', 'campaign', 'new',
                         'create_campaign', %s::jsonb, 'ai_auto', 'pending')
                 RETURNING id, ts
                 """,
-                (workspace_id, channels[0] if channels else "meta", _json.dumps(new_value)),
+                (workspace_id, _json.dumps(new_value)),
             )
             row = cur.fetchone()
         conn.commit()
