@@ -1641,11 +1641,17 @@ async def handle_approval(request: Request):
                 platform=platform or "meta",
             )
         if launch_result.get("ok"):
+            import json as _json2
+            # Merge meta/google IDs back into new_value so publish-ad can use them later
+            _nv_updated = dict(_nv)
+            _nv_updated["meta_campaign_id"]  = launch_result.get("meta_campaign_id")
+            _nv_updated["meta_adset_id"]     = launch_result.get("meta_adset_id")
+            _nv_updated["google_campaign_id"]= launch_result.get("google_campaign_id")
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "UPDATE action_log SET status='executed', approved_by='dashboard', executed_at=NOW() WHERE id=%s",
-                        (action_id,),
+                        "UPDATE action_log SET status='executed', new_value=%s::jsonb, approved_by='dashboard', executed_at=NOW() WHERE id=%s",
+                        (_json2.dumps(_nv_updated), action_id),
                     )
             final_status = "executed"
             success = True
@@ -6692,6 +6698,199 @@ Return ONLY valid JSON, no markdown."""
         "ts": ts.isoformat() if ts else None,
         "status": "pending",
     }
+
+
+@app.post("/campaign-planner/generate-image")
+async def campaign_planner_generate_image(request: Request):
+    """
+    Generate a creative image for a campaign plan using fal.ai Flux Pro.
+    Saves the image URL back into the plan's new_value.concept.generated_image_url.
+    Body: {plan_id, workspace_id}
+    """
+    _auth(request)
+    body = await request.json()
+    plan_id     = body.get("plan_id")
+    workspace_id= body.get("workspace_id")
+    if not plan_id or not workspace_id:
+        raise HTTPException(status_code=400, detail="plan_id and workspace_id required")
+
+    import json as _json
+    from services.agent_swarm.db import get_conn
+
+    # Load plan
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT new_value FROM action_log WHERE id=%s AND workspace_id=%s",
+                (plan_id, workspace_id),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    nv = row[0] if isinstance(row[0], dict) else _json.loads(row[0] or "{}")
+    concept = nv.get("concept", {})
+    brief   = nv.get("brief", {})
+
+    creative_direction = concept.get("creative_direction", "")
+    headline           = concept.get("headline", "")
+    product_name       = brief.get("product_name", "health tech product")
+
+    if not creative_direction:
+        raise HTTPException(status_code=400, detail="No creative_direction in plan — regenerate the brief first")
+
+    # Build a rich image prompt from the creative brief
+    prompt = (
+        f"Professional Indian health tech advertisement creative. "
+        f"Product: {product_name}. "
+        f"{creative_direction} "
+        f"No text overlays. No watermarks. No logos. "
+        f"Clean, modern aesthetic. Warm aspirational lighting. "
+        f"Real Indian people, relatable lifestyle setting. "
+        f"Square format, suitable for Instagram and Facebook feed ads."
+    )
+
+    try:
+        from services.agent_swarm.creative.image_gen import generate_ad_image
+        image_url = generate_ad_image(prompt, size="square_hd")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image generation failed: {e}")
+
+    # Store image URL back in plan
+    nv_updated = dict(nv)
+    nv_updated["concept"] = {**concept, "generated_image_url": image_url}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE action_log SET new_value=%s::jsonb WHERE id=%s",
+                (_json.dumps(nv_updated), plan_id),
+            )
+        conn.commit()
+
+    return {"ok": True, "image_url": image_url, "plan_id": plan_id}
+
+
+@app.post("/campaign-planner/publish-ad")
+async def campaign_planner_publish_ad(request: Request):
+    """
+    Create the actual Meta Ad (PAUSED) on an already-created Campaign + Ad Set.
+    Requires the plan to have: meta_adset_id, concept.generated_image_url, concept.body_copy, concept.headline.
+    Body: {plan_id, workspace_id}
+    """
+    _auth(request)
+    body = await request.json()
+    plan_id     = body.get("plan_id")
+    workspace_id= body.get("workspace_id")
+    if not plan_id or not workspace_id:
+        raise HTTPException(status_code=400, detail="plan_id and workspace_id required")
+
+    import json as _json
+    import requests as _requests
+    from services.agent_swarm.db import get_conn
+
+    # Load plan
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT new_value FROM action_log WHERE id=%s AND workspace_id=%s",
+                (plan_id, workspace_id),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    nv      = row[0] if isinstance(row[0], dict) else _json.loads(row[0] or "{}")
+    concept = nv.get("concept", {})
+
+    adset_id  = nv.get("meta_adset_id")
+    image_url = concept.get("generated_image_url")
+    body_copy = concept.get("body_copy", "")
+    headline  = concept.get("headline", "Ad")
+
+    if not adset_id:
+        raise HTTPException(status_code=400, detail="No meta_adset_id — approve the plan in Decision Inbox first")
+    if not image_url:
+        raise HTTPException(status_code=400, detail="No generated image — click Generate Creative first")
+
+    # Load Meta connection
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT ad_account_id, access_token, pixel_id
+                   FROM platform_connections
+                   WHERE workspace_id=%s AND platform='meta'
+                   ORDER BY is_primary DESC LIMIT 1""",
+                (workspace_id,),
+            )
+            meta_row = cur.fetchone()
+    if not meta_row or not meta_row[1]:
+        raise HTTPException(status_code=400, detail="No Meta connection found")
+
+    ad_account_id, access_token, pixel_id = meta_row
+    act_id = ad_account_id if ad_account_id.startswith("act_") else f"act_{ad_account_id}"
+    META_API_VERSION = "v21.0"
+
+    try:
+        from services.agent_swarm.creative.meta_publisher import (
+            upload_image_from_url, create_ad_creative,
+        )
+        tenant = {"meta_access_token": access_token, "pixel_id": pixel_id}
+
+        # 1. Upload image to Meta
+        image_hash = upload_image_from_url(image_url, act_id, tenant)
+
+        # 2. Create Ad Creative
+        creative_id = create_ad_creative(
+            account_id=act_id,
+            image_hash=image_hash,
+            primary_text=body_copy,
+            headline=headline,
+            description="",
+            cta="SHOP_NOW",
+            tenant=tenant,
+        )
+
+        # 3. Create Ad as PAUSED
+        ad_url = f"https://graph.facebook.com/{META_API_VERSION}/{act_id}/ads"
+        ad_resp = _requests.post(
+            ad_url,
+            params={"access_token": access_token},
+            data={
+                "name": f"{headline[:40]} — Ad",
+                "adset_id": adset_id,
+                "creative": _json.dumps({"creative_id": creative_id}),
+                "status": "PAUSED",
+            },
+            timeout=20,
+        )
+        ad_data = ad_resp.json()
+        if not ad_resp.ok or "error" in ad_data:
+            err = ad_data.get("error", {})
+            raise RuntimeError(err.get("message", ad_resp.text[:200]))
+
+        meta_ad_id = ad_data["id"]
+
+        # Store ad_id back in plan
+        nv_updated = dict(nv)
+        nv_updated["meta_ad_id"] = meta_ad_id
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE action_log SET new_value=%s::jsonb WHERE id=%s",
+                    (_json.dumps(nv_updated), plan_id),
+                )
+            conn.commit()
+
+        return {
+            "ok": True,
+            "meta_ad_id": meta_ad_id,
+            "creative_id": creative_id,
+            "image_hash": image_hash,
+            "note": "Ad created on Meta (PAUSED) — activate in Meta Ads Manager when ready",
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ad creation failed: {e}")
 
 
 # ── Campaign Planner — AI Auto-Generate (uses workspace context) ─────────────
