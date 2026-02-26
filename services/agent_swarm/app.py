@@ -7769,7 +7769,7 @@ async def organic_posts_signals(
                   AND entity_level = 'hour_of_day'
                   AND hour_ts >= NOW() - INTERVAL '365 days'
                 GROUP BY 1
-                HAVING hour IS NOT NULL
+                HAVING COALESCE(entity_name, raw_json->>'hour', (raw_json->>'hour_of_day')) IS NOT NULL
                 ORDER BY avg_ctr DESC
                 LIMIT 5
                 """,

@@ -36,15 +36,6 @@ async function getSignals(workspaceId: string): Promise<SignalsData | null> {
   }
 }
 
-const MOCK_BEST_TIMES = [
-  { day: 'Sun', times: ['8pm', '9pm'], lift: '+34%' },
-  { day: 'Mon', times: ['7am', '12pm'], lift: '+12%' },
-  { day: 'Tue', times: ['6pm', '8pm'], lift: '+18%' },
-  { day: 'Wed', times: ['7pm', '9pm'], lift: '+22%' },
-  { day: 'Thu', times: ['12pm', '6pm'], lift: '+15%' },
-  { day: 'Fri', times: ['5pm', '7pm'], lift: '+28%' },
-  { day: 'Sat', times: ['10am', '8pm'], lift: '+41%' },
-]
 
 export default async function OrganicPostsPage({ searchParams }: PageProps) {
   const workspaceId = searchParams.ws ?? ''
@@ -116,7 +107,7 @@ export default async function OrganicPostsPage({ searchParams }: PageProps) {
                           signal === 'very-high' ? 'bg-green-100 text-green-700' :
                           signal === 'high' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'
                         }`}>
-                          {signal === 'very-high' ? '🔥 Boost this' : signal === 'high' ? '✓ Strong' : '→ Average'}
+                          {signal === 'very-high' ? 'Boost this' : signal === 'high' ? 'Strong' : 'Average'}
                         </span>
                       </td>
                     </tr>
@@ -126,45 +117,19 @@ export default async function OrganicPostsPage({ searchParams }: PageProps) {
             </table>
           </div>
         ) : (
-          <div className="overflow-x-auto opacity-40 select-none">
-            <table className="w-full text-sm">
-              <thead><tr className="border-b border-gray-100 text-left text-xs text-gray-500">
-                <th className="px-4 py-3 font-medium">Theme</th>
-                <th className="px-4 py-3 font-medium text-right">Posts</th>
-                <th className="px-4 py-3 font-medium text-right">Avg Reach</th>
-                <th className="px-4 py-3 font-medium text-right">Eng Rate</th>
-                <th className="px-4 py-3 font-medium">Paid Signal</th>
-              </tr></thead>
-              <tbody>
-                {[
-                  { theme: 'Product Demo', posts: 12, avgReach: '18,400', engRate: '4.2%', signal: 'high' },
-                  { theme: 'Patient Testimonial', posts: 8, avgReach: '31,200', engRate: '6.8%', signal: 'high' },
-                  { theme: 'Doctor Endorsement', posts: 4, avgReach: '52,000', engRate: '8.1%', signal: 'very-high' },
-                  { theme: 'Product Specs', posts: 9, avgReach: '7,800', engRate: '1.9%', signal: 'low' },
-                ].map((t, i) => (
-                  <tr key={i} className="border-b border-gray-100">
-                    <td className="px-4 py-3 font-medium text-gray-800">{t.theme}</td>
-                    <td className="px-4 py-3 text-right text-gray-600">{t.posts}</td>
-                    <td className="px-4 py-3 text-right text-gray-600">{t.avgReach}</td>
-                    <td className="px-4 py-3 text-right font-semibold text-gray-800">{t.engRate}</td>
-                    <td className="px-4 py-3">
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                        t.signal === 'very-high' ? 'bg-green-100 text-green-700' :
-                        t.signal === 'high' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'
-                      }`}>
-                        {t.signal === 'very-high' ? '🔥 Boost this' : t.signal === 'high' ? '✓ Strong' : '→ Average'}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="px-4 py-8 text-center">
+            <p className="text-sm text-gray-500">No campaign data yet.</p>
+            <p className="text-xs text-gray-400 mt-1">
+              Upload a Meta Ads Excel export in{' '}
+              <Link href={workspaceId ? `/settings?ws=${workspaceId}` : '/settings'} className="underline text-sky-600">Settings</Link>
+              {' '}to see which content themes drive the most engagement.
+            </p>
           </div>
         )}
       </div>
 
       {/* Best posting times */}
-      <div className={(!hasTimingData && !metaConnected) ? 'relative' : ''}>
+      <div>
         <div className="rounded-xl border border-gray-200 overflow-hidden">
           <div className="bg-gray-50 px-4 py-3 border-b border-gray-200">
             <h2 className="text-sm font-semibold text-gray-700">Best Times to Post</h2>
@@ -191,36 +156,15 @@ export default async function OrganicPostsPage({ searchParams }: PageProps) {
               </div>
             </div>
           ) : (
-            <div className="p-4">
-              <div className="grid grid-cols-7 gap-2 opacity-40 select-none">
-                {MOCK_BEST_TIMES.map(d => (
-                  <div key={d.day} className="text-center">
-                    <p className="text-xs font-semibold text-gray-600 mb-2">{d.day}</p>
-                    {d.times.map(t => (
-                      <div key={t} className="rounded bg-sky-100 px-1.5 py-1 text-[10px] text-sky-700 mb-1">{t}</div>
-                    ))}
-                    <p className="text-[10px] font-bold text-green-600 mt-1">{d.lift}</p>
-                  </div>
-                ))}
-              </div>
+            <div className="px-4 py-8 text-center">
+              <Clock className="h-7 w-7 text-gray-300 mx-auto mb-2" />
+              <p className="text-sm text-gray-500">No time-of-day data yet.</p>
+              <p className="text-xs text-gray-400 mt-1">
+                Upload a Google Ads <strong>Time of day</strong> report to see peak hour CTR data.
+              </p>
             </div>
           )}
         </div>
-        {!hasTimingData && !metaConnected && (
-          <div className="absolute inset-0 flex items-center justify-center bg-white/70 backdrop-blur-sm rounded-xl">
-            <div className="text-center p-6">
-              <Clock className="h-8 w-8 text-sky-500 mx-auto mb-3" />
-              <p className="text-sm font-semibold text-gray-900">Connect Meta Business Account</p>
-              <p className="text-xs text-gray-500 mt-1 max-w-xs">
-                See exactly when your audience is online. Or upload a Google Ads time-of-day report for hour-level CTR data.
-              </p>
-              <Link href={workspaceId ? `/settings?ws=${workspaceId}` : '/settings'}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700">
-                Connect in Settings <ArrowUpRight className="h-3.5 w-3.5" />
-              </Link>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Organic paid loop */}
@@ -247,19 +191,9 @@ export default async function OrganicPostsPage({ searchParams }: PageProps) {
             ))}
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 opacity-50">
-            {[
-              ['Best Organic Post', 'Doctor endorsement reel', '52K reach · 8.1% eng'],
-              ['Recommended Boost Budget', '₹5,000–15,000', 'Projected reach: 2.4L'],
-              ['Expected ROAS', '3.8x–5.2x', 'Based on similar creative history'],
-            ].map(([title, value, sub]) => (
-              <div key={title} className="rounded-lg bg-white p-3 text-center">
-                <p className="text-xs text-gray-500">{title}</p>
-                <p className="text-sm font-bold text-gray-800 mt-1">{value}</p>
-                <p className="text-[10px] text-gray-400 mt-0.5">{sub}</p>
-              </div>
-            ))}
-          </div>
+          <p className="text-xs text-sky-700/70">
+            Upload Meta Ads data to see which campaigns are worth boosting organically.
+          </p>
         )}
       </div>
 
