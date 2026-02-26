@@ -359,6 +359,80 @@ async def scrape_product_url(request: Request):
         raise HTTPException(status_code=422, detail=str(e))
 
 
+@app.get("/catalog/debug-scrape")
+async def debug_scrape_url(request: Request, url: str = None):
+    """
+    Debug endpoint — shows raw fetch results for each scrape strategy without saving anything.
+    GET /catalog/debug-scrape?url=https://...
+    """
+    _auth(request)
+    import requests as _rq
+    from urllib.parse import urlparse as _up
+    results: dict = {}
+
+    if not url:
+        return {"error": "pass ?url=..."}
+
+    parsed = _up(url)
+    path_no_qs = parsed.path.rstrip("/")
+
+    # Strategy 1a: custom domain .json
+    if "/products/" in url:
+        json_url = f"{parsed.scheme}://{parsed.netloc}{path_no_qs}.json"
+        try:
+            r = _rq.get(json_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+            results["json_custom"] = {
+                "url": json_url, "status": r.status_code,
+                "content_type": r.headers.get("content-type", ""),
+                "body_preview": r.text[:600],
+            }
+        except Exception as e:
+            results["json_custom"] = {"url": json_url, "error": str(e)}
+
+        # Strategy 1b: myshopify.com .json
+        host = parsed.netloc.lower()
+        if "www." in host:
+            host = host.replace("www.", "", 1)
+        subdomain = host.split(".")[0]
+        myshopify_url = f"https://{subdomain}.myshopify.com{path_no_qs}.json"
+        try:
+            r = _rq.get(myshopify_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+            results["json_myshopify"] = {
+                "url": myshopify_url, "status": r.status_code,
+                "content_type": r.headers.get("content-type", ""),
+                "body_preview": r.text[:600],
+            }
+        except Exception as e:
+            results["json_myshopify"] = {"url": myshopify_url, "error": str(e)}
+
+        # Strategy 1c: products.json list on myshopify domain, find by handle
+        products_list_url = f"https://{subdomain}.myshopify.com/products.json?limit=250"
+        try:
+            r = _rq.get(products_list_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            results["products_list"] = {
+                "url": products_list_url, "status": r.status_code,
+                "content_type": r.headers.get("content-type", ""),
+                "body_preview": r.text[:600],
+            }
+        except Exception as e:
+            results["products_list"] = {"url": products_list_url, "error": str(e)}
+
+    # Strategy 2: raw HTML fetch
+    try:
+        r = _rq.get(url, timeout=15, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        })
+        results["html"] = {
+            "status": r.status_code,
+            "body_preview": r.text[:1200],
+        }
+    except Exception as e:
+        results["html"] = {"error": str(e)}
+
+    return results
+
+
 @app.delete("/catalog/product/{product_id}")
 async def delete_catalog_product(request: Request, product_id: str):
     """
