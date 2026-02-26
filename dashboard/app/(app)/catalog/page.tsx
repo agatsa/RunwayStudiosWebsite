@@ -1,6 +1,7 @@
 import { fetchFromFastAPI } from '@/lib/api'
 import ProductTable from '@/components/catalog/ProductTable'
 import SyncButton from '@/components/catalog/SyncButton'
+import ShopifyImportButton from '@/components/catalog/ShopifyImportButton'
 import type { ProductsResponse } from '@/lib/types'
 
 interface PageProps {
@@ -51,7 +52,10 @@ export default async function CatalogPage({ searchParams }: PageProps) {
             )}
           </p>
         </div>
-        <SyncButton workspaceId={workspaceId} />
+        <div className="flex items-center gap-2">
+          <ShopifyImportButton workspaceId={workspaceId} defaultStoreUrl="agatsaone.com" />
+          <SyncButton workspaceId={workspaceId} />
+        </div>
       </div>
 
       <ProductTable products={products} />

@@ -276,6 +276,95 @@ async def get_catalog_products(request: Request, workspace_id: str = None):
     return {"products": products, "count": len(products)}
 
 
+@app.post("/catalog/import-shopify")
+async def import_shopify_catalog(request: Request):
+    """
+    Import products + images from a Shopify (or WooCommerce) store into the products table.
+    Body: {workspace_id, store_url?}  — store_url defaults to workspace.store_url
+    """
+    _auth(request)
+    from services.agent_swarm.core.product_catalog import discover_and_sync
+    body = await request.json()
+    workspace = resolve_workspace(request, body)
+    store_url = body.get("store_url") or workspace.get("store_url") or ""
+    if not store_url:
+        raise HTTPException(status_code=400, detail="store_url required — pass it in the body or set it on the workspace")
+    result = discover_and_sync(
+        workspace_id=workspace["id"],
+        store_url=store_url,
+    )
+    return {"ok": True, **result}
+
+
+@app.post("/catalog/product-image")
+async def add_product_image(request: Request):
+    """
+    Add or replace the primary image on a product.
+    Accepts either a URL (image_url) or a base64-encoded file (image_b64 + filename).
+    For base64 uploads, saves to GCS and returns the public URL.
+    Body: {product_id, workspace_id, image_url?, image_b64?, filename?}
+    """
+    _auth(request)
+    import json as _json
+    from services.agent_swarm.db import get_conn
+
+    body = await request.json()
+    product_id   = body.get("product_id")
+    workspace_id = body.get("workspace_id")
+    image_url    = (body.get("image_url") or "").strip()
+    image_b64    = body.get("image_b64")
+    filename     = body.get("filename") or "product.jpg"
+
+    if not product_id or not workspace_id:
+        raise HTTPException(status_code=400, detail="product_id and workspace_id required")
+    if not image_url and not image_b64:
+        raise HTTPException(status_code=400, detail="Either image_url or image_b64 required")
+
+    # If base64, upload to GCS
+    if image_b64 and not image_url:
+        try:
+            import base64 as _b64
+            import uuid as _uuid
+            from google.cloud import storage as _gcs
+            img_data = _b64.b64decode(image_b64)
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
+            gcs_filename = f"product-images/{_uuid.uuid4().hex}.{ext}"
+            bucket_name = "wa-agency-raw-wa-ai-agency"
+            _gcs_client = _gcs.Client()
+            bucket = _gcs_client.bucket(bucket_name)
+            blob = bucket.blob(gcs_filename)
+            content_type = "image/png" if ext == "png" else "image/jpeg"
+            blob.upload_from_string(img_data, content_type=content_type)
+            blob.make_public()
+            image_url = blob.public_url
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Upload to GCS failed: {e}")
+
+    # Prepend new image to the product's images array
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT images FROM products WHERE id=%s AND workspace_id=%s",
+                (product_id, workspace_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Product not found")
+
+            existing = row[0] if isinstance(row[0], list) else _json.loads(row[0] or "[]")
+            new_image = {"url": image_url, "alt": "", "position": 0}
+            # Put new image first, keep others, remove duplicates
+            merged = [new_image] + [img for img in existing if img.get("url") != image_url]
+
+            cur.execute(
+                "UPDATE products SET images=%s::jsonb, updated_at=NOW() WHERE id=%s AND workspace_id=%s",
+                (_json.dumps(merged), product_id, workspace_id),
+            )
+        conn.commit()
+
+    return {"ok": True, "image_url": image_url, "product_id": product_id}
+
+
 @app.get("/workspace/list")
 async def list_workspaces(request: Request):
     """List all active workspaces. Agency admin view."""
