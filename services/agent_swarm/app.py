@@ -276,6 +276,46 @@ async def get_catalog_products(request: Request, workspace_id: str = None):
     return {"products": products, "count": len(products)}
 
 
+@app.post("/catalog/add-product")
+async def add_product_manually(request: Request):
+    """
+    Manually add a single product to the catalog.
+    Body: {workspace_id, name, description?, price_inr?, product_url?, sku?}
+    """
+    _auth(request)
+    import json as _json
+    from services.agent_swarm.db import get_conn
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    name         = (body.get("name") or "").strip()
+    if not workspace_id or not name:
+        raise HTTPException(status_code=400, detail="workspace_id and name required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO products
+                    (workspace_id, name, description, price_inr, product_url, sku,
+                     images, source_platform, source_product_id, active)
+                VALUES (%s, %s, %s, %s, %s, %s, '[]'::jsonb, 'manual', %s, TRUE)
+                RETURNING id
+                """,
+                (
+                    workspace_id, name,
+                    body.get("description") or None,
+                    body.get("price_inr") or None,
+                    body.get("product_url") or None,
+                    body.get("sku") or None,
+                    f"manual-{name.lower().replace(' ', '-')}",
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+
+    return {"ok": True, "product_id": str(row[0])}
+
+
 @app.post("/catalog/import-shopify")
 async def import_shopify_catalog(request: Request):
     """
