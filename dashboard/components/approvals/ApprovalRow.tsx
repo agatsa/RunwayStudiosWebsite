@@ -59,15 +59,18 @@ function CampaignPlanDetail({ newValue, platform }: { newValue: unknown; platfor
   const concept = (nv.concept ?? {}) as Record<string, unknown>
   const brief   = (nv.brief   ?? {}) as Record<string, unknown>
 
-  const headline    = concept.headline    as string | undefined
-  const rationale   = concept.rationale   as string | undefined
-  const format      = concept.recommended_format as string | undefined
-  const channels    = (concept.recommended_channels ?? brief.channels) as string[] | undefined
-  const budgetDaily = (brief.budget_daily ?? concept.recommended_budget_daily) as number | undefined
-  const duration    = brief.duration_days as number | undefined
-  const goal        = (brief.goal as string | undefined)?.replace('_', ' ')
-  const kpi         = concept.kpi_targets as { expected_roas?: number; expected_cpa?: number; expected_ctr?: number } | undefined
-  const insights    = concept.growth_insights as string[] | undefined
+  const headline           = concept.headline           as string | undefined
+  const rationale          = concept.rationale          as string | undefined
+  const format             = concept.recommended_format as string | undefined
+  const channels           = (concept.recommended_channels ?? brief.channels) as string[] | undefined
+  const budgetDaily        = (brief.budget_daily ?? concept.recommended_budget_daily) as number | undefined
+  const duration           = brief.duration_days        as number | undefined
+  const goal               = (brief.goal as string | undefined)?.replace('_', ' ')
+  const kpi                = concept.kpi_targets        as { expected_roas?: number; expected_cpa?: number; expected_ctr?: number } | undefined
+  const insights           = concept.growth_insights    as string[] | undefined
+  const bodyCopy           = concept.body_copy          as string | undefined
+  const hook               = concept.hook               as string | undefined
+  const creativeDirection  = concept.creative_direction as string | undefined
 
   return (
     <div className="mt-4 space-y-3">
@@ -119,6 +122,31 @@ function CampaignPlanDetail({ newValue, platform }: { newValue: unknown; platfor
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {/* Creative Brief — hook, body copy, creative direction */}
+      {(hook || bodyCopy || creativeDirection) && (
+        <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 space-y-3">
+          <p className="text-xs font-semibold uppercase text-gray-400">Creative Brief</p>
+          {hook && (
+            <div>
+              <p className="text-xs font-medium text-gray-400 uppercase mb-0.5">Hook</p>
+              <p className="text-sm font-medium text-gray-800 italic">&ldquo;{hook}&rdquo;</p>
+            </div>
+          )}
+          {bodyCopy && (
+            <div>
+              <p className="text-xs font-medium text-gray-400 uppercase mb-0.5">Ad Copy</p>
+              <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{bodyCopy}</p>
+            </div>
+          )}
+          {creativeDirection && (
+            <div>
+              <p className="text-xs font-medium text-gray-400 uppercase mb-0.5">Creative Direction</p>
+              <p className="text-sm text-gray-600 leading-relaxed">{creativeDirection}</p>
+            </div>
+          )}
         </div>
       )}
 

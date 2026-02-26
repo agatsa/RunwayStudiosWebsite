@@ -1624,7 +1624,7 @@ async def handle_approval(request: Request):
             platform=platform or "meta",
         )
         final_status = "approved"
-        redirect = "/campaign-planner"
+        redirect = f"/campaign-planner?ws={workspace_id}"
 
     elif action_type == "create_campaign":
         # Branch on platform: google → PMax via GoogleConnector, meta (default) → Meta Graph API
