@@ -7694,107 +7694,137 @@ async def organic_posts_signals(
 ):
     """
     Return Meta campaign CTR signals and hour-of-day data.
-    High CTR campaigns are proxies for engaging content themes.
+    Pulls from live Meta Insights API when connected, falls back to kpi_hourly upload data.
     """
     _auth(request)
     if not workspace_id:
         raise HTTPException(status_code=400, detail="workspace_id required")
 
-    from services.agent_swarm.db import get_conn
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            # Check if Meta is connected (live API or uploaded data)
-            cur.execute(
-                """
-                SELECT COUNT(*) FROM platform_connections
-                WHERE workspace_id = %s AND platform = 'meta'
-                """,
-                (workspace_id,),
-            )
-            meta_live_count = cur.fetchone()[0]
+    import json as _json
+    import requests as _req
+    from datetime import date, timedelta
+    from services.agent_swarm.db import get_conn as _gc
 
-            cur.execute(
-                """
-                SELECT COUNT(*) FROM kpi_hourly
-                WHERE workspace_id = %s AND (platform = 'meta' OR platform IS NULL)
-                  AND entity_level = 'campaign'
-                LIMIT 1
-                """,
-                (workspace_id,),
-            )
-            meta_upload_count = cur.fetchone()[0]
-
-            meta_connected = (meta_live_count > 0) or (meta_upload_count > 0)
-
-            # Top campaigns by CTR (Meta, last 365 days — covers uploaded historical data)
-            cur.execute(
-                """
-                SELECT
-                    COALESCE(entity_name, raw_json->>'campaign_name', raw_json->>'name') AS name,
-                    SUM(COALESCE((raw_json->>'clicks')::numeric, 0)) AS clicks,
-                    SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) AS impressions,
-                    SUM(COALESCE((raw_json->>'spend')::numeric, 0)) AS spend,
-                    CASE
-                        WHEN SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) > 0
-                        THEN ROUND(
-                            SUM(COALESCE((raw_json->>'clicks')::numeric, 0)) /
-                            SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) * 100, 2
-                        )
-                        ELSE 0
-                    END AS ctr
-                FROM kpi_hourly
-                WHERE workspace_id = %s
-                  AND (platform = 'meta' OR platform IS NULL)
-                  AND entity_level = 'campaign'
-                  AND hour_ts >= NOW() - INTERVAL '365 days'
-                GROUP BY 1
-                HAVING SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) > 100
-                ORDER BY ctr DESC
-                LIMIT 10
-                """,
-                (workspace_id,),
-            )
-            cols = [d[0] for d in cur.description]
-            top_campaigns = [dict(zip(cols, r)) for r in cur.fetchall()]
-
-            # Best hours from hour_of_day entity level (365 days)
-            cur.execute(
-                """
-                SELECT
-                    COALESCE(entity_name, raw_json->>'hour', (raw_json->>'hour_of_day')) AS hour,
-                    ROUND(AVG(COALESCE((raw_json->>'ctr')::numeric, 0)), 2) AS avg_ctr,
-                    SUM(COALESCE((raw_json->>'conversions')::numeric, 0)) AS conversions
-                FROM kpi_hourly
-                WHERE workspace_id = %s
-                  AND entity_level = 'hour_of_day'
-                  AND hour_ts >= NOW() - INTERVAL '365 days'
-                GROUP BY 1
-                HAVING COALESCE(entity_name, raw_json->>'hour', (raw_json->>'hour_of_day')) IS NOT NULL
-                ORDER BY avg_ctr DESC
-                LIMIT 5
-                """,
-                (workspace_id,),
-            )
-            cols2 = [d[0] for d in cur.description]
-            best_hours = [dict(zip(cols2, r)) for r in cur.fetchall()]
+    workspace = get_workspace(workspace_id)
+    conn_row = get_primary_connection(workspace or {}, "meta") if workspace else None
+    meta_connected = conn_row is not None
 
     campaigns_clean = []
-    for c in top_campaigns:
-        campaigns_clean.append({
-            "name": c["name"],
-            "ctr": float(c["ctr"] or 0),
-            "clicks": int(c["clicks"] or 0),
-            "impressions": int(c["impressions"] or 0),
-            "spend": float(c["spend"] or 0),
-        })
-
     hours_clean = []
-    for h in best_hours:
-        hours_clean.append({
-            "hour": h["hour"],
-            "avg_ctr": float(h["avg_ctr"] or 0),
-            "conversions": int(h["conversions"] or 0),
-        })
+
+    # ── 1. Live Meta API: account-level campaign insights ────────────────
+    if conn_row:
+        try:
+            access_token = conn_row.get("access_token", "")
+            raw_act = conn_row.get("ad_account_id", "")
+            act_id = raw_act if raw_act.startswith("act_") else f"act_{raw_act}"
+            since = (date.today() - timedelta(days=89)).strftime("%Y-%m-%d")
+            until = date.today().strftime("%Y-%m-%d")
+
+            r = _req.get(
+                f"{META_GRAPH}/{act_id}/insights",
+                params={
+                    "access_token": access_token,
+                    "level": "campaign",
+                    "fields": "campaign_name,impressions,clicks,spend,ctr",
+                    "time_range": _json.dumps({"since": since, "until": until}),
+                    "limit": 50,
+                },
+                timeout=20,
+            )
+            if r.ok:
+                for row in r.json().get("data", []):
+                    impressions = int(row.get("impressions") or 0)
+                    if impressions < 100:
+                        continue
+                    clicks = int(row.get("clicks") or 0)
+                    campaigns_clean.append({
+                        "name": row.get("campaign_name", "Unknown"),
+                        "ctr": round(float(row.get("ctr") or 0), 2),
+                        "clicks": clicks,
+                        "impressions": impressions,
+                        "spend": round(float(row.get("spend") or 0), 2),
+                    })
+                campaigns_clean.sort(key=lambda x: x["ctr"], reverse=True)
+                campaigns_clean = campaigns_clean[:10]
+        except Exception as e:
+            print(f"Meta insights API error in organic_posts_signals: {e}")
+
+    # ── 2. Fallback: kpi_hourly Excel-upload campaign data (Meta or unknown platform) ──
+    if not campaigns_clean:
+        try:
+            with _gc() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT
+                            COALESCE(entity_name, raw_json->>'campaign_name', raw_json->>'name') AS name,
+                            SUM(COALESCE((raw_json->>'clicks')::numeric, 0)) AS clicks,
+                            SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) AS impressions,
+                            SUM(COALESCE((raw_json->>'spend')::numeric, 0)) AS spend,
+                            CASE
+                                WHEN SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) > 0
+                                THEN ROUND(
+                                    SUM(COALESCE((raw_json->>'clicks')::numeric, 0)) /
+                                    SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) * 100, 2
+                                )
+                                ELSE 0
+                            END AS ctr
+                        FROM kpi_hourly
+                        WHERE workspace_id = %s
+                          AND (platform = 'meta' OR platform IS NULL)
+                          AND entity_level = 'campaign'
+                          AND hour_ts >= NOW() - INTERVAL '365 days'
+                        GROUP BY 1
+                        HAVING SUM(COALESCE((raw_json->>'impressions')::numeric, 0)) > 100
+                        ORDER BY ctr DESC
+                        LIMIT 10
+                        """,
+                        (workspace_id,),
+                    )
+                    for row in cur.fetchall():
+                        campaigns_clean.append({
+                            "name": row[0] or "Unknown",
+                            "clicks": int(row[1] or 0),
+                            "impressions": int(row[2] or 0),
+                            "spend": float(row[3] or 0),
+                            "ctr": float(row[4] or 0),
+                        })
+                    if not meta_connected and campaigns_clean:
+                        meta_connected = True
+        except Exception as e:
+            print(f"kpi_hourly fallback error: {e}")
+
+    # ── 3. Best posting hours from kpi_hourly hour_of_day data ───────────
+    try:
+        with _gc() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        COALESCE(entity_name, raw_json->>'hour', (raw_json->>'hour_of_day')) AS hour,
+                        ROUND(AVG(COALESCE((raw_json->>'ctr')::numeric, 0)), 2) AS avg_ctr,
+                        SUM(COALESCE((raw_json->>'conversions')::numeric, 0)) AS conversions
+                    FROM kpi_hourly
+                    WHERE workspace_id = %s
+                      AND entity_level = 'hour_of_day'
+                      AND hour_ts >= NOW() - INTERVAL '365 days'
+                    GROUP BY 1
+                    HAVING COALESCE(entity_name, raw_json->>'hour', (raw_json->>'hour_of_day')) IS NOT NULL
+                      AND AVG(COALESCE((raw_json->>'ctr')::numeric, 0)) > 0
+                    ORDER BY avg_ctr DESC
+                    LIMIT 5
+                    """,
+                    (workspace_id,),
+                )
+                for row in cur.fetchall():
+                    hours_clean.append({
+                        "hour": row[0],
+                        "avg_ctr": float(row[1] or 0),
+                        "conversions": int(row[2] or 0),
+                    })
+    except Exception as e:
+        print(f"hour_of_day query error: {e}")
 
     return {
         "meta_connected": meta_connected,
