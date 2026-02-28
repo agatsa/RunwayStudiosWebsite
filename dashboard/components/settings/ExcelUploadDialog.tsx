@@ -15,6 +15,7 @@ interface ParsedSheet {
   entityLevel: EntityLevel
   rows: ParsedRow[]
   entityCount: number  // unique entity names
+  hasDateColumn: boolean
 }
 
 // ── Column aliases per entity level ──────────────────────────────────────────
@@ -30,8 +31,12 @@ const BASE_ALIASES: Record<CampaignKey, string[]> = {
   date: ['reporting starts', 'day', 'date'],
   campaign_name: ['campaign name', 'campaign'],
   spend: ['amount spent (inr)', 'amount spent', 'cost', 'spend (inr)', 'spend'],
-  impressions: ['impressions', 'impr.', 'impr'],
-  clicks: ['link clicks', 'clicks'],
+  // 'impr.' (with dot) matches "Impr." but NOT "Impression share". Bare 'impr' removed —
+  // startsWith('impr') would match "Impression share" before "Impressions" in some reports.
+  impressions: ['impressions', 'impr.'],
+  // 'interactions' added for Google PMax / Display / Video where Google uses "Interactions"
+  // as the click-equivalent metric instead of "Clicks".
+  clicks: ['link clicks', 'clicks', 'interactions'],
   conversions: ['results', 'conversions', 'conv.'],
   // "conv. value" and "conv value" are what Google Ads exports as the revenue column
   revenue: ['purchase conversion value', 'all conv. value', 'conv. value', 'conv value', 'conversion value (inr)', 'conversion value'],
@@ -246,7 +251,7 @@ function parseSheet(sheetName: string, raw: unknown[][]): ParsedSheet | null {
   }
 
   if (!rows.length) return null
-  return { entityLevel, rows, entityCount: entityNames.size }
+  return { entityLevel, rows, entityCount: entityNames.size, hasDateColumn: colIdx.date !== undefined }
 }
 
 // ── XLSX template download ────────────────────────────────────────────────────
@@ -316,6 +321,7 @@ export default function ExcelUploadDialog({ workspaceId, platform, onSuccess, on
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [uploadProgress, setUploadProgress] = useState<string>('')
   const [totalUpserted, setTotalUpserted] = useState(0)
+  const [reportDate, setReportDate] = useState('')
 
   const platformLabel = platform === 'meta' ? 'Meta Ads Manager' : 'Google Ads'
 
@@ -387,7 +393,11 @@ export default function ExcelUploadDialog({ workspaceId, platform, onSuccess, on
       search_term: [],
     }
     for (const sheet of sheets) {
-      byLevel[sheet.entityLevel].push(...sheet.rows)
+      // If no date column and user specified a report date, override all rows
+      const rows = (!sheet.hasDateColumn && reportDate)
+        ? sheet.rows.map(r => ({ ...r, date: reportDate }))
+        : sheet.rows
+      byLevel[sheet.entityLevel].push(...rows)
     }
 
     try {
@@ -527,6 +537,26 @@ export default function ExcelUploadDialog({ workspaceId, platform, onSuccess, on
                   {summaryText()} · <strong>{totalRows}</strong> total rows
                 </p>
               </div>
+
+              {/* Date picker for aggregate reports (no per-row date column) */}
+              {sheets.some(s => !s.hasDateColumn) && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 space-y-2">
+                  <p className="text-xs font-semibold text-amber-800">No date column detected — aggregate report</p>
+                  <p className="text-xs text-amber-700">
+                    Set the report date so time filters (7d, 30d) work correctly.
+                    Without this, all data is stored at today&apos;s date and always appears in every view.
+                  </p>
+                  <input
+                    type="date"
+                    value={reportDate}
+                    onChange={e => setReportDate(e.target.value)}
+                    className="w-full rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                  />
+                  {!reportDate && (
+                    <p className="text-xs text-amber-600">Tip: use the last day of the report period (e.g. Jan 31 for a January report).</p>
+                  )}
+                </div>
+              )}
 
               {/* Per-sheet breakdown */}
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 space-y-1.5">

@@ -43,6 +43,7 @@ function CampaignRow({
     e.stopPropagation()
     startTransition(async () => {
       const endpoint = isActive ? '/api/campaigns/pause' : '/api/campaigns/resume'
+      const action   = isActive ? 'pause' : 'resume'
       try {
         const res = await fetch(endpoint, {
           method: 'POST',
@@ -53,11 +54,21 @@ function CampaignRow({
             entity_id: campaign.id,
           }),
         })
-        if (!res.ok) throw new Error('Failed')
+        const data = await res.json()
+
+        if (!res.ok || data.ok === false) {
+          const errMsg = data.error || data.detail || `Failed to ${action} campaign`
+          toast.error(`Could not ${action} campaign`, {
+            description: errMsg,
+            duration: 8000,
+          })
+          return
+        }
+
         toast.success(isActive ? 'Campaign paused' : 'Campaign resumed')
         router.refresh()
       } catch {
-        toast.error(`Failed to ${isActive ? 'pause' : 'resume'} campaign`)
+        toast.error(`Failed to ${action} campaign — check your connection`)
       }
     })
   }

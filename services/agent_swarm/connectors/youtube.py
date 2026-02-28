@@ -243,14 +243,24 @@ class YouTubeConnector:
                 (thumbs.get("maxres") or thumbs.get("high") or thumbs.get("default") or {})
                 .get("url")
             )
+            title       = snip.get("title", "")
+            description = snip.get("description", "")
+            tags        = snip.get("tags", [])
+            dur_secs    = self._parse_iso_duration(content.get("duration", ""))
+
+            # A true YouTube Short: ≤60s AND has #shorts in title/description/tags
+            shorts_corpus = (title + " " + description + " " + " ".join(tags or [])).lower()
+            is_short = dur_secs <= 60 and "#short" in shorts_corpus
+
             result.append({
                 "video_id":         v["id"],
-                "title":            snip.get("title", ""),
-                "description":      snip.get("description", ""),
-                "tags":             snip.get("tags", []),
+                "title":            title,
+                "description":      description,
+                "tags":             tags,
                 "thumbnail_url":    thumb,
                 "published_at":     snip.get("publishedAt"),
-                "duration_seconds": self._parse_iso_duration(content.get("duration", "")),
+                "duration_seconds": dur_secs,
+                "is_short":         is_short,
                 "view_count":       int(stats.get("viewCount", 0)),
                 "like_count":       int(stats.get("likeCount", 0)),
                 "comment_count":    int(stats.get("commentCount", 0)),
@@ -262,8 +272,9 @@ class YouTubeConnector:
     def fetch_video_analytics(self, video_id: str, since: str, until: str) -> list[dict]:
         """
         Fetch daily per-video stats from Analytics API.
+        NOTE: impressions/impressionsClickThroughRate are channel-level only —
+        they cannot be filtered by video==ID (returns 400). Excluded here.
         Raises PermissionError if OAuth2 not available.
-        CTR comes as fraction → multiplied ×100.
         """
         data = self._analytics_get({
             "startDate": since,
@@ -271,7 +282,6 @@ class YouTubeConnector:
             "metrics": (
                 "views,estimatedMinutesWatched,"
                 "averageViewDuration,averageViewPercentage,"
-                "impressions,impressionsClickThroughRate,"
                 "likes,shares,subscribersGained"
             ),
             "dimensions": "day",
@@ -282,18 +292,41 @@ class YouTubeConnector:
         result = []
         for row in rows:
             result.append({
-                "date":                     row[0],
-                "views":                    int(row[1]),
-                "watch_time_minutes":       int(row[2]),
-                "avg_view_duration_seconds":int(row[3]),
-                "avg_view_percentage":      round(float(row[4]), 3),
-                "impressions":              int(row[5]),
-                "impression_ctr":           round(float(row[6]) * 100, 4),
-                "likes":                    int(row[7]),
-                "shares":                   int(row[8]),
-                "subscribers_gained":       int(row[9]),
+                "date":                      row[0],
+                "views":                     int(row[1]),
+                "watch_time_minutes":        int(row[2]),
+                "avg_view_duration_seconds": int(row[3]),
+                "avg_view_percentage":       round(float(row[4]), 3),
+                "impressions":               0,     # not available per-video
+                "impression_ctr":            0.0,   # not available per-video
+                "likes":                     int(row[5]),
+                "shares":                    int(row[6]),
+                "subscribers_gained":        int(row[7]),
             })
         return result
+
+    def fetch_audience_retention(self, video_id: str) -> list[dict]:
+        """
+        Return audience retention curve for a specific video.
+        Uses elapsedVideoTimeRatio + audienceWatchRatio — OAuth2 required.
+        Returns ~100 points: [{elapsed_ratio: 0-1, watch_pct: 0-100}].
+        """
+        data = self._analytics_get({
+            "startDate":  "2020-01-01",
+            "endDate":    datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "metrics":    "audienceWatchRatio",
+            "dimensions": "elapsedVideoTimeRatio",
+            "filters":    f"video=={video_id}",
+            "sort":       "elapsedVideoTimeRatio",
+        })
+        rows = data.get("rows", []) or []
+        return [
+            {
+                "elapsed_ratio": round(float(r[0]), 3),
+                "watch_pct":     round(float(r[1]) * 100, 1),
+            }
+            for r in rows
+        ]
 
     def fetch_top_videos(self, since: str, until: str, limit: int = 20) -> list[dict]:
         """Return top videos by views (Analytics — OAuth2 required)."""
@@ -355,3 +388,65 @@ class YouTubeConnector:
             timeout=20,
         )
         return r.ok
+
+    # ── Comments ─────────────────────────────────────────────
+
+    def fetch_video_comments(
+        self,
+        video_id: str,
+        max_results: int = 100,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        """
+        Fetch top-level comment threads for a video.
+        Works with API key (public videos) or OAuth2.
+        Returns list of dicts with: comment_id, author_name, comment_text,
+        like_count, reply_count, published_at.
+        If raise_on_error=False (default), silently returns [] on any error.
+        If raise_on_error=True, raises the original exception so callers can
+        detect and report why comments could not be fetched.
+        """
+        comments: list[dict] = []
+        params: dict = {
+            "part":        "snippet",
+            "videoId":     video_id,
+            "maxResults":  min(max_results, 100),
+            "order":       "relevance",
+            "textFormat":  "plainText",
+        }
+        while True:
+            try:
+                # commentThreads works with API key for public videos.
+                # OAuth may lack youtube.force-ssl scope → 403.
+                # Prefer API key path regardless of whether OAuth is present.
+                if self.api_key:
+                    r = requests.get(
+                        f"{_DATA_BASE}/commentThreads",
+                        params={**params, "key": self.api_key},
+                        timeout=20,
+                    )
+                    r.raise_for_status()
+                    data = r.json()
+                else:
+                    data = self._data_get("commentThreads", params)
+            except Exception as e:
+                if raise_on_error:
+                    raise
+                break
+            for item in data.get("items", []):
+                top = item["snippet"]["topLevelComment"]["snippet"]
+                comments.append({
+                    "comment_id":  item["id"],
+                    "author_name": top.get("authorDisplayName", "Anonymous"),
+                    "comment_text": top.get("textDisplay", ""),
+                    "like_count":  int(top.get("likeCount", 0)),
+                    "reply_count": int(item["snippet"].get("totalReplyCount", 0)),
+                    "published_at": top.get("publishedAt"),
+                })
+                if len(comments) >= max_results:
+                    return comments
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+            params["pageToken"] = page_token
+        return comments

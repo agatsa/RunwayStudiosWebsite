@@ -26,8 +26,8 @@ export default function YouTubeVideoTable({ videos, workspaceId }: Props) {
   const [filter, setFilter] = useState<Filter>('all')
 
   const filtered = videos.filter(v => {
-    if (filter === 'shorts') return v.duration_seconds < 60
-    if (filter === 'longform') return v.duration_seconds >= 60
+    if (filter === 'shorts') return v.is_short === true
+    if (filter === 'longform') return v.is_short !== true
     return true
   })
 
@@ -54,7 +54,7 @@ export default function YouTubeVideoTable({ videos, workspaceId }: Props) {
                   : 'text-gray-500 hover:text-gray-700'
               }`}
             >
-              {f === 'all' ? `All (${videos.length})` : f === 'shorts' ? `Shorts <60s (${videos.filter(v => v.duration_seconds < 60).length})` : `Long-form ≥60s (${videos.filter(v => v.duration_seconds >= 60).length})`}
+              {f === 'all' ? `All (${videos.length})` : f === 'shorts' ? `Shorts (${videos.filter(v => v.is_short).length})` : `Long-form (${videos.filter(v => !v.is_short).length})`}
             </button>
           ))}
         </div>
@@ -91,7 +91,7 @@ export default function YouTubeVideoTable({ videos, workspaceId }: Props) {
                       <span className="line-clamp-2 font-medium text-gray-900">
                         {v.title}
                       </span>
-                      {v.duration_seconds < 60 && (
+                      {v.is_short && (
                         <span className="inline-flex items-center rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-bold text-red-700 mt-0.5">
                           SHORT
                         </span>

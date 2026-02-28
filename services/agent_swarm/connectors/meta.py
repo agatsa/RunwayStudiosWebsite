@@ -196,27 +196,133 @@ class MetaConnector(PlatformConnector):
         except Exception:
             return False
 
-    def pause(self, entity_id: str) -> bool:
+    def pause(self, entity_id: str) -> dict:
+        """Returns {"ok": bool, "error": str | None}."""
         try:
             r = requests.post(
                 f"{self.graph}/{entity_id}",
                 data={"status": "PAUSED", "access_token": self.access_token},
                 timeout=20,
             )
-            return r.status_code < 300
-        except Exception:
-            return False
+            if r.status_code < 300:
+                return {"ok": True, "error": None}
+            try:
+                err = r.json().get("error", {})
+                msg = err.get("message") or err.get("error_user_msg") or f"Meta error {r.status_code}"
+            except Exception:
+                msg = r.text[:300] or f"Meta error {r.status_code}"
+            return {"ok": False, "error": msg}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
-    def resume(self, entity_id: str) -> bool:
+    # Map Meta account_status codes to human-readable reasons
+    _ACCOUNT_STATUS = {
+        2:   "Ad account is disabled",
+        3:   "Ad account has an outstanding balance — please settle your bill",
+        7:   "Ad account is under risk review",
+        8:   "Ad account is pending payment settlement",
+        9:   "Ad account is in grace period — payment overdue",
+        100: "Ad account is pending closure",
+        101: "Ad account is closed",
+    }
+
+    def _check_account_health(self) -> str | None:
+        """
+        Returns a human-readable error string if the ad account has billing/
+        suspension issues, or None if the account is healthy.
+        """
+        try:
+            r = requests.get(
+                f"{self.graph}/{self.ad_account_id}",
+                params={
+                    "fields": "account_status,disable_reason,currency",
+                    "access_token": self.access_token,
+                },
+                timeout=15,
+            )
+            if r.status_code >= 300:
+                return None  # can't determine — don't block
+            data = r.json()
+            status_code = data.get("account_status")
+            if status_code and status_code != 1:
+                return self._ACCOUNT_STATUS.get(status_code, f"Ad account issue (status code {status_code})")
+        except Exception:
+            pass
+        return None
+
+    def resume(self, entity_id: str) -> dict:
+        """
+        Attempt to activate a campaign/adset.
+        After the Meta API call succeeds (HTTP 200), verify the effective_status
+        actually changed to ACTIVE.  If not, check the ad account health and
+        return a clear error message (e.g. billing block, account disabled).
+        Returns {"ok": bool, "error": str | None}.
+        """
         try:
             r = requests.post(
                 f"{self.graph}/{entity_id}",
                 data={"status": "ACTIVE", "access_token": self.access_token},
                 timeout=20,
             )
-            return r.status_code < 300
-        except Exception:
-            return False
+            # ── Hard API failure ───────────────────────────────────────────
+            if r.status_code >= 300:
+                try:
+                    err = r.json().get("error", {})
+                    msg = err.get("message") or err.get("error_user_msg") or f"Meta error {r.status_code}"
+                    code = err.get("code")
+                    subcode = err.get("error_subcode")
+                    # Enrich vague "Permissions error" with account health context
+                    if "Permissions" in msg or code in (200, 100):
+                        acct_err = self._check_account_health()
+                        if acct_err:
+                            msg = acct_err
+                        else:
+                            msg = f"{msg} — your ad account may have a billing issue or policy violation. Check Meta Business Manager."
+                except Exception:
+                    msg = r.text[:300] or f"Meta error {r.status_code}"
+                return {"ok": False, "error": msg}
+
+            # ── API returned 200 — verify the campaign actually went ACTIVE ─
+            verify = requests.get(
+                f"{self.graph}/{entity_id}",
+                params={
+                    "fields": "status,effective_status,issues_info",
+                    "access_token": self.access_token,
+                },
+                timeout=15,
+            )
+            if verify.status_code < 300:
+                vdata = verify.json()
+                effective = vdata.get("effective_status") or vdata.get("status", "")
+
+                if effective not in ("ACTIVE", "CAMPAIGN_ACTIVE"):
+                    # Campaign didn't activate — figure out why
+                    # 1. Check issues_info on the entity itself
+                    issues = vdata.get("issues_info") or []
+                    if issues:
+                        issue_msg = issues[0].get("error_message") or issues[0].get("summary", "")
+                        if issue_msg:
+                            return {"ok": False, "error": f"Campaign cannot be activated: {issue_msg}"}
+
+                    # 2. Check ad account health (billing / suspension)
+                    acct_error = self._check_account_health()
+                    if acct_error:
+                        return {"ok": False, "error": acct_error}
+
+                    # 3. Generic fallback
+                    status_map = {
+                        "ACCOUNT_PAUSED": "Ad account is paused — check billing or account status in Meta Business Manager",
+                        "PAUSED":         "Campaign is still paused — Meta did not activate it. Check your ad account for billing or policy issues.",
+                        "WITH_ISSUES":    "Campaign has issues preventing activation — review in Meta Ads Manager",
+                        "DISAPPROVED":    "Campaign was disapproved by Meta — review ad content",
+                        "PENDING_REVIEW": "Campaign is pending Meta review",
+                    }
+                    friendly = status_map.get(effective, f"Campaign status is '{effective}' — could not activate. Check Meta Business Manager.")
+                    return {"ok": False, "error": friendly}
+
+            return {"ok": True, "error": None}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def upload_image(self, image_url: str) -> Optional[str]:
         """Download image from URL and upload to Meta. Returns image hash."""

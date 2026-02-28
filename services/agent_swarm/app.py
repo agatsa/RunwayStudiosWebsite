@@ -2235,6 +2235,19 @@ async def handle_approval(request: Request):
                 (final_status, action_id),
             )
 
+    # If execution failed, read the stored error from action_log
+    exec_error = None
+    if not success and final_status == "failed":
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT error FROM action_log WHERE id=%s", (action_id,))
+                    _err_row = cur.fetchone()
+                    if _err_row and _err_row[0]:
+                        exec_error = _err_row[0]
+        except Exception:
+            pass
+
     return {
         "ok": True,
         "decision": "approved",
@@ -2252,6 +2265,8 @@ async def handle_approval(request: Request):
         "launch_error": launch_result.get("error") if launch_result and not launch_result.get("ok") else None,
         # Populated for keyword/geo/bid actions
         "execution_note": execution_note,
+        # Error detail when execution fails (payment issue, ad account disabled, etc.)
+        "exec_error": exec_error,
     }
 
 
@@ -3578,9 +3593,11 @@ async def kpi_summary(
             # Daily breakdown by platform.
             # Use the most granular entity_level available per platform to avoid
             # double-counting: Meta ingests at 'ad' level, Google at 'campaign'.
+            # Normalize 'facebook' → 'meta' so old data stored under either name
+            # is consolidated into one platform bucket.
             cur.execute(
                 """
-                SELECT platform,
+                SELECT CASE WHEN platform IN ('meta', 'facebook') THEN 'meta' ELSE platform END AS platform,
                        DATE_TRUNC('day', hour_ts)::DATE AS date,
                        SUM(spend)       AS spend,
                        SUM(impressions) AS impressions,
@@ -3595,12 +3612,13 @@ async def kpi_summary(
                             ELSE 0 END AS ctr
                 FROM kpi_hourly
                 WHERE workspace_id = %s
-                  AND hour_ts >= NOW() - INTERVAL '%s days'
+                  AND hour_ts >= NOW() - (%s * INTERVAL '1 day')
                   AND (
-                    (platform = 'meta'   AND entity_level IN ('ad', 'campaign'))
+                    (platform IN ('meta', 'facebook') AND entity_level IN ('ad', 'campaign'))
                     OR (platform = 'google' AND entity_level = 'campaign')
                   )
-                GROUP BY platform, DATE_TRUNC('day', hour_ts)::DATE
+                GROUP BY CASE WHEN platform IN ('meta', 'facebook') THEN 'meta' ELSE platform END,
+                         DATE_TRUNC('day', hour_ts)::DATE
                 ORDER BY date ASC, platform
                 """,
                 (workspace_id, days),
@@ -3608,13 +3626,10 @@ async def kpi_summary(
             cols = [d[0] for d in cur.description]
             daily = [dict(zip(cols, r)) for r in cur.fetchall()]
 
-            # Platform-level totals — uses the same time window as the daily chart
-            # so the filter buttons actually change the numbers shown.
-            # For excel-upload Google data (stored with historical hour_ts), it will
-            # naturally appear when the selected window covers those dates (e.g. 90d / 365d).
+            # Platform-level totals — same normalization for 'facebook' → 'meta'
             cur.execute(
                 """
-                SELECT platform,
+                SELECT CASE WHEN platform IN ('meta', 'facebook') THEN 'meta' ELSE platform END AS platform,
                        SUM(spend)       AS spend,
                        SUM(impressions) AS impressions,
                        SUM(clicks)      AS clicks,
@@ -3628,12 +3643,12 @@ async def kpi_summary(
                             ELSE 0 END AS ctr
                 FROM kpi_hourly
                 WHERE workspace_id = %s
-                  AND hour_ts >= NOW() - INTERVAL '%s days'
+                  AND hour_ts >= NOW() - (%s * INTERVAL '1 day')
                   AND (
-                    (platform = 'meta'   AND entity_level IN ('ad', 'campaign'))
+                    (platform IN ('meta', 'facebook') AND entity_level IN ('ad', 'campaign'))
                     OR (platform = 'google' AND entity_level = 'campaign')
                   )
-                GROUP BY platform
+                GROUP BY CASE WHEN platform IN ('meta', 'facebook') THEN 'meta' ELSE platform END
                 """,
                 (workspace_id, days),
             )
@@ -3768,8 +3783,10 @@ async def meta_pause_campaign(request: Request):
 
     from services.agent_swarm.connectors.meta import MetaConnector
     mc = MetaConnector(conn_row, workspace)
-    ok = mc.pause(entity_id)
-    return {"ok": ok, "entity_id": entity_id}
+    result = mc.pause(entity_id)
+    ok    = result.get("ok", False) if isinstance(result, dict) else bool(result)
+    error = result.get("error")    if isinstance(result, dict) else None
+    return {"ok": ok, "entity_id": entity_id, "error": error}
 
 
 @app.post("/meta/campaign/resume")
@@ -3789,8 +3806,10 @@ async def meta_resume_campaign(request: Request):
 
     from services.agent_swarm.connectors.meta import MetaConnector
     mc = MetaConnector(conn_row, workspace)
-    ok = mc.resume(entity_id)
-    return {"ok": ok, "entity_id": entity_id}
+    result = mc.resume(entity_id)
+    ok    = result.get("ok", False) if isinstance(result, dict) else bool(result)
+    error = result.get("error")    if isinstance(result, dict) else None
+    return {"ok": ok, "entity_id": entity_id, "error": error}
 
 
 @app.post("/meta/campaign/budget")
@@ -4418,7 +4437,8 @@ async def youtube_videos(request: Request, workspace_id: str = None):
                     cur.execute(
                         """
                         SELECT video_id, title, description, tags, thumbnail_url,
-                               published_at, duration_seconds, view_count, like_count, comment_count
+                               published_at, duration_seconds, view_count, like_count, comment_count,
+                               COALESCE(is_short, FALSE) as is_short
                         FROM youtube_videos
                         WHERE workspace_id = %s
                         ORDER BY view_count DESC LIMIT 50
@@ -4426,7 +4446,7 @@ async def youtube_videos(request: Request, workspace_id: str = None):
                         (workspace_id,),
                     )
                     cols = ["video_id","title","description","tags","thumbnail_url",
-                            "published_at","duration_seconds","view_count","like_count","comment_count"]
+                            "published_at","duration_seconds","view_count","like_count","comment_count","is_short"]
                     cached_videos = [dict(zip(cols, r)) for r in cur.fetchall()]
                     for v in cached_videos:
                         if hasattr(v.get("published_at"), "isoformat"):
@@ -4454,19 +4474,20 @@ async def youtube_videos(request: Request, workspace_id: str = None):
                             INSERT INTO youtube_videos
                                 (workspace_id, video_id, title, description, tags,
                                  thumbnail_url, published_at, duration_seconds,
-                                 view_count, like_count, comment_count)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                 view_count, like_count, comment_count, is_short)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             ON CONFLICT (workspace_id, video_id)
                             DO UPDATE SET
-                                title           = EXCLUDED.title,
-                                description     = EXCLUDED.description,
-                                tags            = EXCLUDED.tags,
-                                thumbnail_url   = EXCLUDED.thumbnail_url,
+                                title            = EXCLUDED.title,
+                                description      = EXCLUDED.description,
+                                tags             = EXCLUDED.tags,
+                                thumbnail_url    = EXCLUDED.thumbnail_url,
                                 duration_seconds = EXCLUDED.duration_seconds,
-                                view_count      = EXCLUDED.view_count,
-                                like_count      = EXCLUDED.like_count,
-                                comment_count   = EXCLUDED.comment_count,
-                                updated_at      = NOW()
+                                view_count       = EXCLUDED.view_count,
+                                like_count       = EXCLUDED.like_count,
+                                comment_count    = EXCLUDED.comment_count,
+                                is_short         = EXCLUDED.is_short,
+                                updated_at       = NOW()
                             """,
                             (
                                 workspace_id,
@@ -4480,6 +4501,7 @@ async def youtube_videos(request: Request, workspace_id: str = None):
                                 v["view_count"],
                                 v["like_count"],
                                 v["comment_count"],
+                                v.get("is_short", False),
                             ),
                         )
                 conn.commit()
@@ -4577,13 +4599,40 @@ async def youtube_video_insights(
         except Exception as e:
             print(f"YouTube video stats DB upsert error (non-fatal): {e}")
 
+    # Look up is_short flag from DB (Shorts need different AI analysis)
+    is_short = False
+    try:
+        from services.agent_swarm.db import get_conn as _gc_short
+        with _gc_short() as _conn_s:
+            with _conn_s.cursor() as _cur_s:
+                _cur_s.execute(
+                    "SELECT COALESCE(is_short, FALSE) FROM youtube_videos WHERE workspace_id = %s AND video_id = %s",
+                    (workspace_id, video_id),
+                )
+                _r = _cur_s.fetchone()
+                if _r:
+                    is_short = bool(_r[0])
+    except Exception as e:
+        print(f"YouTube is_short lookup error (non-fatal): {e}")
+
     # Claude AI suggestions
     suggestions: list[str] = []
     try:
         import anthropic
         import re as _re
         client = anthropic.Anthropic()
+        if is_short:
+            short_note = (
+                "IMPORTANT: This video is a YouTube Short (≤60 seconds with #shorts tag). "
+                "Shorts ALWAYS show 100% drop-off at the end — that is NORMAL behavior because Shorts loop. "
+                "Do NOT mention end drop-off as a problem. Focus suggestions on: "
+                "hook strength in the first 1-3 seconds, Shorts-specific SEO (#shorts tags, trending sounds), "
+                "posting frequency, and using Shorts to drive subscribers to long-form content.\n"
+            )
+        else:
+            short_note = ""
         prompt = (
+            f"{short_note}"
             f"YouTube video '{video_id}' last {days} days:\n"
             f"Views: {total_views:,}, Watch minutes: {total_watch_minutes:,}, "
             f"Avg view %: {avg_view_pct:.1f}%, CTR: {avg_ctr:.2f}%, "
@@ -4606,8 +4655,16 @@ async def youtube_video_insights(
     except Exception as e:
         print(f"YouTube video insights Claude error: {e}")
 
+    # Audience retention curve (OAuth only — silently empty if unavailable)
+    retention_curve: list[dict] = []
+    try:
+        retention_curve = yc.fetch_audience_retention(video_id)
+    except Exception as e:
+        print(f"YouTube retention fetch skipped: {e}")
+
     return {
         "video_id": video_id,
+        "is_short": is_short,
         "total_views": total_views,
         "total_watch_minutes": total_watch_minutes,
         "avg_view_percentage": round(avg_view_pct, 2),
@@ -4616,19 +4673,210 @@ async def youtube_video_insights(
         "subscribers_gained": total_subs_gained,
         "daily": daily_rows,
         "suggestions": suggestions,
+        "retention_curve": retention_curve,
         "workspace_id": workspace_id,
     }
+
+
+@app.get("/youtube/traffic-sources")
+async def youtube_traffic_sources(request: Request, workspace_id: str = None, days: int = 30):
+    """Real traffic source breakdown from YouTube Analytics API."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    yc, _ = _get_youtube_connector(workspace_id)
+    from datetime import datetime, timedelta
+
+    since = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+    until = datetime.utcnow().strftime("%Y-%m-%d")
+
+    try:
+        rows = yc.fetch_traffic_sources(since, until)
+    except PermissionError:
+        return {"available": False, "sources": [], "reason": "oauth_required"}
+    except Exception as e:
+        return {"available": False, "sources": [], "reason": str(e)}
+
+    _LABELS = {
+        "YT_SEARCH":         "YouTube Search",
+        "SUGGESTED":         "Suggested Videos",
+        "BROWSE_FEATURES":   "Browse / Home Feed",
+        "EXT_URL":           "External Sources",
+        "NO_LINK_EMBEDDED":  "Embedded Player",
+        "NOTIFICATION":      "Notifications",
+        "CHANNEL":           "Channel Page",
+        "ADVERTISING":       "YouTube Ads",
+        "END_SCREEN":        "End Screens",
+        "CAMPAIGN_CARD":     "Campaign Cards",
+        "NO_LINK_OTHER":     "Other",
+        "HASHTAGS":          "Hashtags",
+        "PLAYLISTS":         "Playlists",
+        "RELATED_VIDEO":     "Related Videos",
+        "SUBSCRIBER":        "Subscribers",
+    }
+    total = sum(r["views"] for r in rows) or 1
+    sources = [
+        {
+            "source":              _LABELS.get(r["source"], r["source"].replace("_", " ").title()),
+            "source_type":         r["source"],
+            "views":               r["views"],
+            "watch_time_minutes":  r["watch_time_minutes"],
+            "pct":                 round(r["views"] / total * 100, 1),
+        }
+        for r in rows if r["views"] > 0
+    ]
+    return {"available": True, "sources": sources, "since": since, "until": until}
+
+
+@app.get("/youtube/upload-timing")
+async def youtube_upload_timing(request: Request, workspace_id: str = None):
+    """Analyse best upload times based on publish_at vs view_count from own video history."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+    from collections import defaultdict
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT published_at AT TIME ZONE 'Asia/Kolkata' AS local_pub, view_count
+                FROM youtube_videos
+                WHERE workspace_id = %s
+                  AND published_at IS NOT NULL
+                  AND view_count > 0
+                ORDER BY published_at
+                """,
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+
+    if not rows:
+        return {"available": False, "slots": [], "grid": [], "best_slots": []}
+
+    _DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    slot_views: dict = defaultdict(list)
+    for local_pub, view_count in rows:
+        if local_pub:
+            dow = local_pub.weekday()       # 0=Mon … 6=Sun
+            hour_bucket = (local_pub.hour // 3) * 3   # 0,3,6,9,12,15,18,21
+            slot_views[(dow, hour_bucket)].append(int(view_count or 0))
+
+    max_avg = 1
+    slot_list = []
+    for (dow, hour), views in slot_views.items():
+        avg = int(sum(views) / len(views))
+        max_avg = max(max_avg, avg)
+        slot_list.append({"day": dow, "day_name": _DAYS[dow], "hour": hour,
+                          "avg_views": avg, "video_count": len(views)})
+
+    slot_list.sort(key=lambda x: x["avg_views"], reverse=True)
+    slot_map = {(s["day"], s["hour"]): s for s in slot_list}
+
+    grid = [
+        {
+            "day": d,
+            "day_name": _DAYS[d],
+            "hour": h,
+            "label": f"{h:02d}:00",
+            "avg_views": slot_map.get((d, h), {}).get("avg_views", 0),
+            "video_count": slot_map.get((d, h), {}).get("video_count", 0),
+            "heat": round(slot_map.get((d, h), {}).get("avg_views", 0) / max_avg, 3),
+        }
+        for d in range(7)
+        for h in [0, 3, 6, 9, 12, 15, 18, 21]
+    ]
+    return {"available": True, "best_slots": slot_list[:3], "grid": grid}
+
+
+@app.get("/youtube/organic-opportunities")
+async def youtube_organic_opportunities(request: Request, workspace_id: str = None):
+    """Top organic videos ranked for paid promotion suitability."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT v.video_id, v.title, v.view_count, v.like_count,
+                       v.comment_count, v.thumbnail_url, v.duration_seconds,
+                       v.published_at,
+                       COALESCE(AVG(s.avg_view_percentage), 0) AS avg_retention,
+                       COALESCE(AVG(s.impression_ctr), 0)      AS avg_ctr
+                FROM youtube_videos v
+                LEFT JOIN youtube_video_stats s
+                       ON s.video_id = v.video_id AND s.workspace_id = v.workspace_id
+                WHERE v.workspace_id = %s
+                  AND v.view_count > 0
+                GROUP BY v.video_id, v.title, v.view_count, v.like_count,
+                         v.comment_count, v.thumbnail_url, v.duration_seconds, v.published_at
+                ORDER BY v.view_count DESC
+                LIMIT 10
+                """,
+                (workspace_id,),
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    if not rows:
+        return {"available": False, "opportunities": []}
+
+    max_views = max(r["view_count"] for r in rows) or 1
+    opportunities = []
+    for r in rows:
+        view_score      = r["view_count"] / max_views
+        ctr_score       = min(float(r["avg_ctr"]) / 10.0, 1.0)
+        retention_score = min(float(r["avg_retention"]) / 50.0, 1.0)
+        score = view_score * 0.6 + ctr_score * 0.2 + retention_score * 0.2
+
+        views = r["view_count"]
+        if views > 100_000:
+            bmin, bmax = 25000, 75000
+        elif views > 50_000:
+            bmin, bmax = 15000, 40000
+        elif views > 10_000:
+            bmin, bmax = 8000, 20000
+        else:
+            bmin, bmax = 3000, 10000
+
+        opportunities.append({
+            "video_id":        r["video_id"],
+            "title":           r["title"],
+            "thumbnail_url":   r["thumbnail_url"],
+            "view_count":      r["view_count"],
+            "like_count":      r["like_count"],
+            "avg_retention":   round(float(r["avg_retention"]), 1),
+            "avg_ctr":         round(float(r["avg_ctr"]), 2),
+            "duration_seconds": r["duration_seconds"],
+            "score":           round(score, 3),
+            "budget_min":      bmin,
+            "budget_max":      bmax,
+        })
+
+    opportunities.sort(key=lambda x: x["score"], reverse=True)
+    return {"available": True, "opportunities": opportunities[:5]}
 
 
 @app.get("/youtube/growth-plan")
 async def youtube_growth_plan(request: Request, workspace_id: str = None):
     """
-    Generate a 5-step Claude growth plan based on channel data.
-    Reads best/worst video from DB after a videos sync.
+    Generate a 5-step Claude growth plan. Plans are persisted in youtube_growth_plans
+    (INSERT only — never overwritten). Plans generated < 24 hours ago are returned
+    from cache to avoid burning Claude credits on every page load.
     """
     _auth(request)
     if not workspace_id:
         raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from datetime import datetime, timezone as _tz_gp
+    import json as _json_gp
 
     yc, workspace = _get_youtube_connector(workspace_id)
 
@@ -4637,6 +4885,47 @@ async def youtube_growth_plan(request: Request, workspace_id: str = None):
         channel_info = yc.get_channel_info()
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"YouTube API error: {e}")
+
+    # ── Check cache: if a plan was created < 24h ago, return it ──────────────
+    history_plans: list[dict] = []
+    try:
+        from services.agent_swarm.db import get_conn
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, steps, created_at
+                    FROM youtube_growth_plans
+                    WHERE workspace_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 6
+                    """,
+                    (workspace_id,),
+                )
+                rows = cur.fetchall()
+        if rows:
+            most_recent_id = str(rows[0][0])
+            most_recent_steps = rows[0][1]  # JSONB → Python list
+            most_recent_ts = rows[0][2]
+            age_hours = (
+                datetime.now(_tz_gp.utc) - most_recent_ts.replace(tzinfo=_tz_gp.utc)
+            ).total_seconds() / 3600
+            history_plans = [
+                {"id": str(r[0]), "steps": r[1], "created_at": r[2].isoformat()}
+                for r in rows[1:]
+            ][:5]
+            if age_hours < 24:
+                return {
+                    "channel": channel_info,
+                    "steps": most_recent_steps,
+                    "plan_id": most_recent_id,
+                    "history": history_plans,
+                    "workspace_id": workspace_id,
+                    "from_cache": True,
+                }
+    except Exception as e:
+        print(f"YouTube growth plan cache check error (non-fatal): {e}")
+    # ── End cache check ───────────────────────────────────────────────────────
 
     # Read best + worst videos from DB
     best_video = None
@@ -4676,12 +4965,12 @@ async def youtube_growth_plan(request: Request, workspace_id: str = None):
 
     # Claude growth plan
     steps: list[str] = []
+    subs = channel_info.get("subscriber_count", 0)
+    views = channel_info.get("view_count", 0)
     try:
         import anthropic
         client = anthropic.Anthropic()
         channel_name = channel_info.get("title", "your channel")
-        subs = channel_info.get("subscriber_count", 0)
-        views = channel_info.get("view_count", 0)
         best_info = f"Best video: \"{best_video['title']}\" ({best_video['view_count']:,} views)" if best_video else "No videos uploaded yet"
         worst_info = f"Needs improvement: \"{worst_video['title']}\" ({worst_video['view_count']:,} views)" if worst_video else ""
         prompt = (
@@ -4709,11 +4998,85 @@ async def youtube_growth_plan(request: Request, workspace_id: str = None):
     except Exception as e:
         print(f"YouTube growth plan Claude error: {e}")
 
+    # Persist the new plan (INSERT only — never update existing)
+    plan_id = ""
+    if steps:
+        try:
+            from services.agent_swarm.db import get_conn
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO youtube_growth_plans
+                            (workspace_id, steps, subs_at_time, views_at_time)
+                        VALUES (%s, %s::jsonb, %s, %s)
+                        RETURNING id
+                        """,
+                        (workspace_id, _json_gp.dumps(steps), subs, views),
+                    )
+                    plan_id = str(cur.fetchone()[0])
+                conn.commit()
+            # Reload history (excluding the plan we just inserted)
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT id, steps, created_at
+                        FROM youtube_growth_plans
+                        WHERE workspace_id = %s AND id != %s::uuid
+                        ORDER BY created_at DESC
+                        LIMIT 5
+                        """,
+                        (workspace_id, plan_id),
+                    )
+                    history_plans = [
+                        {"id": str(r[0]), "steps": r[1], "created_at": r[2].isoformat()}
+                        for r in cur.fetchall()
+                    ]
+        except Exception as e:
+            print(f"YouTube growth plan DB save error (non-fatal): {e}")
+
     return {
         "channel": channel_info,
         "steps": steps,
+        "plan_id": plan_id,
+        "history": history_plans,
         "workspace_id": workspace_id,
     }
+
+
+@app.post("/youtube/growth-plan/create-task")
+async def youtube_growth_plan_create_task(request: Request):
+    """Save a growth plan step as an actionable task in youtube_growth_actions."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    step_text = body.get("step_text", "").strip()
+    plan_id = body.get("plan_id") or None
+    lever = body.get("lever", "growth_plan")
+
+    if not workspace_id or not step_text:
+        raise HTTPException(status_code=400, detail="workspace_id and step_text required")
+
+    try:
+        from services.agent_swarm.db import get_conn
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO youtube_growth_actions
+                        (workspace_id, plan_id, lever, suggestion, status)
+                    VALUES (%s, %s, %s, %s, 'suggested')
+                    RETURNING id
+                    """,
+                    (workspace_id, plan_id, lever, step_text),
+                )
+                action_id = str(cur.fetchone()[0])
+            conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB error: {e}")
+
+    return {"ok": True, "action_id": action_id}
 
 
 @app.post("/google/oauth/save")
@@ -4980,6 +5343,14 @@ async def upload_excel_kpis(request: Request):
                 if entity_level == "campaign":
                     campaign_name = str(row.get("campaign_name", "")).strip()
                     if not campaign_name:
+                        continue
+                    # Skip Google Ads summary/subtotal rows that are NOT real campaigns
+                    _name_lower = campaign_name.lower()
+                    if (
+                        _name_lower.startswith("total:")
+                        or _name_lower.startswith("total :")
+                        or _name_lower in ("enabled", "paused", "removed", "all enabled campaigns")
+                    ):
                         continue
                     entity_id = _slugify(campaign_name)
                     entity_name = campaign_name
@@ -5330,7 +5701,10 @@ async def upload_google_geo(request: Request, workspace_id: str = None, days: in
                 WHERE workspace_id = %s
                   AND account_id   = 'excel_upload'
                   AND entity_level = 'geo'
-                  AND hour_ts >= NOW() - INTERVAL '%s days'
+                  AND hour_ts >= NOW() - (%s * INTERVAL '1 day')
+                  AND entity_name NOT ILIKE 'Total%%'
+                  AND entity_name NOT ILIKE '%%Account%%'
+                  AND entity_name NOT IN ('(not set)', 'Unknown', '', 'Total')
                 GROUP BY entity_name, raw_json->>'campaign_name'
                 ORDER BY spend DESC
                 LIMIT 50
@@ -6199,6 +6573,8 @@ async def upload_google_intelligence(request: Request, workspace_id: str = None)
     with get_conn() as conn:
         with conn.cursor() as cur:
             # ── Step 1: Try campaign-level rows first ─────────────────────────
+            # Filter out Google Ads summary/subtotal rows (Total: Account, Enabled, Paused, etc.)
+            # NOTE: %% escapes the % sign for psycopg2 (otherwise treated as param placeholder)
             cur.execute(
                 """
                 SELECT entity_id,
@@ -6214,6 +6590,9 @@ async def upload_google_intelligence(request: Request, workspace_id: str = None)
                   AND account_id = 'excel_upload'
                   AND entity_level = 'campaign'
                   AND hour_ts >= NOW() - INTERVAL '365 days'
+                  AND LOWER(entity_name) NOT LIKE 'total:%%'
+                  AND LOWER(entity_name) NOT LIKE 'total :%%'
+                  AND LOWER(entity_name) NOT IN ('enabled', 'paused', 'removed', 'all enabled campaigns')
                 GROUP BY entity_id
                 ORDER BY SUM(spend) DESC
                 """,
@@ -6239,6 +6618,8 @@ async def upload_google_intelligence(request: Request, workspace_id: str = None)
                       AND account_id = 'excel_upload'
                       AND entity_level = 'keyword'
                       AND hour_ts >= NOW() - INTERVAL '365 days'
+                      AND LOWER(raw_json->>'campaign_name') NOT LIKE 'total:%%'
+                      AND LOWER(raw_json->>'campaign_name') NOT IN ('enabled', 'paused', 'removed', '')
                     GROUP BY raw_json->>'campaign_id'
                     ORDER BY SUM(spend) DESC
                     """,
@@ -7039,6 +7420,557 @@ async def comments_insights(
     }
 
 
+# ── Comments — unified feed, sentiment, YouTube sync ─────────────────────────
+
+_CATEGORY_SENTIMENT = {
+    "positive":          "praise",
+    "purchase_intent":   "praise",
+    "price":             "concern",
+    "trust":             "concern",
+    "scam":              "concern",
+    "delivery":          "concern",
+    "feature_confusion": "question",
+    "support":           "question",
+    "other":             "neutral",
+}
+
+_CATEGORY_LABEL = {
+    "positive":          "Praise",
+    "purchase_intent":   "Purchase Intent",
+    "price":             "Price Concern",
+    "trust":             "Trust Issue",
+    "scam":              "Spam / Scam",
+    "feature_confusion": "Feature Question",
+    "delivery":          "Delivery Concern",
+    "support":           "Support Needed",
+    "other":             "Other",
+}
+
+_CATEGORY_COLOR = {
+    "positive":          "green",
+    "purchase_intent":   "blue",
+    "price":             "orange",
+    "trust":             "red",
+    "scam":              "red",
+    "feature_confusion": "purple",
+    "delivery":          "amber",
+    "support":           "amber",
+    "other":             "gray",
+}
+
+
+@app.get("/comments/sentiment")
+async def comments_sentiment(request: Request, workspace_id: str = None):
+    """
+    Sentiment breakdown across Meta (comment_replies) + YouTube (youtube_comments).
+    Returns: total, positive_pct, top_concern, unread, by_category[], by_source{}.
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT objection_type AS category,
+                       COUNT(*)::int  AS cnt,
+                       COUNT(*) FILTER (WHERE status = 'pending')::int AS unread
+                FROM comment_replies
+                WHERE workspace_id = %s
+                GROUP BY 1
+                """,
+                (workspace_id,),
+            )
+            meta_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT COALESCE(category, 'other') AS category,
+                       COUNT(*)::int  AS cnt,
+                       COUNT(*) FILTER (WHERE status = 'pending')::int AS unread
+                FROM youtube_comments
+                WHERE workspace_id = %s
+                GROUP BY 1
+                """,
+                (workspace_id,),
+            )
+            yt_rows = cur.fetchall()
+
+    combined: dict = {}
+    meta_total = meta_praise = yt_total = yt_praise = total_unread = 0
+
+    for category, cnt, ur in meta_rows:
+        meta_total += cnt
+        if _CATEGORY_SENTIMENT.get(category) == "praise":
+            meta_praise += cnt
+        combined[category] = combined.get(category, 0) + cnt
+        total_unread += ur or 0
+
+    for category, cnt, ur in yt_rows:
+        yt_total += cnt
+        if _CATEGORY_SENTIMENT.get(category) == "praise":
+            yt_praise += cnt
+        combined[category] = combined.get(category, 0) + cnt
+        total_unread += ur or 0
+
+    total = sum(combined.values())
+    praise_count = sum(v for k, v in combined.items() if _CATEGORY_SENTIMENT.get(k) == "praise")
+    positive_pct = round(praise_count / total * 100) if total > 0 else 0
+
+    concern_cats = {k: v for k, v in combined.items()
+                    if _CATEGORY_SENTIMENT.get(k) == "concern"}
+    top_concern = max(concern_cats, key=lambda k: concern_cats[k]) if concern_cats else None
+
+    by_category = [
+        {
+            "category": cat,
+            "label":    _CATEGORY_LABEL.get(cat, cat),
+            "color":    _CATEGORY_COLOR.get(cat, "gray"),
+            "count":    cnt,
+            "pct":      round(cnt / total * 100) if total > 0 else 0,
+        }
+        for cat, cnt in sorted(combined.items(), key=lambda x: -x[1])
+        if cnt > 0
+    ]
+
+    return {
+        "has_data":          total > 0,
+        "total":             total,
+        "positive_pct":      positive_pct,
+        "top_concern":       top_concern,
+        "top_concern_label": _CATEGORY_LABEL.get(top_concern or "", ""),
+        "unread":            total_unread,
+        "by_category":       by_category,
+        "by_source": {
+            "meta":    {"total": meta_total,  "positive_pct": round(meta_praise / meta_total * 100) if meta_total > 0 else 0},
+            "youtube": {"total": yt_total,    "positive_pct": round(yt_praise / yt_total * 100) if yt_total > 0 else 0},
+            "amazon":  {"total": 0},
+        },
+    }
+
+
+@app.get("/comments/feed")
+async def comments_feed(
+    request: Request,
+    workspace_id: str = None,
+    source: str = "all",
+    limit: int = 50,
+    offset: int = 0,
+    days: int = 0,        # 0 = all time; >0 = last N days
+):
+    """
+    Unified comment feed: Meta (comment_replies) + YouTube (youtube_comments).
+    source: all | meta | youtube
+    days: 0 = all time, 7/30/90 = last N days
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn
+    import datetime as dt
+
+    # Build optional date clause
+    date_filter_meta  = "AND (%s = 0 OR COALESCE(comment_created, first_seen_at) >= NOW() - (%s * INTERVAL '1 day'))"
+    date_filter_yt    = "AND (%s = 0 OR published_at >= NOW() - (%s * INTERVAL '1 day'))"
+
+    comments = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if source in ("all", "meta"):
+                cur.execute(
+                    f"""
+                    SELECT
+                        id::text,
+                        'meta'                                AS source,
+                        COALESCE(ad_id, '')                   AS source_name,
+                        COALESCE(commenter_name, 'Anonymous') AS author_name,
+                        comment_text,
+                        COALESCE(objection_type, 'other')     AS category,
+                        CASE objection_type
+                            WHEN 'positive'          THEN 'praise'
+                            WHEN 'purchase_intent'   THEN 'praise'
+                            WHEN 'price'             THEN 'concern'
+                            WHEN 'trust'             THEN 'concern'
+                            WHEN 'scam'              THEN 'concern'
+                            WHEN 'delivery'          THEN 'concern'
+                            WHEN 'feature_confusion' THEN 'question'
+                            WHEN 'support'           THEN 'question'
+                            ELSE                          'neutral'
+                        END                                   AS sentiment,
+                        COALESCE(like_count, 0)               AS like_count,
+                        suggested_reply,
+                        status,
+                        COALESCE(comment_created, first_seen_at) AS published_at
+                    FROM comment_replies
+                    WHERE workspace_id = %s
+                      {date_filter_meta}
+                    ORDER BY COALESCE(comment_created, first_seen_at) DESC
+                    LIMIT 500
+                    """,
+                    (workspace_id, days, days),
+                )
+                cols = [d[0] for d in cur.description]
+                comments.extend(dict(zip(cols, row)) for row in cur.fetchall())
+
+            if source in ("all", "youtube"):
+                cur.execute(
+                    f"""
+                    SELECT
+                        id::text,
+                        'youtube'                             AS source,
+                        COALESCE(video_title, video_id)       AS source_name,
+                        COALESCE(author_name, 'Anonymous')    AS author_name,
+                        comment_text,
+                        COALESCE(category, 'other')           AS category,
+                        COALESCE(sentiment, 'neutral')        AS sentiment,
+                        COALESCE(like_count, 0)               AS like_count,
+                        suggested_reply,
+                        status,
+                        published_at
+                    FROM youtube_comments
+                    WHERE workspace_id = %s
+                      {date_filter_yt}
+                    ORDER BY published_at DESC NULLS LAST
+                    LIMIT 500
+                    """,
+                    (workspace_id, days, days),
+                )
+                cols = [d[0] for d in cur.description]
+                comments.extend(dict(zip(cols, row)) for row in cur.fetchall())
+
+    # Sort combined by published_at descending
+    def _sort_key(c):
+        p = c.get("published_at")
+        if p is None:
+            return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+        if isinstance(p, str):
+            try:
+                return dt.datetime.fromisoformat(p.replace("Z", "+00:00"))
+            except Exception:
+                return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+        if hasattr(p, 'tzinfo') and p.tzinfo is None:
+            return p.replace(tzinfo=dt.timezone.utc)
+        return p
+
+    comments.sort(key=_sort_key, reverse=True)
+
+    # Serialize datetime objects
+    for c in comments:
+        p = c.get("published_at")
+        if p is not None and not isinstance(p, str):
+            c["published_at"] = p.isoformat()
+
+    total = len(comments)
+    page = comments[offset: offset + limit]
+
+    return {
+        "comments": page,
+        "total":    total,
+        "has_more": offset + limit < total,
+        "offset":   offset,
+        "limit":    limit,
+    }
+
+
+@app.post("/comments/sync-youtube")
+async def sync_youtube_comments(request: Request):
+    """
+    Fetch recent YouTube video comments, classify with Claude, store in youtube_comments.
+    Body: { workspace_id: str }
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = (body.get("workspace_id") or "").strip()
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    # Get YouTube connector
+    try:
+        yc, workspace = _get_youtube_connector(workspace_id)
+    except HTTPException:
+        return {"ok": False, "error": "YouTube not connected", "synced": 0}
+
+    from services.agent_swarm.db import get_conn
+    from datetime import datetime, timezone
+    import anthropic as _anthropic
+    import json as _json
+    import re as _re
+
+    # Get recent video IDs from youtube_videos table (last 20)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT video_id, COALESCE(title, video_id) AS title
+                FROM youtube_videos
+                WHERE workspace_id = %s
+                ORDER BY published_at DESC NULLS LAST
+                LIMIT 20
+                """,
+                (workspace_id,),
+            )
+            videos = [{"video_id": r[0], "title": r[1]} for r in cur.fetchall()]
+
+    if not videos:
+        return {"ok": True, "synced": 0, "message": "No YouTube videos found — connect your channel first"}
+
+    # Fetch raw comments for each video (up to 100 per video)
+    all_raw: list[dict] = []
+    skipped_videos: list[str] = []      # videos where comments failed (disabled/error)
+    empty_videos:   list[str] = []      # videos with 0 comments
+
+    for video in videos:
+        try:
+            raw = yc.fetch_video_comments(video["video_id"], max_results=100, raise_on_error=True)
+            if raw:
+                for c in raw:
+                    c["video_id"]    = video["video_id"]
+                    c["video_title"] = video["title"]
+                all_raw.extend(raw)
+            else:
+                empty_videos.append(video["title"])
+        except Exception as e:
+            err_str = str(e).lower()
+            reason = "disabled" if ("commentsdisabled" in err_str or "403" in err_str) else "error"
+            skipped_videos.append(f"{video['title']} ({reason})")
+
+    if not all_raw:
+        parts = []
+        if skipped_videos:
+            parts.append(f"{len(skipped_videos)} video(s) have comments disabled or restricted")
+        if empty_videos:
+            parts.append(f"{len(empty_videos)} video(s) have 0 public comments")
+        detail = "; ".join(parts) if parts else "no public comments found"
+        return {
+            "ok": True, "synced": 0,
+            "message": f"Checked {len(videos)} videos — {detail}",
+            "skipped": skipped_videos,
+            "empty": empty_videos,
+        }
+
+    # Dedup against already-stored comments
+    seen_ids: set = set()
+    if all_raw:
+        comment_ids = [c["comment_id"] for c in all_raw]
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT comment_id FROM youtube_comments WHERE workspace_id = %s AND comment_id = ANY(%s)",
+                    (workspace_id, comment_ids),
+                )
+                seen_ids = {r[0] for r in cur.fetchall()}
+
+    new_comments = [c for c in all_raw if c["comment_id"] not in seen_ids]
+    if not new_comments:
+        return {"ok": True, "synced": 0, "message": "All comments already synced"}
+
+    # Classify with Claude Haiku in batches of 20
+    CATS = list(_CATEGORY_SENTIMENT.keys())
+    product_ctx = (workspace or {}).get("product_context") or "Health-tech medical device brand"
+
+    ai = _anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
+    classified: list[dict] = []
+
+    for i in range(0, len(new_comments), 20):
+        batch = new_comments[i:i + 20]
+        numbered = "\n".join(f"{j+1}. {c['comment_text'][:300]}" for j, c in enumerate(batch))
+        prompt = (
+            f"Product context: {product_ctx[:400]}\n\n"
+            f"Classify each YouTube comment into ONE category: {', '.join(CATS)}\n"
+            f"Also write a short friendly brand reply (max 120 chars).\n\n"
+            f"Comments:\n{numbered}\n\n"
+            f'Return JSON array ONLY: [{{"i":1,"category":"...","reply":"..."}}]'
+        )
+        try:
+            resp = ai.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1200,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw_text = resp.content[0].text.strip()
+            match = _re.search(r"\[.*\]", raw_text, _re.DOTALL)
+            if match:
+                results = _json.loads(match.group())
+                for res in results:
+                    idx = int(res.get("i", 1)) - 1
+                    if 0 <= idx < len(batch):
+                        cat = res.get("category", "other")
+                        if cat not in _CATEGORY_SENTIMENT:
+                            cat = "other"
+                        batch[idx]["category"]        = cat
+                        batch[idx]["sentiment"]       = _CATEGORY_SENTIMENT[cat]
+                        batch[idx]["suggested_reply"] = res.get("reply", "")
+        except Exception:
+            pass
+        # Ensure defaults for any unclassified
+        for c in batch:
+            c.setdefault("category", "other")
+            c.setdefault("sentiment", "neutral")
+            c.setdefault("suggested_reply", "")
+        classified.extend(batch)
+
+    # Upsert into youtube_comments
+    now = datetime.now(timezone.utc)
+    inserted = 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for c in classified:
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO youtube_comments
+                            (workspace_id, video_id, video_title, comment_id,
+                             author_name, comment_text, like_count, reply_count,
+                             published_at, category, sentiment, suggested_reply, classified_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (workspace_id, comment_id) DO NOTHING
+                        """,
+                        (
+                            workspace_id,
+                            c.get("video_id", ""),
+                            c.get("video_title", ""),
+                            c["comment_id"],
+                            c.get("author_name", "Anonymous"),
+                            c["comment_text"],
+                            c.get("like_count", 0),
+                            c.get("reply_count", 0),
+                            c.get("published_at"),
+                            c["category"],
+                            c["sentiment"],
+                            c["suggested_reply"],
+                            now,
+                        ),
+                    )
+                    inserted += 1
+                except Exception:
+                    conn.rollback()
+                    continue
+        conn.commit()
+
+    return {"ok": True, "synced": inserted, "total_fetched": len(all_raw), "workspace_id": workspace_id}
+
+
+@app.get("/comments/trends")
+async def comments_trends(
+    request: Request,
+    workspace_id: str = None,
+    days: int = 30,
+    source: str = "all",
+):
+    """
+    Daily comment counts by category for the last N days.
+    Used to plot comment-sentiment trend charts.
+    days: 7 | 30 | 90 (clamped to 7–365)
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    import datetime as dt
+    from services.agent_swarm.db import get_conn
+
+    days = max(7, min(int(days), 365))
+
+    today = dt.date.today()
+    date_list = [(today - dt.timedelta(days=i)) for i in range(days - 1, -1, -1)]
+    date_strs  = [d.isoformat() for d in date_list]
+
+    # {date_str: {category: count}}
+    daily: dict = {d: {} for d in date_strs}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if source in ("all", "meta"):
+                cur.execute(
+                    """
+                    SELECT
+                        (COALESCE(comment_created, first_seen_at)
+                            AT TIME ZONE 'Asia/Kolkata')::date::text AS day,
+                        COALESCE(objection_type, 'other')            AS category,
+                        COUNT(*)::int                                AS cnt
+                    FROM comment_replies
+                    WHERE workspace_id = %s
+                      AND COALESCE(comment_created, first_seen_at)
+                              >= NOW() - (%s * INTERVAL '1 day')
+                    GROUP BY 1, 2
+                    """,
+                    (workspace_id, days),
+                )
+                for day, cat, cnt in cur.fetchall():
+                    if day in daily:
+                        daily[day][cat] = daily[day].get(cat, 0) + cnt
+
+            if source in ("all", "youtube"):
+                cur.execute(
+                    """
+                    SELECT
+                        (published_at AT TIME ZONE 'Asia/Kolkata')::date::text AS day,
+                        COALESCE(category, 'other')                            AS category,
+                        COUNT(*)::int                                          AS cnt
+                    FROM youtube_comments
+                    WHERE workspace_id = %s
+                      AND published_at >= NOW() - (%s * INTERVAL '1 day')
+                    GROUP BY 1, 2
+                    """,
+                    (workspace_id, days),
+                )
+                for day, cat, cnt in cur.fetchall():
+                    if day in daily:
+                        daily[day][cat] = daily[day].get(cat, 0) + cnt
+
+    # Build chart_data list
+    chart_data = []
+    for d_str in date_strs:
+        day_counts = daily[d_str]
+        total      = sum(day_counts.values())
+        dt_obj     = dt.datetime.strptime(d_str, "%Y-%m-%d")
+        chart_data.append({
+            "date":        d_str,
+            "label":       dt_obj.strftime("%-d %b") if hasattr(dt_obj, "strftime") else d_str,
+            "total":       total,
+            "by_category": day_counts,
+        })
+
+    # Period-over-period change (first half vs second half)
+    all_cats: set = set()
+    for c in chart_data:
+        all_cats.update(c["by_category"].keys())
+
+    mid    = len(chart_data) // 2
+    first  = chart_data[:mid]
+    second = chart_data[mid:]
+
+    period_change = {}
+    for cat in all_cats:
+        f = sum(d["by_category"].get(cat, 0) for d in first)
+        s = sum(d["by_category"].get(cat, 0) for d in second)
+        pct = round((s - f) / f * 100) if f > 0 else (100 if s > 0 else 0)
+        period_change[cat] = {"first_half": f, "second_half": s, "change_pct": pct}
+
+    # Category metadata for legend
+    categories = [
+        {
+            "category": cat,
+            "label":    _CATEGORY_LABEL.get(cat, cat),
+            "color":    _CATEGORY_COLOR.get(cat, "gray"),
+        }
+        for cat in sorted(all_cats,
+                          key=lambda c: -sum(d["by_category"].get(c, 0) for d in chart_data))
+        if any(d["by_category"].get(cat, 0) > 0 for d in chart_data)
+    ]
+
+    return {
+        "days":          days,
+        "chart_data":    chart_data,
+        "period_change": period_change,
+        "categories":    categories,
+        "total":         sum(d["total"] for d in chart_data),
+    }
+
+
 # ── Campaign Planner ─────────────────────────────────────────────────────────
 
 @app.get("/campaign-planner/plans")
@@ -7795,51 +8727,133 @@ async def organic_posts_signals(
         except Exception as e:
             print(f"kpi_hourly fallback error: {e}")
 
-    # ── 3. Best posting hours from kpi_hourly hour_of_day data ───────────
+    # ── 3a. Best hours: Meta API hourly breakdown ─────────────────────────
+    if conn_row:
+        try:
+            access_token = conn_row.get("access_token", "")
+            raw_act = conn_row.get("ad_account_id", "")
+            act_id2 = raw_act if raw_act.startswith("act_") else f"act_{raw_act}"
+            since2 = (date.today() - timedelta(days=89)).strftime("%Y-%m-%d")
+            until2 = date.today().strftime("%Y-%m-%d")
+            r_hourly = _req.get(
+                f"{META_GRAPH}/{act_id2}/insights",
+                params={
+                    "access_token": access_token,
+                    "level": "account",
+                    "fields": "impressions,clicks,ctr",
+                    "breakdowns": "hourly_stats_aggregated_by_advertiser_time_zone",
+                    "time_range": _json.dumps({"since": since2, "until": until2}),
+                    "limit": 24,
+                },
+                timeout=20,
+            )
+            if r_hourly.ok:
+                hour_rows = []
+                for row in r_hourly.json().get("data", []):
+                    impressions = int(row.get("impressions") or 0)
+                    if impressions < 50:
+                        continue
+                    hour_str = row.get("hourly_stats_aggregated_by_advertiser_time_zone", "")
+                    try:
+                        hour_num = int(hour_str.split(":")[0])
+                    except Exception:
+                        continue
+                    ctr = float(row.get("ctr") or 0)
+                    if ctr <= 0:
+                        continue
+                    hour_rows.append({
+                        "hour": str(hour_num),
+                        "avg_ctr": round(ctr, 2),
+                        "impressions": impressions,
+                        "conversions": 0,
+                        "source": "meta",
+                    })
+                hour_rows.sort(key=lambda x: x["avg_ctr"], reverse=True)
+                hours_clean = hour_rows[:5]
+        except Exception as e:
+            print(f"Meta hourly breakdown error: {e}")
+
+    # ── 3b. Fallback: kpi_hourly hour_of_day data ─────────────────────────
+    if not hours_clean:
+        try:
+            with _gc() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT
+                            COALESCE(entity_name, raw_json->>'hour', (raw_json->>'hour_of_day')) AS hour,
+                            ROUND(AVG(COALESCE((raw_json->>'ctr')::numeric, 0)), 2) AS avg_ctr,
+                            SUM(COALESCE((raw_json->>'conversions')::numeric, 0)) AS conversions
+                        FROM kpi_hourly
+                        WHERE workspace_id = %s
+                          AND entity_level = 'hour_of_day'
+                          AND hour_ts >= NOW() - INTERVAL '365 days'
+                        GROUP BY 1
+                        HAVING COALESCE(entity_name, raw_json->>'hour', (raw_json->>'hour_of_day')) IS NOT NULL
+                          AND AVG(COALESCE((raw_json->>'ctr')::numeric, 0)) > 0
+                        ORDER BY avg_ctr DESC
+                        LIMIT 5
+                        """,
+                        (workspace_id,),
+                    )
+                    for row in cur.fetchall():
+                        hours_clean.append({
+                            "hour": row[0],
+                            "avg_ctr": float(row[1] or 0),
+                            "conversions": int(row[2] or 0),
+                            "source": "google",
+                        })
+        except Exception as e:
+            print(f"hour_of_day fallback error: {e}")
+
+    # ── 4. YouTube upload time correlation ────────────────────────────────
+    youtube_upload_times = []
     try:
         with _gc() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     SELECT
-                        COALESCE(entity_name, raw_json->>'hour', (raw_json->>'hour_of_day')) AS hour,
-                        ROUND(AVG(COALESCE((raw_json->>'ctr')::numeric, 0)), 2) AS avg_ctr,
-                        SUM(COALESCE((raw_json->>'conversions')::numeric, 0)) AS conversions
-                    FROM kpi_hourly
+                        EXTRACT(HOUR FROM published_at AT TIME ZONE 'Asia/Kolkata')::int AS upload_hour,
+                        COUNT(*) AS video_count,
+                        ROUND(AVG(view_count)) AS avg_views,
+                        ROUND(AVG(like_count)) AS avg_likes
+                    FROM youtube_videos
                     WHERE workspace_id = %s
-                      AND entity_level = 'hour_of_day'
-                      AND hour_ts >= NOW() - INTERVAL '365 days'
+                      AND published_at IS NOT NULL
+                      AND view_count > 0
                     GROUP BY 1
-                    HAVING COALESCE(entity_name, raw_json->>'hour', (raw_json->>'hour_of_day')) IS NOT NULL
-                      AND AVG(COALESCE((raw_json->>'ctr')::numeric, 0)) > 0
-                    ORDER BY avg_ctr DESC
-                    LIMIT 5
+                    ORDER BY avg_views DESC
+                    LIMIT 6
                     """,
                     (workspace_id,),
                 )
                 for row in cur.fetchall():
-                    hours_clean.append({
-                        "hour": row[0],
-                        "avg_ctr": float(row[1] or 0),
-                        "conversions": int(row[2] or 0),
+                    youtube_upload_times.append({
+                        "hour": int(row[0]),
+                        "video_count": int(row[1]),
+                        "avg_views": int(row[2] or 0),
+                        "avg_likes": int(row[3] or 0),
                     })
     except Exception as e:
-        print(f"hour_of_day query error: {e}")
+        print(f"YouTube upload time query error: {e}")
 
     return {
         "meta_connected": meta_connected,
         "has_meta_data": len(campaigns_clean) > 0,
         "has_timing_data": len(hours_clean) > 0,
+        "has_youtube_times": len(youtube_upload_times) > 0,
         "top_campaigns": campaigns_clean,
         "best_hours": hours_clean,
+        "youtube_upload_times": youtube_upload_times,
         "workspace_id": workspace_id,
     }
 
 
-# ── KPI Summary for Awareness page blended CAC ──────────────────────────────
+# ── KPI Blended CAC (legacy awareness page helper) ───────────────────────────
 
-@app.get("/kpi/summary")
-async def kpi_summary(
+@app.get("/kpi/blended-cac")
+async def kpi_blended_cac(
     request: Request,
     workspace_id: str = None,
     days: int = 365,
@@ -8194,6 +9208,42 @@ async def admin_migrate(request: Request):
         )""",
         "CREATE INDEX IF NOT EXISTS idx_shopify_workspace ON shopify_connections(workspace_id)",
         "CREATE INDEX IF NOT EXISTS idx_shopify_domain ON shopify_connections(shop_domain)",
+        # v22 — YouTube comments + like_count on Meta comment_replies
+        """CREATE TABLE IF NOT EXISTS youtube_comments (
+            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id    UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            video_id        TEXT NOT NULL,
+            video_title     TEXT,
+            comment_id      TEXT NOT NULL,
+            author_name     TEXT,
+            comment_text    TEXT NOT NULL,
+            like_count      INT  NOT NULL DEFAULT 0,
+            reply_count     INT  NOT NULL DEFAULT 0,
+            published_at    TIMESTAMPTZ,
+            category        TEXT,
+            sentiment       TEXT,
+            suggested_reply TEXT,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            classified_at   TIMESTAMPTZ,
+            first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_yt_comments_uniq ON youtube_comments(workspace_id, comment_id)",
+        "CREATE INDEX IF NOT EXISTS idx_yt_comments_ws ON youtube_comments(workspace_id)",
+        "CREATE INDEX IF NOT EXISTS idx_yt_comments_video ON youtube_comments(video_id)",
+        "ALTER TABLE comment_replies ADD COLUMN IF NOT EXISTS like_count INT NOT NULL DEFAULT 0",
+        # v22b — YouTube Shorts detection + growth plan history
+        "ALTER TABLE youtube_videos ADD COLUMN IF NOT EXISTS is_short BOOLEAN NOT NULL DEFAULT FALSE",
+        """CREATE TABLE IF NOT EXISTS youtube_growth_plans (
+            id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id  UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            steps         JSONB NOT NULL,
+            subs_at_time  INT,
+            views_at_time BIGINT,
+            created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_yt_growth_plans_ws ON youtube_growth_plans(workspace_id, created_at DESC)",
+        "ALTER TABLE youtube_growth_actions ADD COLUMN IF NOT EXISTS plan_id UUID REFERENCES youtube_growth_plans(id)",
     ]
     with get_conn() as conn:
         with conn.cursor() as cur:

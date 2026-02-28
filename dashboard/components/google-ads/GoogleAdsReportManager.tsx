@@ -19,15 +19,12 @@ interface ReportCard {
 }
 
 const REPORTS: ReportCard[] = [
-  { type: 'campaign',                label: 'Campaigns',             tip: 'Spend, ROAS, conversions per campaign' },
-  { type: 'keyword',                 label: 'Keywords',              tip: 'QS audit, wasted spend, match types' },
-  { type: 'search_term',             label: 'Search Terms',          tip: 'What users typed — find negatives' },
-  { type: 'geo',                     label: 'Geographic',            tip: 'ROAS and CPA by city/region' },
-  { type: 'device',                  label: 'Device',                tip: 'Mobile vs desktop conversion split' },
-  { type: 'hour_of_day',             label: 'Time of Day',           tip: '24×7 conversion heatmap' },
-  { type: 'asset',                   label: 'Ad Assets (RSA)',       tip: 'BEST/GOOD/LOW headline performance' },
-  { type: 'auction_insight',         label: 'Search Auction',        tip: 'Search competitor overlap & IS' },
-  { type: 'auction_insight_shopping',label: 'Shopping Auction',      tip: 'Shopping competitor overlap & IS', statusKey: 'auction_insight' },
+  { type: 'combined',         label: '⚡ Combined (3-in-1)',  tip: 'Campaign + Device + Hour — one file replaces three reports' },
+  { type: 'keyword',          label: 'Keywords',              tip: 'QS, wasted spend, match types — from Report Editor' },
+  { type: 'search_term',      label: 'Search Terms',          tip: 'Queries users typed — from Report Editor' },
+  { type: 'geo',              label: 'Geographic',            tip: 'City-level ROAS and CPA — from Report Editor' },
+  { type: 'asset',            label: 'Ad Assets (RSA)',       tip: 'BEST/GOOD/LOW — Ads section → Assets tab → Download' },
+  { type: 'auction_insight',  label: 'Auction Insights',      tip: 'Search OR Shopping auction file — auto-detected', statusKey: 'auction_insight' },
 ]
 
 function fmtDate(iso: string | null) {
@@ -63,7 +60,7 @@ export default function GoogleAdsReportManager({ workspaceId }: { workspaceId: s
       <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3.5">
         <div>
           <h2 className="text-sm font-semibold text-gray-900">Google Ads Report Center</h2>
-          <p className="text-xs text-gray-600">Upload each report individually for richer intelligence</p>
+          <p className="text-xs text-gray-600">Upload Combined (3-in-1) to replace Campaign + Device + Hour in one go</p>
         </div>
         <button
           onClick={fetchStatus}

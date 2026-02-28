@@ -48,6 +48,19 @@ function timeAgo(ts: string) {
   return `${Math.floor(hrs / 24)}d ago`
 }
 
+function formatDateTime(ts: string) {
+  if (!ts) return ''
+  return new Date(ts).toLocaleString('en-IN', {
+    day: 'numeric', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: true,
+  })
+}
+
+function isNew(ts: string) {
+  if (!ts) return false
+  return Date.now() - new Date(ts).getTime() < 24 * 60 * 60 * 1000
+}
+
 // ── Campaign plan detail card (shown for create_campaign action type) ─────────
 function CampaignPlanDetail({
   newValue,
@@ -263,6 +276,11 @@ export default function ApprovalRow({ action }: Props) {
                 duration: 7000,
               }
             )
+          } else if (data.status === 'failed' && data.exec_error) {
+            toast.error('Action failed — Meta returned an error', {
+              description: data.exec_error,
+              duration: 10000,
+            })
           } else if (data.status === 'failed' && data.launch_error) {
             toast.error(`Campaign creation failed: ${data.launch_error}`, { duration: 8000 })
           } else if (data.status === 'executed' && data.execution_note) {
@@ -350,9 +368,18 @@ export default function ApprovalRow({ action }: Props) {
 
       {/* Footer */}
       <div className="mt-4 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-1.5 text-sm text-gray-400">
-          <Clock className="h-4 w-4" />
-          <span>{timeAgo(action.ts)}</span>
+        <div className="flex items-center gap-2">
+          {isNew(action.ts) && (
+            <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-green-700">
+              New
+            </span>
+          )}
+          <div className="flex items-center gap-1.5 text-sm text-gray-400">
+            <Clock className="h-3.5 w-3.5 shrink-0" />
+            <span className="font-medium text-gray-600">{formatDateTime(action.ts)}</span>
+            <span className="text-gray-300">·</span>
+            <span>{timeAgo(action.ts)}</span>
+          </div>
         </div>
 
         {action.status === 'pending' ? (

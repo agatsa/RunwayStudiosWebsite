@@ -118,7 +118,16 @@
       "WebFetch(domain:developers.google.com)",
       "WebFetch(domain:support.google.com)",
       "Bash(cd \"/c/Users/rahul/Downloads/wa-agency-bot-extracted/wa-agency-bot\" && CLOUDSDK_PYTHON=\"/c/Program Files \\(x86\\)/Google/Cloud SDK/google-cloud-sdk/platform/bundledpython/python.exe\" gcloud run services update agent-swarm --region asia-south1 --update-env-vars \"GOOGLE_CLIENT_ID=771420308292-065dtejmrv9fcpq4hcv8aaqdi4be9487.apps.googleusercontent.com,GOOGLE_CLIENT_SECRET=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\" 2>&1)",
-      "Bash(CLOUDSDK_PYTHON=\"/c/Program Files \\(x86\\)/Google/Cloud SDK/google-cloud-sdk/platform/bundledpython/python.exe\" gcloud services:*)"
+      "Bash(CLOUDSDK_PYTHON=\"/c/Program Files \\(x86\\)/Google/Cloud SDK/google-cloud-sdk/platform/bundledpython/python.exe\" gcloud services:*)",
+      "Bash(gh api:*)",
+      "Bash(cd \"/c/Users/rahul/Downloads/wa-agency-bot-extracted/wa-agency-bot/runwaystudios-website\" && git fetch origin && git diff HEAD origin/main --name-only 2>&1)",
+      "Bash(cd \"/c/Users/rahul/Downloads/wa-agency-bot-extracted/wa-agency-bot/runwaystudios-website\" && git pull origin main --no-edit 2>&1)",
+      "Bash(cd \"/c/Users/rahul/Downloads/wa-agency-bot-extracted/wa-agency-bot/runwaystudios-website\" && git pull origin main --allow-unrelated-histories --no-edit 2>&1)",
+      "Bash(cd \"/c/Users/rahul/Downloads/wa-agency-bot-extracted/wa-agency-bot/runwaystudios-website\" && git push origin main 2>&1)",
+      "Bash(dig +short CAA runwaystudios.co 2>/dev/null || curl -s \"https://dns.google/resolve?name=runwaystudios.co&type=CAA\" 2>&1)",
+      "WebFetch(domain:ads-developers.googleblog.com)",
+      "Bash(CLOUDSDK_PYTHON=\"/c/Program Files \\(x86\\)/Google/Cloud SDK/google-cloud-sdk/platform/bundledpython/python.exe\" gcloud run services describe agent-swarm --region asia-south1 --format=\"value\\(status.latestReadyRevisionName,status.traffic[0].percent\\)\" 2>&1 && CLOUDSDK_PYTHON=\"/c/Program Files \\(x86\\)/Google/Cloud SDK/google-cloud-sdk/platform/bundledpython/python.exe\" gcloud run services describe dashboard --region asia-south1 --format=\"value\\(status.latestReadyRevisionName,status.traffic[0].percent\\)\" 2>&1)",
+      "Bash(curl -s --max-time 15 \"https://agent-swarm-771420308292.asia-south1.run.app/health\" && echo \"\" && CLOUDSDK_PYTHON=\"/c/Program Files \\(x86\\)/Google/Cloud SDK/google-cloud-sdk/platform/bundledpython/python.exe\" gcloud run services describe agent-swarm --region asia-south1 --format=\"value\\(status.latestReadyRevisionName\\)\" 2>&1 && CLOUDSDK_PYTHON=\"/c/Program Files \\(x86\\)/Google/Cloud SDK/google-cloud-sdk/platform/bundledpython/python.exe\" gcloud run services describe dashboard --region asia-south1 --format=\"value\\(status.latestReadyRevisionName\\)\" 2>&1)"
     ]
   }
 }

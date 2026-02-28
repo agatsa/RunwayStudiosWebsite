@@ -199,6 +199,7 @@ export interface YouTubeVideo {
   thumbnail_url: string | null
   published_at: string | null
   duration_seconds: number
+  is_short?: boolean
   view_count: number
   like_count: number
   comment_count: number
@@ -225,6 +226,7 @@ export interface YouTubeVideoStatRow {
 
 export interface YouTubeVideoInsightsResponse {
   video_id: string
+  is_short?: boolean
   total_views: number
   total_watch_minutes: number
   avg_view_percentage: number
@@ -233,13 +235,23 @@ export interface YouTubeVideoInsightsResponse {
   subscribers_gained: number
   daily: YouTubeVideoStatRow[]
   suggestions: string[]
+  retention_curve?: Array<{ elapsed_ratio: number; watch_pct: number }>
   workspace_id: string
+}
+
+export interface YouTubeGrowthPlanHistoryItem {
+  id: string
+  steps: string[]
+  created_at: string
 }
 
 export interface YouTubeGrowthPlanResponse {
   channel: YouTubeChannelInfo
   steps: string[]
+  plan_id: string
+  history: YouTubeGrowthPlanHistoryItem[]
   workspace_id: string
+  from_cache?: boolean
 }
 
 export interface ConnectionsResponse {

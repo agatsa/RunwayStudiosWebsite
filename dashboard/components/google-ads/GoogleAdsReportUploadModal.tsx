@@ -5,13 +5,14 @@ import { X, Upload, FileSpreadsheet, CheckCircle, AlertCircle, Loader2 } from 'l
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type ReportType = 'campaign' | 'keyword' | 'search_term' | 'geo' | 'device' | 'hour_of_day' | 'asset' | 'auction_insight' | 'auction_insight_shopping'
+export type ReportType = 'campaign' | 'keyword' | 'search_term' | 'geo' | 'device' | 'hour_of_day' | 'asset' | 'auction_insight' | 'auction_insight_shopping' | 'combined'
 
 type ParsedRow = Record<string, unknown>
 
 interface ParseResult {
   rows: ParsedRow[]
   entityCount: number
+  hasDateColumn: boolean
 }
 
 // ── Report config per type ────────────────────────────────────────────────────
@@ -31,13 +32,36 @@ const BASE_ALIASES: Record<string, string[]> = {
   date:          ['reporting starts', 'day', 'date'],
   campaign_name: ['campaign name', 'campaign'],
   spend:         ['amount spent (inr)', 'amount spent', 'cost', 'spend (inr)', 'spend'],
-  impressions:   ['impressions', 'impr.', 'impr'],
-  clicks:        ['link clicks', 'clicks'],
+  // 'impressions' and 'impr.' first (exact matches). Bare 'impr' removed — it matches
+  // "Impression share" which can appear before "Impressions" in some Google Ads reports.
+  impressions:   ['impressions', 'impr.'],
+  // 'interactions' added for Google PMax / Display / Video campaigns where Google uses
+  // "Interactions" as the click-equivalent metric instead of "Clicks".
+  clicks:        ['link clicks', 'clicks', 'interactions'],
   conversions:   ['results', 'conversions', 'conv.'],
   revenue:       ['purchase conversion value', 'all conv. value', 'conv. value', 'conv value', 'conversion value (inr)', 'conversion value'],
 }
 
 const REPORT_CONFIGS: Record<ReportType, ReportConfig> = {
+  combined: {
+    label: 'Combined Report (Campaign + Device + Hour)',
+    endpoint: '/api/upload/excel-kpis',
+    entityLevelParam: 'campaign',
+    description: 'Day, Campaign, Device, Hour of day, Cost, Impr., Clicks, Conversions, Conv. value — from Google Ads Report Editor',
+    mainKey: 'campaign_name',
+    aliases: {
+      date:             ['day', 'reporting starts', 'date'],
+      campaign_name:    ['campaign name', 'campaign'],
+      spend:            ['cost', 'amount spent (inr)', 'amount spent', 'spend (inr)', 'spend'],
+      impressions:      ['impressions', 'impr.'],
+      clicks:           ['clicks', 'interactions', 'link clicks'],
+      conversions:      ['conversions', 'conv.', 'results'],
+      revenue:          ['conv. value', 'all conv. value', 'purchase conversion value', 'conv value', 'conversion value (inr)', 'conversion value'],
+      device:           ['device', 'device type'],
+      hour:             ['hour of the day', 'hour of day', 'hour'],
+      impression_share: ['search impr. share', 'impr. share', 'impression share'],
+    },
+  },
   campaign: {
     label: 'Campaign Report',
     endpoint: '/api/upload/excel-kpis',
@@ -56,7 +80,7 @@ const REPORT_CONFIGS: Record<ReportType, ReportConfig> = {
       ...BASE_ALIASES,
       ad_group_name:    ['ad group name', 'ad group'],
       keyword:          ['search keyword', 'keyword'],
-      match_type:       ['search terms match type', 'match type'],
+      match_type:       ['search keyword match type', 'search terms match type', 'match type'],
       quality_score:    ['qual. score', 'quality score', 'qs'],
       impression_share: ['search impr. share', 'impr. share', 'impression share'],
     },
@@ -71,7 +95,7 @@ const REPORT_CONFIGS: Record<ReportType, ReportConfig> = {
       ...BASE_ALIASES,
       search_term:   ['search term', 'query', 'search query'],
       keyword:       ['added/excluded keyword', 'search keyword', 'keyword'],
-      match_type:    ['search terms match type', 'match type'],
+      match_type:    ['search keyword match type', 'search terms match type', 'match type'],
       ad_group_name: ['ad group name', 'ad group'],
     },
   },
@@ -324,8 +348,31 @@ function parseSheet(config: ReportConfig, raw: unknown[][]): ParseResult | null 
   }
 
   if (!rows.length) return null
-  return { rows, entityCount: entityNames.size }
+  return { rows, entityCount: entityNames.size, hasDateColumn: colIdx.date !== undefined }
 }
+
+// ── Aggregation helper (for combined report) ──────────────────────────────────
+// Sums numeric metrics across rows that share the same key fields.
+// Non-metric fields (strings, rates) are taken from the first row seen.
+
+const METRIC_FIELDS = ['spend', 'impressions', 'clicks', 'conversions', 'revenue']
+
+function aggregateRows(rows: ParsedRow[], keyFields: string[]): ParsedRow[] {
+  const agg: Record<string, ParsedRow> = {}
+  for (const row of rows) {
+    const key = keyFields.map(f => String(row[f] ?? '')).join('||')
+    if (!agg[key]) {
+      agg[key] = { ...row }
+    } else {
+      for (const m of METRIC_FIELDS) {
+        agg[key][m] = ((agg[key][m] as number) || 0) + ((row[m] as number) || 0)
+      }
+    }
+  }
+  return Object.values(agg)
+}
+
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
 // ── Chunked upload helper ─────────────────────────────────────────────────────
 
@@ -377,6 +424,7 @@ export default function GoogleAdsReportUploadModal({ reportType, workspaceId, on
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [progress, setProgress] = useState('')
   const [totalUpserted, setTotalUpserted] = useState(0)
+  const [reportDate, setReportDate] = useState('')
 
   async function handleFile(file: File) {
     setParseError(null)
@@ -401,13 +449,23 @@ export default function GoogleAdsReportUploadModal({ reportType, workspaceId, on
       let best: ParseResult | null = null
       const debugLines: string[] = []
 
+      // For auction_insight card, try both search and shopping configs (auto-detect)
+      const configsToTry = reportType === 'auction_insight'
+        ? [REPORT_CONFIGS.auction_insight, REPORT_CONFIGS.auction_insight_shopping]
+        : [config]
+
       for (const sheetName of wb.SheetNames) {
         const ws = wb.Sheets[sheetName]
         const raw = utils.sheet_to_json(ws, { header: 1, raw: true }) as unknown[][]
-        const parsed = parseSheet(config, raw)
-        if (parsed && parsed.rows.length > (best?.rows.length ?? 0)) {
-          best = parsed
-        } else if (!parsed && raw.length > 0) {
+        let sheetParsed = false
+        for (const cfg of configsToTry) {
+          const parsed = parseSheet(cfg, raw)
+          if (parsed && parsed.rows.length > (best?.rows.length ?? 0)) {
+            best = parsed
+            sheetParsed = true
+          }
+        }
+        if (!sheetParsed && raw.length > 0) {
           const firstRow = (raw[0] as unknown[]).map(h => String(h ?? '')).filter(Boolean).slice(0, 6)
           debugLines.push(`Sheet "${sheetName}": [${firstRow.join(', ')}]`)
         }
@@ -435,12 +493,68 @@ export default function GoogleAdsReportUploadModal({ reportType, workspaceId, on
     setUploadError(null)
 
     try {
+      // Apply date override for aggregate reports
+      const baseRows = (!result.hasDateColumn && reportDate)
+        ? result.rows.map(r => ({ ...r, date: reportDate }))
+        : result.rows
+
+      // ── Combined report: 3 sequential uploads (campaign + device + hour) ──
+      if (reportType === 'combined') {
+        const base = { workspace_id: workspaceId, platform: 'google' }
+
+        // 1. Campaign level — aggregate by campaign_name + date
+        const campaignRows = aggregateRows(baseRows, ['campaign_name', 'date'])
+        setProgress(`Uploading campaign data (1/3) — ${campaignRows.length} rows…`)
+        let total = await uploadChunked(
+          '/api/upload/excel-kpis',
+          { ...base, entity_level: 'campaign' },
+          campaignRows,
+          msg => setProgress(`Campaign (1/3): ${msg}`),
+        )
+
+        // 2. Device level — aggregate by campaign_name + device + date
+        const deviceRows = aggregateRows(
+          baseRows.filter(r => r.device),
+          ['campaign_name', 'device', 'date'],
+        )
+        setProgress(`Uploading device data (2/3) — ${deviceRows.length} rows…`)
+        total += await uploadChunked(
+          '/api/upload/excel-kpis',
+          { ...base, entity_level: 'device' },
+          deviceRows,
+          msg => setProgress(`Device (2/3): ${msg}`),
+        )
+
+        // 3. Hour of day level — add day_of_week from date, aggregate by hour + date
+        const hourRows = aggregateRows(
+          baseRows
+            .filter(r => r.hour !== undefined)
+            .map(r => ({
+              ...r,
+              day_of_week: DAY_NAMES[new Date((r.date as string) + 'T00:00:00').getDay()] ?? 'Monday',
+            })),
+          ['hour', 'date'],
+        )
+        setProgress(`Uploading time-of-day data (3/3) — ${hourRows.length} rows…`)
+        total += await uploadChunked(
+          '/api/upload/excel-kpis',
+          { ...base, entity_level: 'hour_of_day' },
+          hourRows,
+          msg => setProgress(`Time of day (3/3): ${msg}`),
+        )
+
+        setTotalUpserted(total)
+        setStep('done')
+        onSuccess()
+        return
+      }
+
+      // ── Standard single-entity upload ─────────────────────────────────────
       const baseBody: Record<string, unknown> = { workspace_id: workspaceId, platform: 'google' }
       if (config.entityLevelParam) {
         baseBody.entity_level = config.entityLevelParam
       }
-
-      const upserted = await uploadChunked(config.endpoint, baseBody, result.rows, setProgress)
+      const upserted = await uploadChunked(config.endpoint, baseBody, baseRows, setProgress)
       setTotalUpserted(upserted)
       setStep('done')
       onSuccess()
@@ -514,8 +628,31 @@ export default function GoogleAdsReportUploadModal({ reportType, workspaceId, on
                 </p>
               </div>
 
+              {/* Date picker for aggregate reports (no per-row date column) */}
+              {!result.hasDateColumn && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 space-y-2">
+                  <p className="text-xs font-semibold text-amber-800">No date column detected — aggregate report</p>
+                  <p className="text-xs text-amber-700">
+                    Set the report date so time filters (7d, 30d) work correctly.
+                    Without this, all data is stored at today&apos;s date and always appears in every view.
+                  </p>
+                  <input
+                    type="date"
+                    value={reportDate}
+                    onChange={e => setReportDate(e.target.value)}
+                    className="w-full rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                  />
+                  {!reportDate && (
+                    <p className="text-xs text-amber-600">Tip: use the last day of the report period (e.g. Jan 31 for a January report).</p>
+                  )}
+                </div>
+              )}
+
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 text-xs text-gray-500 space-y-0.5">
                 <p>Data will be upserted — re-uploading the same report replaces previous values.</p>
+                {reportType === 'combined' && (
+                  <p className="text-blue-600 font-medium">Combined upload: will store as Campaign + Device + Time of Day (3 passes).</p>
+                )}
                 {result.rows.length > CHUNK_SIZE && (
                   <p className="text-blue-600">Large file: will upload in {Math.ceil(result.rows.length / CHUNK_SIZE)} chunks of {CHUNK_SIZE} rows.</p>
                 )}

@@ -61,6 +61,21 @@ export default function YouTubeVideoPanel({ video, workspaceId, onClose }: Props
     Views: d.views,
   }))
 
+  // Audience retention curve: sample every 5th point to keep chart clean
+  const retentionData = (insights?.retention_curve ?? [])
+    .filter((_: unknown, i: number) => i % 5 === 0 || i === 0)
+    .map((p: { elapsed_ratio: number; watch_pct: number }) => ({
+      pct: `${Math.round(p.elapsed_ratio * 100)}%`,
+      Retention: Math.round(p.watch_pct),
+    }))
+
+  const isShort: boolean = insights?.is_short ?? video.is_short ?? false
+  const hasRetention = retentionData.length > 0
+  // For Shorts, end drop-off is normal (they loop) — only show it for long-form
+  const dropOff50 = hasRetention && !isShort
+    ? (insights?.retention_curve ?? []).find(p => p.watch_pct < 50)
+    : null
+
   return (
     <>
       {/* Backdrop */}
@@ -160,6 +175,74 @@ export default function YouTubeVideoPanel({ video, workspaceId, onClose }: Props
                   yAxisWidth={60}
                   className="h-36"
                 />
+              </div>
+            )}
+
+            {/* Audience Retention Curve */}
+            {hasRetention ? (
+              <div>
+                <h3 className="mb-1 text-sm font-semibold text-gray-700">
+                  Audience Retention
+                  {isShort && (
+                    <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-bold text-red-700">
+                      SHORT
+                    </span>
+                  )}
+                </h3>
+                <p className="mb-3 text-xs text-gray-400">
+                  % of viewers still watching at each point in the video
+                  {dropOff50 && (
+                    <span className="ml-1 text-orange-600 font-medium">
+                      · 50% drop-off at {Math.round((dropOff50.elapsed_ratio ?? 0) * (insights?.avg_duration_seconds ?? 0))}s
+                    </span>
+                  )}
+                  {isShort && (
+                    <span className="ml-1 text-red-500 font-medium">
+                      · Shorts loop — end drop is expected
+                    </span>
+                  )}
+                </p>
+                <AreaChart
+                  data={retentionData}
+                  index="pct"
+                  categories={['Retention']}
+                  colors={['red']}
+                  valueFormatter={(v: number) => `${v}%`}
+                  showLegend={false}
+                  yAxisWidth={40}
+                  minValue={0}
+                  maxValue={100}
+                  className="h-36"
+                />
+                <div className="mt-2 flex gap-3 text-xs">
+                  {retentionData[0] && (
+                    <span className={`rounded-full px-2 py-0.5 font-medium ${
+                      retentionData[0].Retention >= 85
+                        ? 'bg-green-100 text-green-700'
+                        : retentionData[0].Retention >= 70
+                        ? 'bg-yellow-100 text-yellow-700'
+                        : 'bg-red-100 text-red-700'
+                    }`}>
+                      Hook: {retentionData[0].Retention >= 85 ? 'Strong' : retentionData[0].Retention >= 70 ? 'Average' : 'Weak'} ({retentionData[0].Retention}% at start)
+                    </span>
+                  )}
+                  {!isShort && retentionData[retentionData.length - 1] && (
+                    <span className="rounded-full bg-gray-100 px-2 py-0.5 text-gray-600 font-medium">
+                      End: {retentionData[retentionData.length - 1].Retention}% finish
+                    </span>
+                  )}
+                  {isShort && (
+                    <span className="rounded-full bg-red-50 px-2 py-0.5 text-red-500 font-medium">
+                      Shorts loop — 100% end drop is normal
+                    </span>
+                  )}
+                </div>
+              </div>
+            ) : insights && !hasRetention && (
+              <div className="rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs text-amber-700">
+                {isShort
+                  ? 'Shorts audience retention requires Google OAuth — connect in Settings.'
+                  : 'Audience retention curve requires Google OAuth — connect in Settings for per-second drop-off analysis.'}
               </div>
             )}
 

@@ -284,7 +284,8 @@ def run_budget_governor(
     def _do_pause(entity_id: str) -> bool:
         if connector:
             try:
-                return connector.pause(entity_id)
+                result = connector.pause(entity_id)
+                return result.get("ok", False) if isinstance(result, dict) else bool(result)
             except Exception as e:
                 print(f"connector.pause error: {e}")
         if platform == "meta":
@@ -294,7 +295,8 @@ def run_budget_governor(
     def _do_resume(entity_id: str) -> bool:
         if connector:
             try:
-                return connector.resume(entity_id)
+                result = connector.resume(entity_id)
+                return result.get("ok", False) if isinstance(result, dict) else bool(result)
             except Exception as e:
                 print(f"connector.resume error: {e}")
         if platform == "meta":

@@ -3,6 +3,9 @@ import { fetchFromFastAPI } from '@/lib/api'
 import YouTubeOverview from '@/components/youtube/YouTubeOverview'
 import YouTubeGrowthPlan from '@/components/youtube/YouTubeGrowthPlan'
 import YouTubeVideoTable from '@/components/youtube/YouTubeVideoTable'
+import YouTubeTrafficSources from '@/components/youtube/YouTubeTrafficSources'
+import YouTubeUploadTiming from '@/components/youtube/YouTubeUploadTiming'
+import YouTubeOrganicOpportunities from '@/components/youtube/YouTubeOrganicOpportunities'
 import type {
   YouTubeChannelStatsResponse,
   YouTubeVideosResponse,
@@ -184,7 +187,12 @@ export default async function YouTubePage({ searchParams }: PageProps) {
 
       {/* AI Growth Plan — only when OAuth available */}
       {growthPlan && growthPlan.steps.length > 0 && (
-        <YouTubeGrowthPlan steps={growthPlan.steps} />
+        <YouTubeGrowthPlan
+          planId={growthPlan.plan_id ?? ''}
+          steps={growthPlan.steps}
+          history={growthPlan.history ?? []}
+          workspaceId={workspaceId}
+        />
       )}
 
       {/* Video table */}
@@ -203,100 +211,37 @@ export default async function YouTubePage({ searchParams }: PageProps) {
         />
       </div>
 
-      {/* ── COMING SOON: DEEP ANALYTICS ── */}
-      <div className="rounded-xl border border-gray-200 overflow-hidden">
-        <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-semibold text-gray-700">Audience Retention Curves</h2>
-            <p className="text-xs text-gray-400">Per-second drop-off analysis — the most underused YouTube metric</p>
-          </div>
-          {!analyticsAvailable && (
-            <Link href={`/settings?ws=${workspaceId}`}
-              className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1 hover:bg-amber-100">
-              Connect Google for analytics
-            </Link>
-          )}
+      {/* Audience Retention note — actual curve is inside the video panel (click any video) */}
+      <div className="rounded-xl border border-gray-200 bg-gray-50/60 px-5 py-4 flex items-center gap-3">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-red-100">
+          <svg className="h-4 w-4 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
         </div>
-        <div className="p-4 opacity-40 select-none">
-          <div className="flex items-end gap-0.5 h-20">
-            {[100,98,95,90,82,75,70,68,65,62,60,58,55,52,50,48,46,44,42,40,39,38,37,36,35,34,33,32,31,30].map((h, i) => (
-              <div key={i} className="flex-1 rounded-t bg-red-400" style={{ height: `${h}%` }} />
-            ))}
-          </div>
-          <div className="flex justify-between text-[10px] text-gray-400 mt-1">
-            <span>0:00</span><span>Avg drop-off: 45%</span><span>End</span>
-          </div>
-          <p className="text-xs text-gray-500 mt-2 text-center">Hook strength: <strong>Strong (98% past 0:30)</strong> · Drop-off spike at 2:15 — "edit this section"</p>
+        <div>
+          <p className="text-sm font-semibold text-gray-800">Audience Retention Curves</p>
+          <p className="text-xs text-gray-500">
+            Click any video in the table above to see its per-second drop-off curve, hook strength, and where to edit.
+            {!analyticsAvailable && (
+              <span className="ml-1 text-amber-600">
+                Requires Google OAuth —{' '}
+                <Link href={`/settings?ws=${workspaceId}`} className="underline hover:text-amber-700">
+                  connect in Settings
+                </Link>
+              </span>
+            )}
+          </p>
         </div>
       </div>
 
+      {/* Traffic Source + Upload Timing */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* Traffic Source Analysis */}
-        <div className="rounded-xl border border-gray-200 p-5">
-          <h2 className="text-sm font-semibold text-gray-700 mb-1">Traffic Source Analysis</h2>
-          <p className="text-xs text-gray-400 mb-3">Where your views come from — and where to push next</p>
-          <div className="space-y-2 opacity-40 select-none">
-            {[
-              { source: 'YouTube Search', pct: 42, color: 'bg-blue-500' },
-              { source: 'Suggested Videos', pct: 31, color: 'bg-purple-500' },
-              { source: 'External (Ads)', pct: 15, color: 'bg-red-500' },
-              { source: 'Browse Features', pct: 8, color: 'bg-green-500' },
-              { source: 'Other', pct: 4, color: 'bg-gray-400' },
-            ].map(s => (
-              <div key={s.source} className="flex items-center gap-2 text-xs">
-                <div className={`h-2 w-2 rounded-full ${s.color} shrink-0`} />
-                <span className="flex-1 text-gray-700">{s.source}</span>
-                <div className="w-24 h-1.5 rounded-full bg-gray-100">
-                  <div className={`h-1.5 rounded-full ${s.color}`} style={{ width: `${s.pct * 2}%` }} />
-                </div>
-                <span className="font-semibold text-gray-800">{s.pct}%</span>
-              </div>
-            ))}
-          </div>
-          {!analyticsAvailable && <p className="mt-3 text-[10px] text-gray-400">Requires Google OAuth — connect in Settings</p>}
-        </div>
-
-        {/* Upload Timing Optimization */}
-        <div className="rounded-xl border border-gray-200 p-5">
-          <h2 className="text-sm font-semibold text-gray-700 mb-1">Upload Timing Optimization</h2>
-          <p className="text-xs text-gray-400 mb-3">When to publish for maximum views in first 48 hours</p>
-          <div className="opacity-40 select-none">
-            <div className="grid grid-cols-7 gap-1 text-center">
-              {['S','M','T','W','T','F','S'].map((d, i) => (
-                <div key={i}>
-                  <p className="text-[10px] text-gray-500 mb-1">{d}</p>
-                  {['8am','2pm','8pm'].map(t => (
-                    <div key={t} className={`rounded text-[9px] mb-0.5 py-0.5 ${
-                      (i === 0 && t === '8pm') || (i === 6 && t === '8pm') ? 'bg-green-200 text-green-800 font-bold' : 'bg-gray-100 text-gray-400'
-                    }`}>{t}</div>
-                  ))}
-                </div>
-              ))}
-            </div>
-          </div>
-          {!analyticsAvailable && <p className="mt-3 text-[10px] text-gray-400">Requires Google OAuth — connect in Settings</p>}
-        </div>
+        <YouTubeTrafficSources workspaceId={workspaceId} />
+        <YouTubeUploadTiming workspaceId={workspaceId} />
       </div>
 
       {/* Organic → Paid Opportunities */}
-      <div className="rounded-xl border border-red-100 bg-red-50/40 p-5">
-        <h2 className="text-sm font-semibold text-gray-900 mb-1">Organic → Paid Opportunities</h2>
-        <p className="text-xs text-gray-500 mb-3">Your best-performing organic videos are the safest creative to run as paid ads — zero creative risk since real audiences already validated them</p>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 opacity-40 select-none">
-          {[
-            ['Top organic video', 'ECG demo at home', '124K views · 6.2% CTR'],
-            ['Recommended ad budget', '₹10,000–₹25,000', 'Projected: 8L impressions'],
-            ['Expected view-through', '2.1x hidden ROAS', 'Brand search lift included'],
-          ].map(([title, value, sub]) => (
-            <div key={title} className="rounded-lg bg-white border border-red-100 p-3 text-center">
-              <p className="text-[10px] text-gray-500">{title}</p>
-              <p className="text-sm font-bold text-gray-800 mt-1">{value}</p>
-              <p className="text-[10px] text-gray-400 mt-0.5">{sub}</p>
-            </div>
-          ))}
-        </div>
-        {!analyticsAvailable && <p className="mt-3 text-[10px] text-gray-400 text-center">Connect Google OAuth to see which specific videos to boost and at what budget</p>}
-      </div>
+      <YouTubeOrganicOpportunities workspaceId={workspaceId} />
     </div>
   )
 }
