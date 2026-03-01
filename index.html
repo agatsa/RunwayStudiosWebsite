@@ -281,6 +281,70 @@
       font-size: 0.8rem;
     }
 
+    /* ── PRICING ── */
+    .pricing { background: var(--gray-100); }
+    .pricing-toggle {
+      display: inline-flex; background: white; border: 1px solid var(--gray-200);
+      border-radius: 8px; padding: 4px; gap: 4px; margin: 1.5rem 0 2.5rem;
+    }
+    .pricing-toggle button {
+      padding: 0.4rem 1.2rem; border-radius: 6px; border: none; background: none;
+      font-size: 0.875rem; font-weight: 600; color: var(--gray-500); cursor: pointer;
+      transition: all 0.15s;
+    }
+    .pricing-toggle button.active {
+      background: var(--gray-900); color: white;
+    }
+    .pricing-toggle .save-badge {
+      font-size: 0.7rem; font-weight: 700; color: #16a34a;
+    }
+    .pricing-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.25rem; margin-top: 0;
+    }
+    .plan-card {
+      background: white; border: 2px solid var(--gray-200); border-radius: 16px;
+      padding: 1.75rem; position: relative; transition: box-shadow 0.2s, border-color 0.2s;
+    }
+    .plan-card:hover { box-shadow: 0 4px 24px rgba(124,58,237,0.1); }
+    .plan-card.popular { border-color: #a78bfa; background: #faf5ff; }
+    .plan-popular-badge {
+      position: absolute; top: -12px; left: 50%; transform: translateX(-50%);
+      background: var(--brand); color: white; font-size: 0.65rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.05em;
+      padding: 0.2rem 0.8rem; border-radius: 99px; white-space: nowrap;
+    }
+    .plan-name { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--gray-500); }
+    .plan-price { font-size: 1.9rem; font-weight: 800; color: var(--gray-900); margin: 0.4rem 0 0.1rem; letter-spacing: -0.03em; }
+    .plan-price span { font-size: 0.85rem; font-weight: 400; color: var(--gray-500); }
+    .plan-credits { font-size: 0.78rem; font-weight: 600; color: #d97706; margin-bottom: 1.25rem; }
+    .plan-features { list-style: none; margin-bottom: 1.5rem; }
+    .plan-features li { font-size: 0.85rem; color: var(--gray-500); padding: 0.3rem 0; display: flex; align-items: flex-start; gap: 0.5rem; }
+    .plan-features li::before { content: '✓'; color: #16a34a; font-weight: 700; flex-shrink: 0; }
+    .plan-cta {
+      display: block; text-align: center; padding: 0.65rem 1rem;
+      border-radius: 8px; font-size: 0.875rem; font-weight: 600;
+      text-decoration: none; transition: all 0.15s;
+    }
+    .plan-cta.primary { background: var(--brand); color: white; }
+    .plan-cta.primary:hover { background: var(--brand-dark); }
+    .plan-cta.outline { border: 1px solid var(--gray-200); color: var(--gray-700); }
+    .plan-cta.outline:hover { border-color: var(--brand); color: var(--brand); }
+    .topup-box {
+      margin-top: 2rem; background: white; border: 1px solid #fde68a;
+      border-radius: 12px; padding: 1.25rem 1.5rem;
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;
+    }
+    .topup-box p { font-size: 0.9rem; color: var(--gray-700); }
+    .topup-box p strong { color: var(--gray-900); }
+    .topup-box a {
+      font-size: 0.85rem; font-weight: 600; color: #92400e;
+      text-decoration: none; background: #fef3c7; padding: 0.4rem 1rem;
+      border-radius: 6px; white-space: nowrap;
+    }
+    .topup-box a:hover { background: #fde68a; }
+    .hide-yearly .yearly-price, .hide-monthly .monthly-price { display: none; }
+
     /* ── RESPONSIVE ── */
     @media (max-width: 768px) {
       nav { padding: 0 1rem; }
@@ -303,11 +367,11 @@
   <ul class="nav-links">
     <li><a href="#what-we-do">Platform</a></li>
     <li><a href="#how">How It Works</a></li>
+    <li><a href="#pricing">Pricing</a></li>
     <li><a href="#about">About</a></li>
     <li><a href="#contact">Contact</a></li>
-    <li><a href="#privacy">Privacy</a></li>
   </ul>
-  <a href="#contact" class="nav-cta">Get Started</a>
+  <a href="https://app.runwaystudios.co/sign-up" class="nav-cta">Start Free</a>
 </nav>
 
 <!-- HERO -->
@@ -316,8 +380,8 @@
   <h1>Grow Faster with <span>Unified Ad Intelligence</span> Across Every Channel</h1>
   <p>Runway Studios is a full-stack AI growth platform for Indian brands — connecting Meta, Google, YouTube, and marketplaces into one intelligent dashboard.</p>
   <div class="hero-buttons">
-    <a href="#contact" class="btn-primary">Request Early Access</a>
-    <a href="#what-we-do" class="btn-secondary">See the Platform</a>
+    <a href="https://app.runwaystudios.co/sign-up" class="btn-primary">Start Free →</a>
+    <a href="#pricing" class="btn-secondary">See Pricing</a>
   </div>
 </section>
 
@@ -436,6 +500,94 @@
   </div>
 </section>
 
+<!-- PRICING -->
+<section class="pricing" id="pricing">
+  <div class="container">
+    <div class="section-badge">Pricing</div>
+    <div class="section-title">Start free. Scale as you grow.</div>
+    <p class="section-sub">Every plan includes AI-powered insights. Buy credits for on-demand AI features. No long-term commitment needed.</p>
+
+    <div class="pricing-toggle">
+      <button class="active" onclick="setPeriod('monthly')">Monthly</button>
+      <button onclick="setPeriod('yearly')">Yearly <span class="save-badge">Save 20%</span></button>
+    </div>
+
+    <div class="pricing-grid" id="pricing-grid">
+      <!-- Free -->
+      <div class="plan-card">
+        <p class="plan-name">Free</p>
+        <p class="plan-price monthly-price">₹0<span>/mo</span></p>
+        <p class="plan-price yearly-price" style="display:none">₹0<span>/yr</span></p>
+        <p class="plan-credits">⚡ 50 one-time signup credits</p>
+        <ul class="plan-features">
+          <li>1 workspace</li>
+          <li>CSV upload analytics</li>
+          <li>Growth OS (credits)</li>
+          <li>Campaign Brief (credits)</li>
+          <li>50 free credits to explore</li>
+        </ul>
+        <a href="https://app.runwaystudios.co/sign-up" class="plan-cta outline">Get Started Free</a>
+      </div>
+
+      <!-- Starter -->
+      <div class="plan-card">
+        <p class="plan-name">Starter</p>
+        <p class="plan-price monthly-price">₹1,999<span>/mo</span></p>
+        <p class="plan-price yearly-price" style="display:none">₹19,999<span>/yr</span></p>
+        <p class="plan-credits">⚡ 150 credits/month</p>
+        <ul class="plan-features">
+          <li>1 workspace</li>
+          <li>Meta + Google live data</li>
+          <li>150 credits/month</li>
+          <li>Competitor Intel AI</li>
+          <li>Basic AI insights</li>
+        </ul>
+        <a href="https://app.runwaystudios.co/sign-up" class="plan-cta primary">Get Started</a>
+      </div>
+
+      <!-- Growth — Most Popular -->
+      <div class="plan-card popular">
+        <span class="plan-popular-badge">Most Popular</span>
+        <p class="plan-name">Growth</p>
+        <p class="plan-price monthly-price">₹4,999<span>/mo</span></p>
+        <p class="plan-price yearly-price" style="display:none">₹47,988<span>/yr</span></p>
+        <p class="plan-credits">⚡ 500 credits/month</p>
+        <ul class="plan-features">
+          <li>1 workspace</li>
+          <li>All channels + YouTube</li>
+          <li>500 credits/month</li>
+          <li>YT Competitor Intelligence</li>
+          <li>Growth Recipe AI</li>
+          <li>WhatsApp/Telegram alerts</li>
+        </ul>
+        <a href="https://app.runwaystudios.co/sign-up" class="plan-cta primary">Get Started</a>
+      </div>
+
+      <!-- Agency -->
+      <div class="plan-card">
+        <p class="plan-name">Agency</p>
+        <p class="plan-price monthly-price">₹11,999<span>/mo</span></p>
+        <p class="plan-price yearly-price" style="display:none">₹1,11,999<span>/yr</span></p>
+        <p class="plan-credits">⚡ 2,000 credits/month</p>
+        <ul class="plan-features">
+          <li>5 workspaces</li>
+          <li>Everything in Growth</li>
+          <li>2,000 credits/month</li>
+          <li>Admin panel</li>
+          <li>Priority support</li>
+        </ul>
+        <a href="https://app.runwaystudios.co/sign-up" class="plan-cta primary">Get Started</a>
+      </div>
+    </div>
+
+    <!-- Top-up callout -->
+    <div class="topup-box">
+      <p><strong>Need more credits?</strong> Buy top-up packs anytime — credits never expire. From ₹799 for 100 credits.</p>
+      <a href="https://app.runwaystudios.co/sign-up">Buy Top-Up Credits →</a>
+    </div>
+  </div>
+</section>
+
 <!-- ABOUT -->
 <section class="about" id="about">
   <div class="container">
@@ -505,7 +657,7 @@
   <div class="container">
     <div class="section-badge">Contact</div>
     <div class="section-title">Get in touch</div>
-    <p class="section-sub">Request early access, ask about our plans, or reach out for any partnership inquiries.</p>
+    <p class="section-sub">Now in open beta — sign up free and explore the platform. Reach out for partnership or enterprise inquiries.</p>
 
     <div class="contact-grid">
       <div class="contact-info">
@@ -637,6 +789,7 @@
       <ul>
         <li><a href="#what-we-do">Features</a></li>
         <li><a href="#how">How It Works</a></li>
+        <li><a href="#pricing">Pricing</a></li>
         <li><a href="#platforms">Integrations</a></li>
         <li><a href="#api-use">API Usage</a></li>
       </ul>
@@ -665,6 +818,20 @@
     btn.style.background = '#16a34a';
     btn.disabled = true;
     // In production, wire to a form backend (Formspree, EmailJS, etc.)
+  }
+
+  function setPeriod(period) {
+    const btns = document.querySelectorAll('.pricing-toggle button');
+    btns.forEach(b => b.classList.remove('active'));
+    event.target.classList.add('active');
+    const grid = document.getElementById('pricing-grid');
+    if (period === 'yearly') {
+      grid.querySelectorAll('.monthly-price').forEach(el => el.style.display = 'none');
+      grid.querySelectorAll('.yearly-price').forEach(el => el.style.display = '');
+    } else {
+      grid.querySelectorAll('.monthly-price').forEach(el => el.style.display = '');
+      grid.querySelectorAll('.yearly-price').forEach(el => el.style.display = 'none');
+    }
   }
 </script>
 
