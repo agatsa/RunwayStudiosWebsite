@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Data Deletion Request — Runway Studios</title>
+  <meta name="description" content="Request deletion of your personal data from Runway Studios." />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --brand: #7c3aed; --brand-dark: #5b21b6; --brand-light: #ede9fe;
+      --gray-900: #111827; --gray-700: #374151; --gray-500: #6b7280;
+      --gray-200: #e5e7eb; --gray-100: #f9fafb; --white: #ffffff;
+      --red-50: #fef2f2; --red-200: #fecaca; --red-600: #dc2626; --red-700: #b91c1c;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; color: var(--gray-700); line-height: 1.6; background: var(--white); }
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      background: rgba(255,255,255,0.95); backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--gray-200); padding: 0 2rem;
+      height: 60px; display: flex; align-items: center; justify-content: space-between;
+    }
+    .nav-logo { font-size: 1.1rem; font-weight: 700; color: var(--brand); text-decoration: none; letter-spacing: -0.02em; }
+    .nav-links { display: flex; gap: 2rem; list-style: none; }
+    .nav-links a { text-decoration: none; color: var(--gray-700); font-size: 0.9rem; transition: color 0.2s; }
+    .nav-links a:hover { color: var(--brand); }
+    .nav-cta { background: var(--brand); color: white; padding: 0.45rem 1.1rem; border-radius: 6px; text-decoration: none; font-size: 0.875rem; font-weight: 600; transition: background 0.2s; }
+    .nav-cta:hover { background: var(--brand-dark); }
+    .page-header {
+      padding: 100px 2rem 48px;
+      background: linear-gradient(135deg, #fff1f2 0%, #fef2f2 100%);
+      border-bottom: 1px solid var(--red-200);
+    }
+    .page-header .container { max-width: 680px; margin: 0 auto; }
+    .breadcrumb { font-size: 0.8rem; color: var(--gray-500); margin-bottom: 1rem; }
+    .breadcrumb a { color: var(--brand); text-decoration: none; }
+    .breadcrumb a:hover { text-decoration: underline; }
+    .page-header h1 { font-size: 2rem; font-weight: 800; color: var(--gray-900); letter-spacing: -0.02em; margin-bottom: 0.5rem; }
+    .page-header p { font-size: 0.95rem; color: var(--gray-500); }
+    .page-body { padding: 3rem 2rem 5rem; }
+    .page-body .container { max-width: 680px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.5rem; }
+
+    /* Main card */
+    .card { background: white; border: 1px solid var(--gray-200); border-radius: 12px; padding: 2rem; }
+    .card h2 { font-size: 1rem; font-weight: 700; color: var(--gray-900); margin-bottom: 0.75rem; }
+    .card p { font-size: 0.875rem; color: var(--gray-500); line-height: 1.8; margin-bottom: 0.75rem; }
+    .card p:last-child { margin-bottom: 0; }
+    .card a { color: var(--brand); text-decoration: none; }
+    .card a:hover { text-decoration: underline; }
+    .card ul { margin-left: 1.5rem; margin-top: 0.5rem; }
+    .card li { font-size: 0.875rem; color: var(--gray-500); line-height: 1.8; margin-bottom: 0.25rem; }
+
+    /* Email CTA box */
+    .email-cta {
+      background: var(--red-50); border: 1px solid var(--red-200); border-radius: 12px;
+      padding: 2rem; text-align: center;
+    }
+    .email-cta .icon { font-size: 2.5rem; margin-bottom: 1rem; }
+    .email-cta h2 { font-size: 1.1rem; font-weight: 800; color: var(--gray-900); margin-bottom: 0.5rem; }
+    .email-cta p { font-size: 0.875rem; color: var(--gray-500); margin-bottom: 1.5rem; }
+    .email-btn {
+      display: inline-block;
+      background: var(--red-600); color: white;
+      padding: 0.75rem 2rem; border-radius: 8px;
+      font-size: 0.9rem; font-weight: 700; text-decoration: none;
+      transition: background 0.2s;
+    }
+    .email-btn:hover { background: var(--red-700); }
+    .email-note { font-size: 0.8rem; color: var(--gray-500); margin-top: 1rem; }
+
+    /* Steps */
+    .steps-list { list-style: none; margin: 0; }
+    .steps-list li {
+      display: flex; align-items: flex-start; gap: 1rem;
+      padding: 0.75rem 0; border-bottom: 1px solid var(--gray-100);
+      font-size: 0.875rem; color: var(--gray-500); line-height: 1.6;
+    }
+    .steps-list li:last-child { border-bottom: none; }
+    .step-num {
+      width: 26px; height: 26px; border-radius: 50%;
+      background: var(--brand-light); color: var(--brand);
+      font-size: 0.75rem; font-weight: 800;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+
+    /* What gets deleted */
+    .delete-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem; }
+    .delete-item {
+      background: var(--gray-100); border-radius: 8px; padding: 0.75rem 1rem;
+      font-size: 0.8rem; color: var(--gray-700); display: flex; align-items: center; gap: 0.5rem;
+    }
+    .delete-item::before { content: '✓'; color: var(--red-600); font-weight: 700; }
+
+    footer { background: var(--gray-900); color: #9ca3af; padding: 3rem 2rem 2rem; }
+    .footer-inner { max-width: 1100px; margin: 0 auto; display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 3rem; }
+    .footer-logo { font-size: 1.1rem; font-weight: 800; color: white; margin-bottom: 0.75rem; }
+    .footer-tagline { font-size: 0.875rem; line-height: 1.6; }
+    .footer-col h4 { font-size: 0.8rem; font-weight: 700; color: white; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 1rem; }
+    .footer-col ul { list-style: none; }
+    .footer-col li { margin-bottom: 0.6rem; }
+    .footer-col a { text-decoration: none; color: #9ca3af; font-size: 0.875rem; transition: color 0.2s; }
+    .footer-col a:hover { color: white; }
+    .footer-bottom { max-width: 1100px; margin: 2.5rem auto 0; padding-top: 1.5rem; border-top: 1px solid #374151; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; font-size: 0.8rem; }
+    @media (max-width: 768px) {
+      nav { padding: 0 1rem; } .nav-links { display: none; }
+      .footer-inner { grid-template-columns: 1fr 1fr; gap: 2rem; }
+      .delete-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <a href="/" class="nav-logo">Runway Studios</a>
+  <ul class="nav-links">
+    <li><a href="/#what-we-do">Platform</a></li>
+    <li><a href="/#how">How It Works</a></li>
+    <li><a href="/#pricing">Pricing</a></li>
+    <li><a href="/#about">About</a></li>
+    <li><a href="/#contact">Contact</a></li>
+  </ul>
+  <a href="https://app.runwaystudios.co/sign-up" class="nav-cta">Start Free</a>
+</nav>
+
+<div class="page-header">
+  <div class="container">
+    <div class="breadcrumb"><a href="/">runwaystudios.co</a> &rsaquo; Data Deletion</div>
+    <h1>Data Deletion Request</h1>
+    <p>You have the right to request permanent deletion of all your personal data from Runway Studios.</p>
+  </div>
+</div>
+
+<div class="page-body">
+  <div class="container">
+
+    <!-- Email CTA -->
+    <div class="email-cta">
+      <div class="icon">🗑️</div>
+      <h2>Request Data Deletion by Email</h2>
+      <p>Send us an email from your registered email address with the subject line <strong>"Data Deletion Request"</strong> and we will permanently delete all your data within 30 days.</p>
+      <a href="mailto:info@runwaystudios.co?subject=Data%20Deletion%20Request&body=Hello%2C%0A%0AI%20would%20like%20to%20request%20permanent%20deletion%20of%20all%20my%20personal%20data%20from%20Runway%20Studios.%0A%0ARegistered%20email%3A%20%5Byour%20email%5D%0AWorkspace%20name%3A%20%5Boptional%5D%0A%0APlease%20confirm%20once%20the%20deletion%20is%20complete.%0A%0AThank%20you." class="email-btn">
+        Email Us to Delete My Data
+      </a>
+      <p class="email-note">📧 info@runwaystudios.co &nbsp;·&nbsp; We respond within 2 business days &nbsp;·&nbsp; Deletion completed within 30 days</p>
+    </div>
+
+    <!-- How it works -->
+    <div class="card">
+      <h2>How the deletion process works</h2>
+      <ul class="steps-list">
+        <li>
+          <span class="step-num">1</span>
+          <span>Send an email to <a href="mailto:info@runwaystudios.co">info@runwaystudios.co</a> with the subject <strong>"Data Deletion Request"</strong> from your registered email address.</span>
+        </li>
+        <li>
+          <span class="step-num">2</span>
+          <span>We will verify your identity by confirming your registered email address and workspace name.</span>
+        </li>
+        <li>
+          <span class="step-num">3</span>
+          <span>We will confirm receipt of your request within 2 business days and begin the deletion process.</span>
+        </li>
+        <li>
+          <span class="step-num">4</span>
+          <span>All your personal data will be permanently and irreversibly deleted within 30 days. We will send a confirmation email once complete.</span>
+        </li>
+      </ul>
+    </div>
+
+    <!-- What gets deleted -->
+    <div class="card">
+      <h2>What data gets deleted</h2>
+      <p>Upon a verified deletion request, we permanently remove:</p>
+      <div class="delete-grid">
+        <div class="delete-item">Account profile &amp; credentials</div>
+        <div class="delete-item">All workspace data</div>
+        <div class="delete-item">Connected ad account tokens</div>
+        <div class="delete-item">Advertising performance data</div>
+        <div class="delete-item">AI-generated insights &amp; reports</div>
+        <div class="delete-item">Uploaded CSV/Excel reports</div>
+        <div class="delete-item">Credit &amp; billing history</div>
+        <div class="delete-item">Product catalog data</div>
+        <div class="delete-item">Campaign briefs &amp; action plans</div>
+        <div class="delete-item">YouTube channel data</div>
+        <div class="delete-item">Contact form submissions</div>
+        <div class="delete-item">All activity logs</div>
+      </div>
+      <p style="margin-top:1rem;">Note: We may retain certain anonymised, aggregated data that cannot identify you individually, and any data required to be kept for legal or compliance purposes.</p>
+    </div>
+
+    <!-- Facebook / Meta note -->
+    <div class="card">
+      <h2>Connected via Facebook?</h2>
+      <p>If you connected your Meta Ads account through Facebook Login, you can also remove Runway Studios' access directly from your Facebook settings:</p>
+      <ul>
+        <li>Go to <a href="https://www.facebook.com/settings?tab=applications" target="_blank" rel="noopener">Facebook Settings &rarr; Apps and Websites</a></li>
+        <li>Find <strong>Runway Studios</strong> and click <strong>Remove</strong></li>
+        <li>This immediately revokes our access to your Facebook data</li>
+        <li>To also delete any ad data we have already stored, please send us the deletion email above</li>
+      </ul>
+    </div>
+
+    <!-- Questions -->
+    <div class="card">
+      <h2>Questions?</h2>
+      <p>If you have any questions about your data or the deletion process, contact us at <a href="mailto:info@runwaystudios.co">info@runwaystudios.co</a>. Our full Privacy Policy is available at <a href="privacy.html">runwaystudios.co/privacy.html</a>.</p>
+    </div>
+
+  </div>
+</div>
+
+<footer>
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <div class="footer-logo">Runway Studios</div>
+      <p class="footer-tagline">AI-powered marketing intelligence for Indian brands. Unify your ad data. Amplify your growth.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Platform</h4>
+      <ul>
+        <li><a href="/#what-we-do">Features</a></li>
+        <li><a href="/#how">How It Works</a></li>
+        <li><a href="/#pricing">Pricing</a></li>
+        <li><a href="/#platforms">Integrations</a></li>
+        <li><a href="api-use.html">API Usage</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h4>Company</h4>
+      <ul>
+        <li><a href="/#about">About</a></li>
+        <li><a href="/#contact">Contact</a></li>
+        <li><a href="privacy.html">Privacy Policy</a></li>
+        <li><a href="tos.html">Terms of Service</a></li>
+        <li><a href="data-deletion.html">Data Deletion</a></li>
+        <li><a href="mailto:info@runwaystudios.co">info@runwaystudios.co</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Runway Studios. All rights reserved.</span>
+    <span>runwaystudios.co</span>
+  </div>
+</footer>
+
+</body>
+</html>
