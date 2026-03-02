@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Runway Studios — Technical Design Document</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      color: #1a1a2e;
+      background: #fff;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    /* PRINT */
+    @media print {
+      .no-print { display: none; }
+      body { font-size: 11.5px; }
+      .page-break { page-break-before: always; }
+      section { page-break-inside: avoid; }
+    }
+
+    /* COVER */
+    .cover {
+      background: linear-gradient(135deg, #1e0a4e 0%, #4c1d95 60%, #7c3aed 100%);
+      color: white;
+      padding: 60px 50px 50px;
+      min-height: 220px;
+    }
+    .cover-logo { font-size: 11px; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; color: #c4b5fd; margin-bottom: 20px; }
+    .cover h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 8px; }
+    .cover-sub { font-size: 14px; color: #ddd6fe; margin-bottom: 30px; }
+    .cover-meta { display: flex; gap: 40px; font-size: 11px; color: #c4b5fd; }
+    .cover-meta span b { color: white; display: block; font-size: 12px; margin-bottom: 2px; }
+
+    /* LAYOUT */
+    .body-wrap { max-width: 820px; margin: 0 auto; padding: 40px 50px 60px; }
+
+    /* SECTION */
+    section { margin-bottom: 36px; }
+    h2 {
+      font-size: 14px; font-weight: 800; text-transform: uppercase;
+      letter-spacing: 0.08em; color: #5b21b6;
+      border-bottom: 2px solid #ede9fe;
+      padding-bottom: 6px; margin-bottom: 16px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    h2 .num {
+      background: #7c3aed; color: white;
+      width: 22px; height: 22px; border-radius: 4px;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 800; flex-shrink: 0;
+    }
+    h3 { font-size: 12.5px; font-weight: 700; color: #1e0a4e; margin: 14px 0 6px; }
+    p { margin-bottom: 10px; color: #374151; }
+
+    /* TABLE */
+    table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 12px; }
+    th {
+      background: #f5f3ff; color: #4c1d95;
+      font-weight: 700; text-align: left;
+      padding: 8px 12px; border: 1px solid #ede9fe;
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    td { padding: 8px 12px; border: 1px solid #e5e7eb; vertical-align: top; color: #374151; }
+    tr:nth-child(even) td { background: #fafafa; }
+
+    /* BADGE */
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 99px;
+      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .badge-green { background: #dcfce7; color: #166534; }
+    .badge-blue  { background: #dbeafe; color: #1e40af; }
+    .badge-purple{ background: #ede9fe; color: #5b21b6; }
+    .badge-red   { background: #fee2e2; color: #991b1b; }
+
+    /* FLOW DIAGRAM */
+    .flow {
+      display: flex; align-items: center; flex-wrap: wrap;
+      gap: 0; margin: 16px 0; background: #fafafa;
+      border: 1px solid #e5e7eb; border-radius: 10px; padding: 20px;
+    }
+    .flow-box {
+      background: white; border: 1px solid #d8b4fe;
+      border-radius: 8px; padding: 10px 14px;
+      text-align: center; min-width: 110px;
+    }
+    .flow-box .fb-icon { font-size: 18px; display: block; margin-bottom: 4px; }
+    .flow-box .fb-label { font-size: 10px; font-weight: 700; color: #4c1d95; display: block; }
+    .flow-box .fb-sub { font-size: 9px; color: #6b7280; display: block; margin-top: 1px; }
+    .flow-arrow {
+      font-size: 18px; color: #7c3aed; font-weight: 700;
+      padding: 0 8px; flex-shrink: 0;
+    }
+    .flow-box.highlight { background: #f5f3ff; border-color: #7c3aed; border-width: 2px; }
+
+    /* INFO BOX */
+    .infobox {
+      border-left: 4px solid #7c3aed; background: #f5f3ff;
+      padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 12px 0;
+    }
+    .infobox p { margin: 0; color: #4c1d95; font-size: 12px; }
+
+    /* LIST */
+    ul, ol { padding-left: 20px; margin: 8px 0 12px; }
+    li { margin-bottom: 5px; color: #374151; }
+    li strong { color: #1e0a4e; }
+
+    /* API CALL TABLE */
+    .api-tag {
+      font-family: 'Courier New', monospace;
+      font-size: 10.5px; background: #f1f5f9;
+      padding: 1px 6px; border-radius: 3px; color: #0f172a;
+    }
+
+    /* FOOTER */
+    .doc-footer {
+      border-top: 1px solid #e5e7eb; margin-top: 40px;
+      padding-top: 16px; display: flex;
+      justify-content: space-between; font-size: 10px; color: #9ca3af;
+    }
+
+    /* PRINT BUTTON */
+    .print-btn {
+      position: fixed; bottom: 30px; right: 30px;
+      background: #7c3aed; color: white;
+      border: none; padding: 12px 24px; border-radius: 8px;
+      font-size: 13px; font-weight: 700; cursor: pointer;
+      box-shadow: 0 4px 12px rgba(124,58,237,0.4);
+      z-index: 999;
+    }
+    .print-btn:hover { background: #5b21b6; }
+  </style>
+</head>
+<body>
+
+<button class="print-btn no-print" onclick="window.print()">Save as PDF</button>
+
+<!-- COVER -->
+<div class="cover">
+  <div class="cover-logo">Runway Studios · Technical Design Document</div>
+  <h1>AI Growth OS — Google Ads Integration</h1>
+  <div class="cover-sub">Architecture, API Usage &amp; Data Flow Design Document</div>
+  <div class="cover-meta">
+    <span><b>Version</b> 1.0</span>
+    <span><b>Date</b> February 2026</span>
+    <span><b>Website</b> runwaystudios.co</span>
+    <span><b>Contact</b> hello@runwaystudios.co</span>
+    <span><b>API Access Requested</b> Basic</span>
+  </div>
+</div>
+
+<div class="body-wrap">
+
+  <!-- 1. OVERVIEW -->
+  <section>
+    <h2><span class="num">1</span> Product Overview</h2>
+    <p><strong>Runway Studios AI Growth OS</strong> is a SaaS marketing intelligence platform built for Indian D2C brands and digital agencies. It aggregates advertising performance data from multiple platforms — Meta Ads, Google Ads, and YouTube — into a unified analytics dashboard, and applies AI (Claude by Anthropic) to generate cross-channel performance insights and prioritised optimisation recommendations.</p>
+    <p>The platform is hosted on Google Cloud Run (asia-south1) and serves clients through a web dashboard at <strong>dashboard.runwaystudios.co</strong>. All Google Ads data is accessed via the Google Ads API exclusively for read-only reporting purposes.</p>
+
+    <div class="infobox">
+      <p><strong>Core principle:</strong> The Google Ads API is used solely for reading performance data. The application does not create, modify, pause, enable, or delete any Google Ads campaigns, ad groups, ads, or keywords.</p>
+    </div>
+  </section>
+
+  <!-- 2. ARCHITECTURE -->
+  <section>
+    <h2><span class="num">2</span> System Architecture</h2>
+
+    <div class="flow">
+      <div class="flow-box">
+        <span class="fb-icon">🌐</span>
+        <span class="fb-label">Client Browser</span>
+        <span class="fb-sub">Next.js Dashboard</span>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box highlight">
+        <span class="fb-icon">⚡</span>
+        <span class="fb-label">FastAPI Backend</span>
+        <span class="fb-sub">Cloud Run · Python</span>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box">
+        <span class="fb-icon">🔑</span>
+        <span class="fb-label">OAuth2 Layer</span>
+        <span class="fb-sub">Token Store · Cloud SQL</span>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-box">
+        <span class="fb-icon">📊</span>
+        <span class="fb-label">Google Ads API</span>
+        <span class="fb-sub">Read-only · GAQL</span>
+      </div>
+    </div>
+
+    <table>
+      <tr>
+        <th>Component</th>
+        <th>Technology</th>
+        <th>Role</th>
+        <th>Location</th>
+      </tr>
+      <tr>
+        <td>Frontend Dashboard</td>
+        <td>Next.js 14, Tailwind CSS, Tremor</td>
+        <td>User interface for analytics and reporting</td>
+        <td>Google Cloud Run (asia-south1)</td>
+      </tr>
+      <tr>
+        <td>Backend API</td>
+        <td>Python 3.11, FastAPI, Uvicorn</td>
+        <td>Business logic, API orchestration, AI analysis</td>
+        <td>Google Cloud Run (asia-south1)</td>
+      </tr>
+      <tr>
+        <td>Database</td>
+        <td>PostgreSQL 14 (Cloud SQL)</td>
+        <td>Stores KPI data, OAuth tokens, workspace config</td>
+        <td>Google Cloud SQL (asia-south1)</td>
+      </tr>
+      <tr>
+        <td>AI Engine</td>
+        <td>Claude API (Anthropic)</td>
+        <td>Cross-channel analysis and recommendation generation</td>
+        <td>Anthropic API (external)</td>
+      </tr>
+      <tr>
+        <td>Google Ads Connector</td>
+        <td>google-ads-python SDK</td>
+        <td>Fetches campaign metrics via GAQL</td>
+        <td>Within backend API service</td>
+      </tr>
+    </table>
+  </section>
+
+  <!-- 3. AUTHENTICATION -->
+  <section>
+    <h2><span class="num">3</span> Authentication &amp; Authorisation</h2>
+
+    <h3>OAuth2 Flow</h3>
+    <p>The platform uses Google's standard OAuth2 authorisation code flow. No user passwords are stored at any point. Access is granted explicitly by the account owner through Google's consent screen.</p>
+
+    <div class="flow" style="flex-direction:column; align-items:flex-start; gap:8px;">
+      <div style="display:flex; align-items:center; gap:8px; width:100%;">
+        <div class="flow-box" style="min-width:160px"><span class="fb-label">1. User clicks</span><span class="fb-sub">"Connect Google Ads"</span></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box" style="min-width:200px"><span class="fb-label">2. Redirect to Google</span><span class="fb-sub">accounts.google.com/oauth2/auth</span></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box" style="min-width:180px"><span class="fb-label">3. User consents</span><span class="fb-sub">Google Consent Screen</span></div>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; width:100%;">
+        <div class="flow-box" style="min-width:160px"><span class="fb-label">6. Data fetched</span><span class="fb-sub">Read-only API calls</span></div>
+        <div class="flow-arrow">←</div>
+        <div class="flow-box" style="min-width:200px"><span class="fb-label">5. Tokens stored</span><span class="fb-sub">Encrypted in Cloud SQL</span></div>
+        <div class="flow-arrow">←</div>
+        <div class="flow-box" style="min-width:180px"><span class="fb-label">4. Auth code received</span><span class="fb-sub">Callback → token exchange</span></div>
+      </div>
+    </div>
+
+    <h3>OAuth2 Scopes Requested</h3>
+    <table>
+      <tr><th>Scope</th><th>Purpose</th><th>Access Type</th></tr>
+      <tr>
+        <td><span class="api-tag">https://www.googleapis.com/auth/adwords</span></td>
+        <td>Read Google Ads campaign performance data via GAQL</td>
+        <td><span class="badge badge-blue">Read Only</span></td>
+      </tr>
+      <tr>
+        <td><span class="api-tag">https://www.googleapis.com/auth/youtube.readonly</span></td>
+        <td>Read YouTube channel stats and video metadata</td>
+        <td><span class="badge badge-blue">Read Only</span></td>
+      </tr>
+      <tr>
+        <td><span class="api-tag">https://www.googleapis.com/auth/yt-analytics.readonly</span></td>
+        <td>Read YouTube Analytics (watch time, CTR, retention)</td>
+        <td><span class="badge badge-blue">Read Only</span></td>
+      </tr>
+    </table>
+
+    <h3>Token Storage</h3>
+    <ul>
+      <li>Access tokens and refresh tokens stored in <strong>encrypted columns</strong> in PostgreSQL (Cloud SQL, asia-south1)</li>
+      <li>Tokens are workspace-scoped — each client's tokens are isolated by <code>workspace_id</code></li>
+      <li>Refresh tokens are used automatically when access tokens expire (Google's standard 1-hour expiry)</li>
+      <li>Users can revoke access at any time via Google Account settings or the platform's Settings page</li>
+    </ul>
+  </section>
+
+  <!-- 4. API USAGE -->
+  <section>
+    <h2><span class="num">4</span> Google Ads API Usage</h2>
+    <p>All API calls are made using <strong>GAQL (Google Ads Query Language)</strong> SELECT queries. No mutate operations are performed.</p>
+
+    <table>
+      <tr>
+        <th>Report Type</th>
+        <th>GAQL Resource</th>
+        <th>Fields Retrieved</th>
+        <th>Purpose</th>
+      </tr>
+      <tr>
+        <td>Campaign Performance</td>
+        <td><span class="api-tag">campaign</span></td>
+        <td>name, status, impressions, clicks, cost, conversions, conversion_value</td>
+        <td>Dashboard KPI cards and spend charts</td>
+      </tr>
+      <tr>
+        <td>Keyword Performance</td>
+        <td><span class="api-tag">keyword_view</span></td>
+        <td>keyword text, match type, quality score, impressions, clicks, cost, conversions</td>
+        <td>Keyword analysis, QS badges, wasted spend detection</td>
+      </tr>
+      <tr>
+        <td>Search Terms</td>
+        <td><span class="api-tag">search_term_view</span></td>
+        <td>search term, campaign, clicks, cost, conversions</td>
+        <td>Negative keyword recommendations, intent analysis</td>
+      </tr>
+      <tr>
+        <td>Geographic Performance</td>
+        <td><span class="api-tag">geographic_view</span></td>
+        <td>location, campaign, impressions, clicks, cost, conversions</td>
+        <td>City/region ROAS breakdown, expansion opportunities</td>
+      </tr>
+      <tr>
+        <td>Device Performance</td>
+        <td><span class="api-tag">campaign</span> (device segment)</td>
+        <td>device, campaign, impressions, clicks, cost, conversions</td>
+        <td>Mobile vs desktop budget optimisation</td>
+      </tr>
+      <tr>
+        <td>Time of Day</td>
+        <td><span class="api-tag">campaign</span> (hour segment)</td>
+        <td>hour of day, day of week, cost, conversions</td>
+        <td>Ad scheduling recommendations heatmap</td>
+      </tr>
+      <tr>
+        <td>Auction Insights</td>
+        <td><span class="api-tag">auction_insight</span></td>
+        <td>domain, impression share, overlap rate, position above rate</td>
+        <td>Competitive position analysis</td>
+      </tr>
+      <tr>
+        <td>Ad Assets (RSA)</td>
+        <td><span class="api-tag">ad_group_ad</span></td>
+        <td>asset text, asset type, performance label</td>
+        <td>Creative performance — BEST/GOOD/LOW analysis</td>
+      </tr>
+      <tr>
+        <td>Account List</td>
+        <td><span class="api-tag">CustomerService.listAccessibleCustomers</span></td>
+        <td>customer_id, descriptive_name</td>
+        <td>Multi-account discovery for agency users</td>
+      </tr>
+    </table>
+
+    <div class="infobox" style="margin-top:14px">
+      <p><strong>No mutate operations are used.</strong> The application does not call CampaignService.mutate, AdGroupService.mutate, BudgetService.mutate, or any other write operation. All interactions with the Google Ads API are strictly SELECT queries via GAQL.</p>
+    </div>
+  </section>
+
+  <!-- 5. DATA FLOW -->
+  <section>
+    <h2><span class="num">5</span> Data Flow &amp; Storage</h2>
+
+    <h3>Ingestion Pipeline</h3>
+    <ol>
+      <li>User authenticates via OAuth2 and grants access to their Google Ads account</li>
+      <li>The FastAPI backend calls Google Ads API using the stored refresh token</li>
+      <li>Performance metrics are retrieved for the requested date range via GAQL SELECT queries</li>
+      <li>Data is normalised and stored in the <code>kpi_hourly</code> table in PostgreSQL, keyed by <code>workspace_id</code>, <code>platform</code>, <code>entity_level</code>, and <code>hour_ts</code></li>
+      <li>The Next.js dashboard reads this data via internal REST API endpoints</li>
+      <li>Claude AI analyses the aggregated data and returns text recommendations (not stored, generated per request)</li>
+    </ol>
+
+    <h3>Data Retention &amp; Isolation</h3>
+    <table>
+      <tr><th>Data Type</th><th>Storage</th><th>Isolation</th><th>Retention</th></tr>
+      <tr>
+        <td>OAuth tokens</td>
+        <td>Cloud SQL (encrypted)</td>
+        <td>Per workspace_id</td>
+        <td>Until revoked or account deleted</td>
+      </tr>
+      <tr>
+        <td>Campaign KPI data</td>
+        <td>Cloud SQL · kpi_hourly table</td>
+        <td>Per workspace_id</td>
+        <td>Duration of active account</td>
+      </tr>
+      <tr>
+        <td>Keyword / search term data</td>
+        <td>Cloud SQL · kpi_hourly table</td>
+        <td>Per workspace_id</td>
+        <td>Duration of active account</td>
+      </tr>
+      <tr>
+        <td>AI recommendations</td>
+        <td>Not stored — generated on-demand</td>
+        <td>Per session</td>
+        <td>Not persisted</td>
+      </tr>
+    </table>
+  </section>
+
+  <!-- 6. MULTI-ACCOUNT -->
+  <section>
+    <h2><span class="num">6</span> Multi-Account (Agency) Support</h2>
+    <p>The platform is designed for agencies managing multiple client Google Ads accounts. Each client account is represented as a separate <strong>Workspace</strong> in the platform. The architecture follows Google's recommended manager account (MCC) model:</p>
+    <ul>
+      <li>A single OAuth2 token from the agency's Google account (with MCC access) can access multiple client accounts</li>
+      <li><span class="api-tag">CustomerService.listAccessibleCustomers</span> is called once to discover available customer IDs</li>
+      <li>Each subsequent GAQL query specifies the target <code>login-customer-id</code> header to scope results to the correct client account</li>
+      <li>Client data is strictly isolated by <code>workspace_id</code> — no cross-client data leakage is possible</li>
+    </ul>
+
+    <table>
+      <tr><th>Scenario</th><th>Implementation</th></tr>
+      <tr>
+        <td>Brand managing own account</td>
+        <td>Direct OAuth2 with their Google account. Single customer_id.</td>
+      </tr>
+      <tr>
+        <td>Agency managing client accounts</td>
+        <td>OAuth2 with agency's MCC account. Per-client login-customer-id in each request.</td>
+      </tr>
+    </table>
+  </section>
+
+  <!-- 7. SECURITY -->
+  <section>
+    <h2><span class="num">7</span> Security &amp; Compliance</h2>
+
+    <table>
+      <tr><th>Control</th><th>Implementation</th><th>Status</th></tr>
+      <tr>
+        <td>Data encryption at rest</td>
+        <td>Google Cloud SQL with encryption enabled</td>
+        <td><span class="badge badge-green">Active</span></td>
+      </tr>
+      <tr>
+        <td>Data encryption in transit</td>
+        <td>TLS 1.2+ on all API endpoints (Cloud Run managed)</td>
+        <td><span class="badge badge-green">Active</span></td>
+      </tr>
+      <tr>
+        <td>Token security</td>
+        <td>OAuth tokens stored in encrypted DB columns, never exposed in logs</td>
+        <td><span class="badge badge-green">Active</span></td>
+      </tr>
+      <tr>
+        <td>API authentication</td>
+        <td>All internal endpoints require Bearer token authentication</td>
+        <td><span class="badge badge-green">Active</span></td>
+      </tr>
+      <tr>
+        <td>Data residency</td>
+        <td>All data stored in Google Cloud asia-south1 (Mumbai, India)</td>
+        <td><span class="badge badge-green">Active</span></td>
+      </tr>
+      <tr>
+        <td>No third-party data sharing</td>
+        <td>Google Ads data is never shared with or sold to any third party</td>
+        <td><span class="badge badge-green">Active</span></td>
+      </tr>
+      <tr>
+        <td>Access revocation</td>
+        <td>Users can disconnect Google Ads at any time via Settings page</td>
+        <td><span class="badge badge-green">Active</span></td>
+      </tr>
+      <tr>
+        <td>Minimal scope principle</td>
+        <td>Only read scopes requested — no write/manage scopes</td>
+        <td><span class="badge badge-green">Active</span></td>
+      </tr>
+    </table>
+  </section>
+
+  <!-- 8. POLICY COMPLIANCE -->
+  <section>
+    <h2><span class="num">8</span> Google Ads API Policy Compliance</h2>
+
+    <table>
+      <tr><th>Policy Requirement</th><th>How We Comply</th></tr>
+      <tr>
+        <td>Accurate application information</td>
+        <td>All information provided reflects the actual production system at runwaystudios.co</td>
+      </tr>
+      <tr>
+        <td>Data use limitation</td>
+        <td>Google Ads data used exclusively for analytics display and AI recommendations within the platform for the data owner</td>
+      </tr>
+      <tr>
+        <td>No resale of data</td>
+        <td>Google Ads performance data is never sold, licensed, or transferred to third parties</td>
+      </tr>
+      <tr>
+        <td>No scraping / bulk export</td>
+        <td>Data is retrieved for dashboard display and AI analysis only — not exported or resold</td>
+      </tr>
+      <tr>
+        <td>User consent</td>
+        <td>Each user explicitly grants access via Google's OAuth2 consent screen before any API call is made</td>
+      </tr>
+      <tr>
+        <td>Valid privacy policy</td>
+        <td>Published at runwaystudios.co/#privacy — includes specific Google Ads API data handling section</td>
+      </tr>
+      <tr>
+        <td>API contact email</td>
+        <td>hello@runwaystudios.co — monitored inbox, responsive within 24 hours</td>
+      </tr>
+    </table>
+  </section>
+
+  <!-- 9. TECH STACK -->
+  <section>
+    <h2><span class="num">9</span> Technology Stack Summary</h2>
+    <table>
+      <tr><th>Layer</th><th>Technology</th><th>Version</th></tr>
+      <tr><td>Backend Language</td><td>Python</td><td>3.11+</td></tr>
+      <tr><td>Backend Framework</td><td>FastAPI + Uvicorn</td><td>Latest stable</td></tr>
+      <tr><td>Google Ads SDK</td><td>google-ads (Python)</td><td>24.x</td></tr>
+      <tr><td>Frontend Framework</td><td>Next.js (React)</td><td>14.2</td></tr>
+      <tr><td>Database</td><td>PostgreSQL (Google Cloud SQL)</td><td>14</td></tr>
+      <tr><td>Hosting</td><td>Google Cloud Run</td><td>asia-south1</td></tr>
+      <tr><td>AI / LLM</td><td>Claude (Anthropic API)</td><td>claude-sonnet-4-6</td></tr>
+      <tr><td>Domain</td><td>runwaystudios.co</td><td>—</td></tr>
+    </table>
+  </section>
+
+  <!-- 10. CONTACT -->
+  <section>
+    <h2><span class="num">10</span> Contact &amp; Support</h2>
+    <table>
+      <tr><th>Type</th><th>Details</th></tr>
+      <tr><td>Company</td><td>Runway Studios</td></tr>
+      <tr><td>Website</td><td>https://runwaystudios.co</td></tr>
+      <tr><td>API Contact Email</td><td>hello@runwaystudios.co</td></tr>
+      <tr><td>Support Phone</td><td>+91 88262 83840</td></tr>
+      <tr><td>Dashboard URL</td><td>https://dashboard-771420308292.asia-south1.run.app</td></tr>
+      <tr><td>Privacy Policy</td><td>https://runwaystudios.co/#privacy</td></tr>
+      <tr><td>Data Location</td><td>Google Cloud asia-south1 (Mumbai, India)</td></tr>
+    </table>
+  </section>
+
+  <div class="doc-footer">
+    <span>Runway Studios — Confidential Technical Design Document — v1.0 — February 2026</span>
+    <span>runwaystudios.co · hello@runwaystudios.co</span>
+  </div>
+
+</div>
+</body>
+</html>
