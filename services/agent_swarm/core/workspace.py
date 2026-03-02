@@ -80,7 +80,9 @@ def _row_to_workspace(row) -> dict:
         "daily_spend_cap":      float(row[12] or DAILY_SPEND_CAP),
         "approval_threshold":   float(row[13] or APPROVAL_THRESHOLD),
         "active":               bool(row[14]),
-        "onboarding_complete":  bool(row[15]),
+        "onboarding_complete":  bool(row[15]) if row[15] is not None else False,
+        "workspace_type":       row[16] or "d2c",
+        "onboarding_channels":  list(row[17]) if row[17] else [],
         # Populated separately by get_workspace() with platform connections
         "connections":          {},   # {platform: [conn, ...]}
         "products":             [],
@@ -91,7 +93,8 @@ _WORKSPACE_SELECT = """
     SELECT id, org_id, name, store_url, store_platform,
            timezone, currency, wa_phone_number_id, wa_access_token,
            notification_wa_number, telegram_chat_id, telegram_enabled,
-           daily_spend_cap, approval_threshold, active, onboarding_complete
+           daily_spend_cap, approval_threshold, active, onboarding_complete,
+           workspace_type, COALESCE(onboarding_channels, '[]'::jsonb)
     FROM workspaces
 """
 

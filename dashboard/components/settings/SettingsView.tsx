@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { toast } from 'sonner'
-import { CheckCircle, Link2, Trash2, Loader2, RefreshCw, ShoppingBag } from 'lucide-react'
+import { CheckCircle, Link2, Trash2, Loader2, RefreshCw, ShoppingBag, Crown, Lock } from 'lucide-react'
 import MetaConnectDialog from './MetaConnectDialog'
 import GoogleConnectDialog from './GoogleConnectDialog'
 import GoogleAccountSelectDialog from './GoogleAccountSelectDialog'
@@ -11,7 +12,8 @@ import YouTubeConnectDialog from './YouTubeConnectDialog'
 import ShopifyConnectDialog from './ShopifyConnectDialog'
 import ExcelUploadDialog from './ExcelUploadDialog'
 import ProductUrlsSection from './ProductUrlsSection'
-import type { PlatformConnection } from '@/lib/types'
+import MetaCompetitorPages from './MetaCompetitorPages'
+import type { PlatformConnection, PlanName } from '@/lib/types'
 
 interface Props {
   connections: PlatformConnection[]
@@ -22,6 +24,9 @@ interface Props {
   googleOAuthConfigured?: boolean
   ga4PropertyId?: string | null
   ga4Connected?: boolean
+  metaConnected?: boolean
+  metaSession?: string
+  metaError?: string
 }
 
 function PlatformCard({
@@ -32,6 +37,7 @@ function PlatformCard({
   onDisconnected,
   icon,
   comingSoon,
+  planRequired,
 }: {
   name: string
   connection: PlatformConnection | undefined
@@ -40,6 +46,7 @@ function PlatformCard({
   onDisconnected: () => void
   icon: React.ReactNode
   comingSoon?: boolean
+  planRequired?: string   // e.g. "Starter" or "Growth" — if set and not connected, shows lock UI
 }) {
   const [disconnecting, setDisconnecting] = useState(false)
   const isConnected = !!connection?.has_token
@@ -103,6 +110,14 @@ function PlatformCard({
             <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs text-gray-500">
               Coming soon
             </span>
+          ) : planRequired ? (
+            <button
+              onClick={onConnect}
+              className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-100"
+            >
+              <Lock className="h-3 w-3" />
+              {planRequired}+ Required
+            </button>
           ) : (
             <button
               onClick={onConnect}
@@ -118,7 +133,7 @@ function PlatformCard({
   )
 }
 
-export default function SettingsView({ connections, workspaceId, workspaceName, googleConnected, googleError, googleOAuthConfigured = false, ga4PropertyId, ga4Connected = false }: Props) {
+export default function SettingsView({ connections, workspaceId, workspaceName, googleConnected, googleError, googleOAuthConfigured = false, ga4PropertyId, ga4Connected = false, metaConnected, metaSession, metaError }: Props) {
   const [showMetaDialog, setShowMetaDialog] = useState(false)
   const [showGoogleDialog, setShowGoogleDialog] = useState(false)
   const [showYouTubeDialog, setShowYouTubeDialog] = useState(false)
@@ -127,6 +142,8 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
   const [showUpload, setShowUpload] = useState<'meta' | 'google' | null>(null)
   const [shopifyStatus, setShopifyStatus] = useState<{ connected: boolean; shop_domain?: string; shop_name?: string; synced_at?: string; products_count?: number } | null>(null)
   const [shopifyLoading, setShopifyLoading] = useState(false)
+  const [plan, setPlan] = useState<PlanName | null>(null)
+  const [planGate, setPlanGate] = useState<{ platform: string; required: string } | null>(null)
   const router = useRouter()
 
   const fetchShopifyStatus = useCallback(async () => {
@@ -175,9 +192,35 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
     }
   }
 
+  // Fetch billing plan on mount
+  useEffect(() => {
+    if (!workspaceId) return
+    fetch(`/api/billing/status?workspace_id=${workspaceId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.plan) setPlan(d.plan) })
+      .catch(() => {})
+  }, [workspaceId])
+
   useEffect(() => {
     fetchShopifyStatus()
   }, [fetchShopifyStatus])
+
+  // Plan-gate helpers
+  const isStarterLocked = plan === 'free'                                    // Meta, Google require Starter+
+  const isGrowthLocked  = plan === 'free' || plan === 'starter'              // YouTube requires Growth+
+
+  const handleMetaConnect = () => {
+    if (isStarterLocked) { setPlanGate({ platform: 'Meta Ads', required: 'Starter' }); return }
+    setShowMetaDialog(true)
+  }
+  const handleGoogleConnect = () => {
+    if (isStarterLocked) { setPlanGate({ platform: 'Google Ads', required: 'Starter' }); return }
+    setShowGoogleDialog(true)
+  }
+  const handleYouTubeConnect = () => {
+    if (isGrowthLocked) { setPlanGate({ platform: 'YouTube', required: 'Growth' }); return }
+    setShowYouTubeDialog(true)
+  }
 
   useEffect(() => {
     if (googleConnected) {
@@ -193,6 +236,20 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
         server_not_configured: 'Google OAuth not configured on server (missing env vars).',
       }
       toast.error(messages[googleError] ?? `Google connect error: ${googleError}`)
+    }
+    // Meta OAuth result
+    if (metaConnected) {
+      toast.success('Meta Ads connected!')
+      router.refresh()
+    } else if (metaSession) {
+      // Multiple ad accounts — auto-open dialog in session mode
+      setShowMetaDialog(true)
+    } else if (metaError) {
+      const metaErrMessages: Record<string, string> = {
+        missing_params: 'Missing OAuth parameters — please try again.',
+        server_error: 'Server error during Meta OAuth. Please try again.',
+      }
+      toast.error(metaErrMessages[metaError] ?? `Meta connect error: ${decodeURIComponent(metaError)}`)
     }
     // Shopify OAuth result toasts
     const params = new URLSearchParams(window.location.search)
@@ -242,8 +299,9 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
           name="Meta Ads (Facebook & Instagram)"
           connection={metaConn}
           workspaceId={workspaceId}
-          onConnect={() => setShowMetaDialog(true)}
+          onConnect={handleMetaConnect}
           onDisconnected={refresh}
+          planRequired={!metaConn?.has_token && isStarterLocked ? 'Starter' : undefined}
           icon={
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-lg font-bold text-white">
               f
@@ -266,8 +324,9 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
           name="Google Ads + Merchant Center"
           connection={googleConn}
           workspaceId={workspaceId}
-          onConnect={() => setShowGoogleDialog(true)}
+          onConnect={handleGoogleConnect}
           onDisconnected={refresh}
+          planRequired={!googleConn?.has_token && isStarterLocked ? 'Starter' : undefined}
           icon={
             <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-gray-200 bg-white">
               <svg viewBox="0 0 48 48" className="h-6 w-6">
@@ -304,8 +363,9 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
           name="YouTube Channel Intelligence"
           connection={youtubeConn}
           workspaceId={workspaceId}
-          onConnect={() => setShowYouTubeDialog(true)}
+          onConnect={handleYouTubeConnect}
           onDisconnected={refresh}
+          planRequired={!youtubeConn?.has_token && isGrowthLocked ? 'Growth' : undefined}
           icon={
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-600">
               <svg viewBox="0 0 24 24" className="h-6 w-6 fill-white">
@@ -397,6 +457,14 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
                   <CheckCircle className="h-3 w-3" />
                   Connected
                 </span>
+              ) : isStarterLocked ? (
+                <button
+                  onClick={handleGoogleConnect}
+                  className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-100"
+                >
+                  <Lock className="h-3 w-3" />
+                  Starter+ Required
+                </button>
               ) : (
                 <button
                   onClick={() => setShowGoogleDialog(true)}
@@ -454,25 +522,18 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
         </div>
       </section>
 
-      {/* Product & Competitor URLs */}
+      {/* Product URLs + Meta Competitor Pages */}
       <section className="space-y-3">
         <div>
-          <h2 className="text-base font-semibold text-gray-900">Product & Competitor URLs</h2>
-          <p className="text-sm text-gray-500">Used for price monitoring, ad library tracking, and competitor intelligence</p>
+          <h2 className="text-base font-semibold text-gray-900">Products & Competitor Tracking</h2>
+          <p className="text-sm text-gray-500">
+            <strong>Left:</strong> your own product pages for catalog sync.&nbsp;
+            <strong>Right:</strong> competitor Facebook pages for Meta Ad Library tracking.
+          </p>
         </div>
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <ProductUrlsSection workspaceId={workspaceId} />
-          <div className="rounded-xl border border-gray-200 bg-white p-4">
-            <p className="text-sm font-semibold text-gray-800 mb-2">Competitor URLs</p>
-            <div className="space-y-2 opacity-50">
-              {['https://www.livemed.in', 'https://www.omronhealthcare.in'].map(url => (
-                <div key={url} className="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">
-                  <span className="flex-1 truncate">{url}</span>
-                </div>
-              ))}
-            </div>
-            <p className="mt-3 text-xs text-gray-400">Competitor monitoring — coming soon</p>
-          </div>
+          <MetaCompetitorPages workspaceId={workspaceId} />
         </div>
       </section>
 
@@ -503,6 +564,7 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
           workspaceId={workspaceId}
           onConnected={refresh}
           onClose={() => setShowMetaDialog(false)}
+          sessionId={metaSession}
         />
       )}
 
@@ -550,6 +612,47 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
           onSuccess={() => { setShowUpload(null); refresh() }}
           onClose={() => setShowUpload(null)}
         />
+      )}
+
+      {/* Plan gate upgrade modal */}
+      {planGate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white shadow-2xl overflow-hidden">
+            <div className="bg-gradient-to-br from-amber-400 to-orange-500 px-6 py-8 text-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/20 mx-auto mb-3">
+                <Crown className="h-7 w-7 text-white" />
+              </div>
+              <h3 className="text-xl font-bold text-white">{planGate.required} Plan Required</h3>
+              <p className="text-sm text-white/80 mt-1">
+                Connecting {planGate.platform} requires the {planGate.required} plan or higher
+              </p>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <div className="rounded-xl bg-gray-50 border border-gray-100 px-4 py-3 text-sm text-gray-600">
+                You&apos;re on the <strong className="text-gray-900 capitalize">{plan ?? 'Free'}</strong> plan.
+                {planGate.required === 'Starter'
+                  ? ' Upgrade to Starter (₹1,999/mo) to connect Meta Ads and Google Ads.'
+                  : ' Upgrade to Growth (₹4,999/mo) to connect YouTube.'}
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setPlanGate(null)}
+                  className="flex-1 rounded-xl border border-gray-200 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <Link
+                  href={`/billing?ws=${workspaceId}`}
+                  onClick={() => setPlanGate(null)}
+                  className="flex-[2] flex items-center justify-center gap-2 rounded-xl bg-amber-500 py-2.5 text-sm font-semibold text-white hover:bg-amber-600"
+                >
+                  <Crown className="h-4 w-4" />
+                  View Plans
+                </Link>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

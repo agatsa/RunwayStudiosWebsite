@@ -21,6 +21,7 @@ from services.agent_swarm.core.workspace import (
     get_workspace, get_workspace_by_wa, list_active_workspaces,
     resolve_workspace, require_auth, get_primary_connection, build_product_context,
 )
+from services.agent_swarm.db import get_conn
 from services.agent_swarm.agents.performance import analyze_account
 from services.agent_swarm.agents.comment_intel import run_comment_intelligence
 from services.agent_swarm.agents.creative_director import run_creative_director
@@ -35,6 +36,25 @@ app = FastAPI(title="AI Agency — Agent Swarm", version="2.0.0")
 
 PLATFORM = "meta"
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+
+# ── Billing constants ─────────────────────────────────────
+CREDIT_PACKS = {
+    "100": {"credits": 100, "amount_paise": 79900},    # ₹799
+    "250": {"credits": 250, "amount_paise": 149900},   # ₹1,499
+    "600": {"credits": 600, "amount_paise": 299900},   # ₹2,999
+}
+FEATURE_COSTS = {
+    "yt_competitor_intel": 20,
+    "growth_os":           10,
+    "video_ai_insights":    2,
+    "campaign_brief":       3,
+    "competitor_ai":        5,
+    "growth_recipe_regen":  5,
+}
+PLAN_MONTHLY_CREDITS = {"free": 0, "starter": 150, "growth": 500, "agency": 2000}
+PLAN_PRICES_MONTHLY  = {"starter": 199900, "growth": 499900,  "agency": 1199900}
+PLAN_PRICES_YEARLY   = {"starter": 1999900, "growth": 4798800, "agency": 11199900}
+VALID_PLANS          = {"free", "starter", "growth", "agency"}
 
 # ── Tenant/Workspace resolution ────────────────────────────
 # All resolution now delegates to core.workspace module.
@@ -80,6 +100,72 @@ def _admin_auth(request: Request):
     token = request.headers.get("X-Admin-Token", "")
     if token != ADMIN_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized — X-Admin-Token required")
+
+
+# ── Billing helpers ───────────────────────────────────────
+
+def _get_org_id_for_workspace(conn, workspace_id: str) -> str:
+    """Look up org_id from workspace_id. Raises 404 if not found."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT org_id FROM workspaces WHERE id = %s", (workspace_id,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return str(row[0])
+
+
+def _check_and_deduct_credits(conn, org_id: str, workspace_id: str, required: int, feature: str) -> int:
+    """Atomic credit deduction using SELECT FOR UPDATE.
+    Returns new balance on success. Raises HTTP 402 if insufficient."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT credit_balance FROM organizations WHERE id = %s FOR UPDATE",
+            (org_id,),
+        )
+        row = cur.fetchone()
+        balance = row[0] if row else 0
+        if not row or balance < required:
+            raise HTTPException(status_code=402, detail={
+                "error": "insufficient_credits",
+                "required": required,
+                "balance": balance,
+                "feature": feature,
+                "message": f"You need {required} credits but only have {balance}. Top up to continue.",
+            })
+        new_balance = balance - required
+        cur.execute(
+            "UPDATE organizations SET credit_balance = %s WHERE id = %s",
+            (new_balance, org_id),
+        )
+        cur.execute(
+            """INSERT INTO credit_ledger
+               (org_id, workspace_id, amount, balance_after, type, feature, description)
+               VALUES (%s, %s, %s, %s, 'feature_use', %s, %s)""",
+            (org_id, workspace_id, -required, new_balance, feature,
+             f"Used {required} credits for {feature}"),
+        )
+    conn.commit()
+    return new_balance
+
+
+def _grant_credits(conn, org_id: str, workspace_id, amount: int, credit_type: str,
+                   feature: str = None, razorpay_payment_id: str = None, description: str = None) -> int:
+    """Add credits to an org. Returns new balance."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE organizations SET credit_balance = credit_balance + %s WHERE id = %s RETURNING credit_balance",
+            (amount, org_id),
+        )
+        new_balance = cur.fetchone()[0]
+        cur.execute(
+            """INSERT INTO credit_ledger
+               (org_id, workspace_id, amount, balance_after, type, feature, razorpay_payment_id, description)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (org_id, workspace_id, amount, new_balance, credit_type, feature,
+             razorpay_payment_id, description or f"Granted {amount} credits"),
+        )
+    conn.commit()
+    return new_balance
 
 
 def _account_id(workspace: dict = None) -> str:
@@ -758,17 +844,51 @@ async def shopify_disconnect(request: Request):
 
 @app.get("/workspace/list")
 async def list_workspaces(request: Request):
-    """List all active workspaces. Agency admin view."""
-    _auth(request)
-    workspaces = list_active_workspaces()
-    return {
-        "workspaces": [
-            {"id": w["id"], "name": w["name"], "store_url": w["store_url"],
-             "store_platform": w["store_platform"], "active": w["active"]}
-            for w in workspaces
-        ],
-        "count": len(workspaces),
-    }
+    """List workspaces for the authenticated user.
+    If X-Clerk-User-Id header is present, filters by that user's orgs only.
+    Falls back to all-workspace listing for internal/cron calls using X-Internal-Token.
+    """
+    clerk_user_id = request.headers.get("X-Clerk-User-Id", "").strip()
+
+    if clerk_user_id:
+        # User-scoped: only return workspaces belonging to this Clerk user's org
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT w.id, w.name, w.store_url, w.store_platform, w.active,
+                              w.workspace_type, w.onboarding_complete, w.onboarding_channels
+                       FROM workspaces w
+                       JOIN organizations o ON o.id = w.org_id
+                       WHERE o.clerk_user_id = %s AND w.active = TRUE
+                       ORDER BY w.created_at""",
+                    (clerk_user_id,),
+                )
+                rows = cur.fetchall()
+        workspaces = [
+            {
+                "id": str(r[0]), "name": r[1], "store_url": r[2],
+                "store_platform": r[3], "active": r[4],
+                "workspace_type": r[5] or "d2c",
+                "onboarding_complete": r[6] if r[6] is not None else False,
+                "onboarding_channels": r[7] or [],
+            }
+            for r in rows
+        ]
+    else:
+        # Internal call (cron/admin) — return all active workspaces
+        _auth(request)
+        workspaces = [
+            {
+                "id": w["id"], "name": w["name"], "store_url": w["store_url"],
+                "store_platform": w["store_platform"], "active": w["active"],
+                "workspace_type": w.get("workspace_type", "d2c"),
+                "onboarding_complete": w.get("onboarding_complete", False),
+                "onboarding_channels": w.get("onboarding_channels", []),
+            }
+            for w in list_active_workspaces()
+        ]
+
+    return {"workspaces": workspaces, "count": len(workspaces)}
 
 
 # ── Hourly master run ──────────────────────────────────────
@@ -4140,6 +4260,213 @@ async def settings_meta_connect(request: Request):
     return {"status": "connected", "ad_account_id": ad_account_id, "user_name": user_name}
 
 
+# ── Meta OAuth (Facebook Login flow) ─────────────────────────────────────────
+
+@app.get("/meta/oauth/start")
+async def meta_oauth_start(workspace_id: str, request: Request):
+    """Return the Facebook OAuth dialog URL. Frontend redirects the user there."""
+    from services.agent_swarm.config import FACEBOOK_APP_ID, META_OAUTH_REDIRECT_URI
+    import urllib.parse
+
+    if not FACEBOOK_APP_ID:
+        raise HTTPException(status_code=500, detail="FACEBOOK_APP_ID not configured on server")
+
+    params = {
+        "client_id": FACEBOOK_APP_ID,
+        "redirect_uri": META_OAUTH_REDIRECT_URI,
+        "scope": "ads_management,ads_read,business_management",
+        "state": workspace_id,
+        "response_type": "code",
+    }
+    oauth_url = f"https://www.facebook.com/{META_API_VERSION}/dialog/oauth?" + urllib.parse.urlencode(params)
+    return {"oauth_url": oauth_url}
+
+
+@app.post("/meta/oauth/save")
+async def meta_oauth_save(request: Request):
+    """
+    Exchange an OAuth code for a long-lived token.
+    - If the user has exactly one active ad account: auto-saves to platform_connections.
+    - If multiple accounts: stores a pending session and returns ad_accounts for selection.
+    """
+    from services.agent_swarm.config import FACEBOOK_APP_ID, FACEBOOK_APP_SECRET, META_OAUTH_REDIRECT_URI
+    import requests as req, json as _json, secrets as _secrets
+    from services.agent_swarm.db import get_conn
+
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "").strip()
+    code = body.get("code", "").strip()
+
+    if not workspace_id or not code:
+        raise HTTPException(status_code=400, detail="workspace_id and code required")
+
+    # Step 1: Exchange code for short-lived token
+    token_r = req.get(
+        f"{META_GRAPH}/oauth/access_token",
+        params={
+            "client_id": FACEBOOK_APP_ID,
+            "client_secret": FACEBOOK_APP_SECRET,
+            "redirect_uri": META_OAUTH_REDIRECT_URI,
+            "code": code,
+        },
+        timeout=10,
+    )
+    if not token_r.ok:
+        err = token_r.json().get("error", {}).get("message", token_r.text)
+        raise HTTPException(status_code=400, detail=f"Token exchange failed: {err}")
+    short_token = token_r.json().get("access_token", "")
+
+    # Step 2: Exchange for long-lived token (~60 days)
+    ll_r = req.get(
+        f"{META_GRAPH}/oauth/access_token",
+        params={
+            "grant_type": "fb_exchange_token",
+            "client_id": FACEBOOK_APP_ID,
+            "client_secret": FACEBOOK_APP_SECRET,
+            "fb_exchange_token": short_token,
+        },
+        timeout=10,
+    )
+    long_token = ll_r.json().get("access_token", short_token) if ll_r.ok else short_token
+
+    # Step 3: Get user info
+    me_r = req.get(
+        f"{META_GRAPH}/me",
+        params={"access_token": long_token, "fields": "id,name"},
+        timeout=10,
+    )
+    me = me_r.json() if me_r.ok else {}
+    user_id = me.get("id", "")
+    user_name = me.get("name", "")
+
+    # Step 4: Fetch ad accounts
+    accounts_r = req.get(
+        f"{META_GRAPH}/me/adaccounts",
+        params={
+            "access_token": long_token,
+            "fields": "id,name,account_id,account_status,currency",
+            "limit": 50,
+        },
+        timeout=10,
+    )
+    ad_accounts = accounts_r.json().get("data", []) if accounts_r.ok else []
+
+    with get_conn() as conn:
+        # If exactly one active account, auto-save and finish
+        active = [a for a in ad_accounts if a.get("account_status") == 1] or ad_accounts
+        if len(active) == 1:
+            acc = active[0]
+            ad_account_id = acc["id"]
+            if not ad_account_id.startswith("act_"):
+                ad_account_id = f"act_{ad_account_id}"
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO platform_connections
+                        (workspace_id, platform, account_id, account_name, ad_account_id, access_token, is_primary)
+                       VALUES (%s, 'meta', %s, %s, %s, %s, true)
+                       ON CONFLICT (workspace_id, platform, account_id)
+                       DO UPDATE SET account_name=EXCLUDED.account_name,
+                           ad_account_id=EXCLUDED.ad_account_id,
+                           access_token=EXCLUDED.access_token,
+                           is_primary=true, updated_at=NOW()""",
+                    (workspace_id, user_id, user_name, ad_account_id, long_token),
+                )
+            conn.commit()
+            return {"status": "connected", "user_name": user_name, "ad_account_id": ad_account_id}
+
+        # Multiple accounts: save pending session for the user to pick from
+        session_id = _secrets.token_urlsafe(32)
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO meta_oauth_sessions
+                       (id, workspace_id, user_id, user_name, access_token, ad_accounts)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (workspace_id) DO UPDATE SET
+                       id=EXCLUDED.id, user_id=EXCLUDED.user_id,
+                       user_name=EXCLUDED.user_name, access_token=EXCLUDED.access_token,
+                       ad_accounts=EXCLUDED.ad_accounts, created_at=NOW()""",
+                (session_id, workspace_id, user_id, user_name, long_token, _json.dumps(ad_accounts)),
+            )
+        conn.commit()
+        return {
+            "status": "select_account",
+            "session_id": session_id,
+            "user_name": user_name,
+            "ad_accounts": ad_accounts,
+        }
+
+
+@app.get("/meta/oauth/session")
+async def meta_oauth_session(session_id: str, request: Request):
+    """Return pending OAuth session data (user_name + ad_accounts) for the account picker."""
+    from services.agent_swarm.db import get_conn
+    import json as _json
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT workspace_id, user_name, ad_accounts FROM meta_oauth_sessions WHERE id = %s",
+                (session_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found or expired")
+
+    ad_accounts = row[2] if isinstance(row[2], list) else _json.loads(row[2])
+    return {"workspace_id": str(row[0]), "user_name": row[1], "ad_accounts": ad_accounts}
+
+
+@app.post("/meta/oauth/select-account")
+async def meta_oauth_select_account(request: Request):
+    """Complete the Meta OAuth flow by saving the chosen ad account from a pending session."""
+    from services.agent_swarm.db import get_conn
+
+    body = await request.json()
+    session_id = body.get("session_id", "").strip()
+    ad_account_id = body.get("ad_account_id", "").strip()
+
+    if not session_id or not ad_account_id:
+        raise HTTPException(status_code=400, detail="session_id and ad_account_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT workspace_id, user_id, user_name, access_token FROM meta_oauth_sessions WHERE id = %s",
+                (session_id,),
+            )
+            row = cur.fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Session not found or expired")
+
+        workspace_id = str(row[0])
+        user_id = str(row[1])
+        user_name = row[2]
+        access_token = row[3]
+
+        if not ad_account_id.startswith("act_"):
+            ad_account_id = f"act_{ad_account_id}"
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO platform_connections
+                       (workspace_id, platform, account_id, account_name, ad_account_id, access_token, is_primary)
+                   VALUES (%s, 'meta', %s, %s, %s, %s, true)
+                   ON CONFLICT (workspace_id, platform, account_id)
+                   DO UPDATE SET account_name=EXCLUDED.account_name,
+                       ad_account_id=EXCLUDED.ad_account_id,
+                       access_token=EXCLUDED.access_token,
+                       is_primary=true, updated_at=NOW()""",
+                (workspace_id, user_id, user_name, ad_account_id, access_token),
+            )
+            # Clean up the pending session
+            cur.execute("DELETE FROM meta_oauth_sessions WHERE id = %s", (session_id,))
+        conn.commit()
+
+    return {"status": "connected", "ad_account_id": ad_account_id, "user_name": user_name}
+
+
 @app.delete("/settings/disconnect/{platform}")
 async def settings_disconnect(request: Request, platform: str):
     """Remove a platform connection for a workspace."""
@@ -4525,6 +4852,12 @@ async def youtube_video_insights(
     _auth(request)
     if not workspace_id:
         raise HTTPException(status_code=400, detail="workspace_id required")
+
+    # Deduct credits before AI analysis
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_and_deduct_credits(conn, org_id, workspace_id,
+                                  FEATURE_COSTS["video_ai_insights"], "video_ai_insights")
 
     yc, workspace = _get_youtube_connector(workspace_id)
 
@@ -7248,6 +7581,12 @@ async def competitor_intel_ai(request: Request):
     import json as _json
     from services.agent_swarm.db import get_conn
 
+    # Deduct credits before calling Claude
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_and_deduct_credits(conn, org_id, workspace_id,
+                                  FEATURE_COSTS["competitor_ai"], "competitor_ai")
+
     # Check for today's cached analysis
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -8023,6 +8362,12 @@ async def campaign_planner_create_brief(request: Request):
     workspace_id = body.get("workspace_id")
     if not workspace_id:
         raise HTTPException(status_code=400, detail="workspace_id required")
+
+    # Deduct credits before calling Claude
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_and_deduct_credits(conn, org_id, workspace_id,
+                                  FEATURE_COSTS["campaign_brief"], "campaign_brief")
 
     product_name = body.get("product_name", "")
     product_price = body.get("product_price", "")
@@ -9244,6 +9589,263 @@ async def admin_migrate(request: Request):
         )""",
         "CREATE INDEX IF NOT EXISTS idx_yt_growth_plans_ws ON youtube_growth_plans(workspace_id, created_at DESC)",
         "ALTER TABLE youtube_growth_actions ADD COLUMN IF NOT EXISTS plan_id UUID REFERENCES youtube_growth_plans(id)",
+        # v23 — YouTube Competitor Intelligence (9-layer engine)
+        """CREATE TABLE IF NOT EXISTS yt_competitor_channels (
+            workspace_id     UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            channel_id       TEXT NOT NULL,
+            channel_title    TEXT NOT NULL DEFAULT '',
+            channel_handle   TEXT,
+            subscriber_count BIGINT,
+            similarity_score NUMERIC(6,4) NOT NULL DEFAULT 0,
+            rank             INT NOT NULL DEFAULT 0,
+            source           TEXT NOT NULL DEFAULT 'auto',
+            discovered_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            last_analyzed_at TIMESTAMPTZ,
+            PRIMARY KEY (workspace_id, channel_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_ytcc_ws ON yt_competitor_channels(workspace_id, rank)",
+        """CREATE TABLE IF NOT EXISTS yt_competitor_videos (
+            video_id         TEXT PRIMARY KEY,
+            channel_id       TEXT NOT NULL,
+            workspace_id     UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            title            TEXT NOT NULL DEFAULT '',
+            description      TEXT,
+            thumbnail_url    TEXT,
+            published_at     TIMESTAMPTZ,
+            duration_seconds INT NOT NULL DEFAULT 0,
+            views            BIGINT NOT NULL DEFAULT 0,
+            likes            BIGINT NOT NULL DEFAULT 0,
+            comments         BIGINT NOT NULL DEFAULT 0,
+            fetched_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_ytcv_ws_ch ON yt_competitor_videos(workspace_id, channel_id, published_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_ytcv_ch ON yt_competitor_videos(channel_id)",
+        """CREATE TABLE IF NOT EXISTS yt_video_features (
+            video_id          TEXT PRIMARY KEY REFERENCES yt_competitor_videos(video_id) ON DELETE CASCADE,
+            workspace_id      UUID NOT NULL,
+            channel_id        TEXT NOT NULL,
+            age_days          INT NOT NULL DEFAULT 0,
+            velocity          NUMERIC(12,4) NOT NULL DEFAULT 0,
+            engagement_rate   NUMERIC(8,6) NOT NULL DEFAULT 0,
+            comment_density   NUMERIC(8,6) NOT NULL DEFAULT 0,
+            upload_gap_days   NUMERIC(8,2),
+            duration_bucket   TEXT NOT NULL DEFAULT 'medium',
+            is_breakout       BOOLEAN NOT NULL DEFAULT FALSE,
+            computed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_ytvf_ws ON yt_video_features(workspace_id, channel_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ytvf_breakout ON yt_video_features(workspace_id, is_breakout)",
+        """CREATE TABLE IF NOT EXISTS yt_ai_features (
+            video_id           TEXT PRIMARY KEY REFERENCES yt_competitor_videos(video_id) ON DELETE CASCADE,
+            workspace_id       UUID NOT NULL,
+            topic_cluster_id   INT,
+            format_label       TEXT,
+            format_structure   JSONB,
+            format_energy      TEXT,
+            title_patterns     JSONB,
+            curiosity_score    INT,
+            specificity_score  INT,
+            thumb_face         BOOLEAN,
+            thumb_text         BOOLEAN,
+            thumb_emotion      TEXT,
+            thumb_objects      JSONB,
+            thumb_style        TEXT,
+            thumb_readable_text TEXT,
+            embedding_json     JSONB,
+            labeled_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_ytaif_ws ON yt_ai_features(workspace_id, topic_cluster_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ytaif_format ON yt_ai_features(workspace_id, format_label)",
+        """CREATE TABLE IF NOT EXISTS yt_topic_clusters (
+            id               BIGSERIAL PRIMARY KEY,
+            workspace_id     UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            channel_id       TEXT NOT NULL,
+            topic_cluster_id INT NOT NULL,
+            topic_name       TEXT NOT NULL DEFAULT 'Uncategorized',
+            subthemes        JSONB NOT NULL DEFAULT '[]',
+            cluster_size     INT NOT NULL DEFAULT 0,
+            avg_velocity     NUMERIC(12,4) NOT NULL DEFAULT 0,
+            median_velocity  NUMERIC(12,4) NOT NULL DEFAULT 0,
+            hit_rate         NUMERIC(5,2) NOT NULL DEFAULT 0,
+            trs_score        INT NOT NULL DEFAULT 0,
+            shelf_life       TEXT,
+            half_life_weeks  INT,
+            computed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(workspace_id, channel_id, topic_cluster_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_yttc_ws ON yt_topic_clusters(workspace_id, avg_velocity DESC)",
+        """CREATE TABLE IF NOT EXISTS yt_channel_profiles (
+            workspace_id      UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            channel_id        TEXT NOT NULL,
+            median_velocity   NUMERIC(12,4) NOT NULL DEFAULT 0,
+            p25_velocity      NUMERIC(12,4) NOT NULL DEFAULT 0,
+            p75_velocity      NUMERIC(12,4) NOT NULL DEFAULT 0,
+            p90_velocity      NUMERIC(12,4) NOT NULL DEFAULT 0,
+            iqr               NUMERIC(12,4) NOT NULL DEFAULT 0,
+            std_velocity      NUMERIC(12,4) NOT NULL DEFAULT 0,
+            hit_rate          NUMERIC(5,2) NOT NULL DEFAULT 0,
+            underperform_rate NUMERIC(5,2) NOT NULL DEFAULT 0,
+            breakout_rate     NUMERIC(5,2) NOT NULL DEFAULT 0,
+            risk_profile      TEXT NOT NULL DEFAULT 'medium_variance',
+            cadence_pattern   TEXT,
+            median_gap_days   NUMERIC(8,2),
+            analyzed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY(workspace_id, channel_id)
+        )""",
+        """CREATE TABLE IF NOT EXISTS yt_breakout_recipe (
+            workspace_id   UUID PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+            playbook_text  TEXT NOT NULL,
+            top_features   JSONB NOT NULL DEFAULT '{}',
+            p90_threshold  NUMERIC(12,4) NOT NULL DEFAULT 0,
+            breakout_count INT NOT NULL DEFAULT 0,
+            trained_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        """CREATE TABLE IF NOT EXISTS yt_analysis_jobs (
+            id                BIGSERIAL PRIMARY KEY,
+            workspace_id      UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            status            TEXT NOT NULL DEFAULT 'pending'
+                                  CHECK (status IN ('pending','running','completed','failed')),
+            started_at        TIMESTAMPTZ,
+            completed_at      TIMESTAMPTZ,
+            error             TEXT,
+            channels_analyzed INT NOT NULL DEFAULT 0,
+            videos_analyzed   INT NOT NULL DEFAULT 0,
+            created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_ytaj_ws ON yt_analysis_jobs(workspace_id, created_at DESC)",
+        # v24 — Own-channel comparison + workspace-type-aware growth recipe
+        "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS workspace_type TEXT DEFAULT 'd2c' CHECK (workspace_type IN ('d2c','creator','saas','agency','media'))",
+        "ALTER TABLE yt_analysis_jobs ADD COLUMN IF NOT EXISTS phase TEXT DEFAULT 'competitor_analysis'",
+        "ALTER TABLE yt_analysis_jobs ADD COLUMN IF NOT EXISTS channels_total INT NOT NULL DEFAULT 0",
+        "ALTER TABLE yt_growth_recipe ADD COLUMN IF NOT EXISTS recipe_text TEXT",
+        # v25 — Live discovery stream + confirmation step
+        "ALTER TABLE yt_analysis_jobs ADD COLUMN IF NOT EXISTS discovery_log JSONB",
+        "ALTER TABLE yt_analysis_jobs ADD COLUMN IF NOT EXISTS discovery_candidates JSONB",
+        "ALTER TABLE yt_analysis_jobs ADD COLUMN IF NOT EXISTS own_topic_space JSONB",
+        "ALTER TABLE yt_analysis_jobs ADD COLUMN IF NOT EXISTS discovery_status TEXT DEFAULT 'idle'",
+        "ALTER TABLE yt_competitor_channels ADD COLUMN IF NOT EXISTS topic_space JSONB",
+        """CREATE TABLE IF NOT EXISTS yt_own_channel_snapshot (
+            workspace_id      UUID          NOT NULL,
+            channel_id        TEXT          NOT NULL,
+            video_id          TEXT          NOT NULL,
+            title             TEXT,
+            published_at      TIMESTAMPTZ,
+            views             BIGINT        DEFAULT 0,
+            likes             INT           DEFAULT 0,
+            comments          INT           DEFAULT 0,
+            duration_seconds  INT           DEFAULT 0,
+            is_short          BOOL          DEFAULT FALSE,
+            velocity          NUMERIC(12,4),
+            engagement_rate   NUMERIC(8,4),
+            format_label      TEXT,
+            title_patterns    JSONB,
+            thumb_face        BOOL,
+            thumb_emotion     TEXT,
+            thumb_text        BOOL,
+            analyzed_at       TIMESTAMPTZ   DEFAULT NOW(),
+            PRIMARY KEY (workspace_id, video_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_yt_own_snap_ws ON yt_own_channel_snapshot(workspace_id)",
+        """CREATE TABLE IF NOT EXISTS yt_growth_recipe (
+            workspace_id             UUID          PRIMARY KEY,
+            own_video_count          INT           DEFAULT 0,
+            own_velocity_avg         NUMERIC(12,4) DEFAULT 0,
+            own_velocity_percentile  NUMERIC(5,2)  DEFAULT 0,
+            content_gaps             JSONB,
+            plan_15d                 TEXT,
+            plan_30d                 TEXT,
+            thumbnail_brief          TEXT,
+            hooks_library            TEXT,
+            emerging_topics          TEXT,
+            generated_at             TIMESTAMPTZ   DEFAULT NOW()
+        )""",
+        # v26 — Growth OS unified action plan
+        """CREATE TABLE IF NOT EXISTS growth_os_plans (
+            id            UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+            workspace_id  UUID        REFERENCES workspaces(id),
+            generated_at  TIMESTAMPTZ DEFAULT NOW(),
+            plan_json     JSONB       NOT NULL,
+            sources_used  JSONB
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_gos_ws ON growth_os_plans(workspace_id, generated_at DESC)",
+        # v27 — Meta Ad Library competitor ads
+        """CREATE TABLE IF NOT EXISTS meta_competitor_ads (
+            id                   UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+            workspace_id         UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            competitor_page_id   TEXT        NOT NULL DEFAULT '',
+            competitor_page_name TEXT        NOT NULL,
+            ad_id                TEXT        NOT NULL,
+            ad_copy              TEXT,
+            headline             TEXT,
+            snapshot_url         TEXT,
+            media_type           TEXT,
+            platforms            JSONB       DEFAULT '[]',
+            delivery_start_date  DATE,
+            last_fetched_at      TIMESTAMPTZ DEFAULT NOW(),
+            is_active            BOOLEAN     DEFAULT TRUE,
+            raw_json             JSONB,
+            UNIQUE (workspace_id, ad_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_mca_ws ON meta_competitor_ads(workspace_id, competitor_page_name, delivery_start_date DESC)",
+        # v27b — Meta Ad Library manual competitor pages
+        """CREATE TABLE IF NOT EXISTS meta_competitor_pages (
+            id           UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+            workspace_id UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            page_name    TEXT        NOT NULL,
+            added_at     TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (workspace_id, page_name)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_mcp_ws ON meta_competitor_pages(workspace_id)",
+        # v28 — Onboarding flow: track user type and selected channels
+        "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS onboarding_channels JSONB DEFAULT '[]'",
+        # v29 — Credit-based billing system
+        "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS credit_balance INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'free'",
+        # v30 — Per-user workspace isolation
+        "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS clerk_user_id TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_orgs_clerk_user ON organizations(clerk_user_id)",
+        """CREATE TABLE IF NOT EXISTS credit_ledger (
+            id                   UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            org_id               UUID        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            workspace_id         UUID        REFERENCES workspaces(id) ON DELETE SET NULL,
+            amount               INTEGER     NOT NULL,
+            balance_after        INTEGER     NOT NULL,
+            type                 TEXT        NOT NULL,
+            feature              TEXT,
+            razorpay_payment_id  TEXT,
+            description          TEXT,
+            created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_credit_ledger_org  ON credit_ledger(org_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_credit_ledger_ws   ON credit_ledger(workspace_id)",
+        "CREATE INDEX IF NOT EXISTS idx_credit_ledger_type ON credit_ledger(type)",
+        """CREATE TABLE IF NOT EXISTS billing_orders (
+            id                   UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            org_id               UUID        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            razorpay_order_id    TEXT        UNIQUE NOT NULL,
+            type                 TEXT        NOT NULL DEFAULT 'topup',
+            credits              INTEGER     NOT NULL DEFAULT 0,
+            amount_paise         INTEGER     NOT NULL,
+            status               TEXT        NOT NULL DEFAULT 'pending',
+            razorpay_payment_id  TEXT,
+            created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_billing_orders_org ON billing_orders(org_id)",
+        "CREATE INDEX IF NOT EXISTS idx_billing_orders_rzp ON billing_orders(razorpay_order_id)",
+        # v31 — Meta OAuth pending sessions (multi-account selection after OAuth)
+        """CREATE TABLE IF NOT EXISTS meta_oauth_sessions (
+            id           TEXT        PRIMARY KEY,
+            workspace_id UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            user_id      TEXT        NOT NULL DEFAULT '',
+            user_name    TEXT,
+            access_token TEXT        NOT NULL,
+            ad_accounts  JSONB       NOT NULL DEFAULT '[]',
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (workspace_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_meta_oauth_sessions_ws ON meta_oauth_sessions(workspace_id)",
     ]
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -9526,4 +10128,2015 @@ Return ONLY the JSON array, no other text."""
         "opportunities": opportunities,
         "generated_at": _datetime.utcnow().isoformat(),
         "cached": False,
+    }
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  YouTube Competitor Intelligence — 9-Layer Engine Endpoints                 ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@app.post("/youtube/competitor-intel/analyze")
+async def yt_ci_analyze(request: Request, background_tasks: BackgroundTasks):
+    """Trigger competitor discovery phase (Phase 1 of 2).
+
+    Creates a yt_analysis_jobs row immediately, starts live discovery in background.
+    After discovery, sets discovery_status='awaiting_confirmation'.
+    User calls /confirm-discovery to kick off Phase 2 (full 9-layer pipeline).
+    """
+    _auth(request)
+    body         = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    # Deduct credits before running expensive analysis
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_and_deduct_credits(conn, org_id, workspace_id,
+                                  FEATURE_COSTS["yt_competitor_intel"], "yt_competitor_intel")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Insert with discovery_status='discovering' immediately so polls never see 'idle'
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO yt_analysis_jobs (workspace_id, status, discovery_status, created_at)
+                    VALUES (%s, 'running', 'discovering', NOW())
+                    RETURNING id
+                    """,
+                    (workspace_id,),
+                )
+            except Exception:
+                conn.rollback()
+                cur.execute(
+                    """
+                    INSERT INTO yt_analysis_jobs (workspace_id, status, created_at)
+                    VALUES (%s, 'running', NOW())
+                    RETURNING id
+                    """,
+                    (workspace_id,),
+                )
+            job_id = cur.fetchone()[0]
+        conn.commit()
+
+    from services.agent_swarm.core.yt_intelligence import run_discovery_phase
+    background_tasks.add_task(run_discovery_phase, workspace_id, job_id)
+
+    return {"job_id": job_id, "status": "running", "workspace_id": workspace_id}
+
+
+@app.get("/youtube/competitor-intel/status")
+async def yt_ci_status(request: Request, workspace_id: str = None):
+    """Return the latest analysis job status for this workspace."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Try to select phase + channels_total columns (added in v24 migration)
+            try:
+                cur.execute(
+                    """
+                    SELECT id, status, started_at, completed_at, error,
+                           channels_analyzed, videos_analyzed, created_at, phase,
+                           channels_total
+                    FROM yt_analysis_jobs
+                    WHERE workspace_id = %s
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (workspace_id,),
+                )
+                row = cur.fetchone()
+                has_extra = True
+            except Exception:
+                conn.rollback()
+                cur.execute(
+                    """
+                    SELECT id, status, started_at, completed_at, error,
+                           channels_analyzed, videos_analyzed, created_at
+                    FROM yt_analysis_jobs
+                    WHERE workspace_id = %s
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (workspace_id,),
+                )
+                row = cur.fetchone()
+                has_extra = False
+
+    if not row:
+        return {"has_job": False, "status": None}
+
+    channels_analyzed = row[5] or 0
+    channels_total    = (row[9] if has_extra else 0) or channels_analyzed
+
+    return {
+        "has_job":           True,
+        "job_id":            row[0],
+        "status":            row[1],
+        "started_at":        row[2].isoformat() if row[2] else None,
+        "completed_at":      row[3].isoformat() if row[3] else None,
+        "error":             row[4],
+        "channels_analyzed": channels_analyzed,
+        "videos_analyzed":   row[6],
+        "created_at":        row[7].isoformat() if row[7] else None,
+        "phase":             (row[8] if has_extra else None) or "competitor_analysis",
+        "channels_total":    channels_total,
+    }
+
+
+@app.get("/youtube/competitor-intel/discovery-status")
+async def yt_ci_discovery_status(request: Request, workspace_id: str = None):
+    """Return live discovery log, candidates list, own_topic_space, and discovery_status."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    SELECT id, discovery_status, discovery_log, discovery_candidates,
+                           own_topic_space
+                    FROM yt_analysis_jobs
+                    WHERE workspace_id = %s
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (workspace_id,),
+                )
+                row = cur.fetchone()
+            except Exception:
+                conn.rollback()
+                return {"has_job": False, "discovery_status": "idle"}
+
+    if not row:
+        return {"has_job": False, "discovery_status": "idle"}
+
+    return {
+        "has_job":             True,
+        "job_id":              row[0],
+        "discovery_status":    row[1] or "idle",
+        "discovery_log":       row[2] or [],
+        "discovery_candidates": row[3] or [],
+        "own_topic_space":     row[4] or [],
+    }
+
+
+@app.post("/youtube/competitor-intel/confirm-discovery")
+async def yt_ci_confirm_discovery(request: Request, background_tasks: BackgroundTasks):
+    """Confirm competitor list and start Phase 2 deep analysis.
+
+    Body: {
+        workspace_id: str,
+        confirmed_channel_ids: [str],   # auto-discovered channels the user keeps
+        manual_channel_urls: [str]      # up to 3 URLs/handles to add
+    }
+    Removes de-selected auto channels, upserts manual ones, then kicks off run_analysis_phase.
+    """
+    _auth(request)
+    body                  = await request.json()
+    workspace_id          = body.get("workspace_id", "")
+    confirmed_ids         = body.get("confirmed_channel_ids", [])
+    manual_urls           = body.get("manual_channel_urls", [])[:3]  # hard cap at 3
+
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    import json as _json
+    from services.agent_swarm.connectors.yt_competitor import (
+        resolve_channel_id_from_handle, get_channel_meta, list_recent_video_ids, get_videos_details,
+    )
+    from services.agent_swarm.config import YOUTUBE_API_KEY as _YT_KEY
+    from services.agent_swarm.core.yt_intelligence import _extract_topic_space
+
+    with get_conn() as conn:
+        # 1. Remove auto-discovered channels not in confirmed_ids
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT channel_id FROM yt_competitor_channels WHERE workspace_id = %s AND source = 'auto'",
+                (workspace_id,),
+            )
+            existing_auto = [r[0] for r in cur.fetchall()]
+
+        to_remove = [ch for ch in existing_auto if ch not in confirmed_ids]
+        if to_remove:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM yt_competitor_channels WHERE workspace_id = %s AND channel_id = ANY(%s)",
+                    (workspace_id, to_remove),
+                )
+            conn.commit()
+
+        # 2. Resolve and upsert manual channels (with topic_space)
+        manual_resolved = []
+        for url in manual_urls:
+            url = url.strip()
+            if not url:
+                continue
+            # parse channel_id from URL or handle
+            ch_id = None
+            if "youtube.com/channel/" in url:
+                ch_id = url.split("youtube.com/channel/")[-1].split("/")[0].split("?")[0]
+            elif "youtube.com/@" in url:
+                handle = url.split("youtube.com/@")[-1].split("/")[0].split("?")[0]
+                ch_id = resolve_channel_id_from_handle(handle, _YT_KEY)
+            elif url.startswith("@"):
+                ch_id = resolve_channel_id_from_handle(url[1:], _YT_KEY)
+            elif url.startswith("UC") and len(url) > 20:
+                ch_id = url
+            else:
+                # try treating as a handle
+                ch_id = resolve_channel_id_from_handle(url.lstrip("@"), _YT_KEY)
+
+            if not ch_id:
+                continue
+
+            meta = get_channel_meta(ch_id, _YT_KEY)
+            if not meta.get("title") or meta.get("title") == "Unknown":
+                continue
+
+            # compute topic_space for manual channel
+            vid_ids = list_recent_video_ids(ch_id, 20, _YT_KEY)
+            ch_vids = get_videos_details(vid_ids, _YT_KEY) if vid_ids else []
+            ch_titles = [v["title"] for v in ch_vids if v.get("title")]
+            topic_space = _extract_topic_space(ch_titles, n_keywords=10)
+
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO yt_competitor_channels
+                            (workspace_id, channel_id, channel_title, channel_handle,
+                             subscriber_count, similarity_score, rank, source, discovered_at, topic_space)
+                        VALUES (%s, %s, %s, %s, %s, 0, 99, 'manual', NOW(), %s)
+                        ON CONFLICT (workspace_id, channel_id) DO UPDATE SET
+                            channel_title    = EXCLUDED.channel_title,
+                            channel_handle   = EXCLUDED.channel_handle,
+                            subscriber_count = EXCLUDED.subscriber_count,
+                            source           = 'manual',
+                            topic_space      = EXCLUDED.topic_space
+                        """,
+                        (
+                            workspace_id, ch_id,
+                            meta.get("title", "")[:200],
+                            meta.get("handle", ""),
+                            meta.get("subscriber_count"),
+                            _json.dumps(topic_space),
+                        ),
+                    )
+                except Exception:
+                    cur.execute(
+                        """
+                        INSERT INTO yt_competitor_channels
+                            (workspace_id, channel_id, channel_title, channel_handle,
+                             subscriber_count, similarity_score, rank, source, discovered_at)
+                        VALUES (%s, %s, %s, %s, %s, 0, 99, 'manual', NOW())
+                        ON CONFLICT (workspace_id, channel_id) DO UPDATE SET
+                            channel_title    = EXCLUDED.channel_title,
+                            channel_handle   = EXCLUDED.channel_handle,
+                            subscriber_count = EXCLUDED.subscriber_count,
+                            source           = 'manual'
+                        """,
+                        (
+                            workspace_id, ch_id,
+                            meta.get("title", "")[:200],
+                            meta.get("handle", ""),
+                            meta.get("subscriber_count"),
+                        ),
+                    )
+            conn.commit()
+            manual_resolved.append(ch_id)
+
+        # 3. Get the latest job_id to use for analysis phase
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM yt_analysis_jobs WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 1",
+                (workspace_id,),
+            )
+            job_row = cur.fetchone()
+        job_id = job_row[0] if job_row else None
+
+    if not job_id:
+        raise HTTPException(status_code=400, detail="No analysis job found — run /analyze first")
+
+    from services.agent_swarm.core.yt_intelligence import run_analysis_phase
+    background_tasks.add_task(run_analysis_phase, workspace_id, job_id)
+
+    return {
+        "started":          True,
+        "job_id":           job_id,
+        "confirmed_count":  len(confirmed_ids),
+        "manual_added":     len(manual_resolved),
+        "removed_count":    len(to_remove),
+    }
+
+
+@app.post("/youtube/competitor-intel/re-discover")
+async def yt_ci_re_discover(request: Request, background_tasks: BackgroundTasks):
+    """Re-run competitor discovery (Phase 1 only) without running the full analysis.
+
+    Clears existing auto-discovered channels (keeps manual ones), then re-runs discovery.
+    """
+    _auth(request)
+    body         = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        # Remove only auto-discovered channels
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM yt_competitor_channels WHERE workspace_id = %s AND source = 'auto'",
+                (workspace_id,),
+            )
+        conn.commit()
+
+        # Create a new job row — insert as 'discovering' immediately so polls never see 'idle'
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO yt_analysis_jobs (workspace_id, status, discovery_status, created_at)
+                    VALUES (%s, 'running', 'discovering', NOW())
+                    RETURNING id
+                    """,
+                    (workspace_id,),
+                )
+            except Exception:
+                conn.rollback()
+                cur.execute(
+                    """
+                    INSERT INTO yt_analysis_jobs (workspace_id, status, created_at)
+                    VALUES (%s, 'running', NOW())
+                    RETURNING id
+                    """,
+                    (workspace_id,),
+                )
+            job_id = cur.fetchone()[0]
+        conn.commit()
+
+    from services.agent_swarm.core.yt_intelligence import run_discovery_phase
+    background_tasks.add_task(run_discovery_phase, workspace_id, job_id)
+
+    return {"job_id": job_id, "status": "running", "workspace_id": workspace_id}
+
+
+@app.get("/youtube/competitor-intel/competitors")
+async def yt_ci_list_competitors(request: Request, workspace_id: str = None):
+    """List registered competitor channels for this workspace."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    SELECT channel_id, channel_title, channel_handle, subscriber_count,
+                           similarity_score, rank, source, discovered_at, last_analyzed_at,
+                           topic_space
+                    FROM yt_competitor_channels
+                    WHERE workspace_id = %s
+                    ORDER BY rank ASC
+                    """,
+                    (workspace_id,),
+                )
+                rows = cur.fetchall()
+                has_topic_space = True
+            except Exception:
+                conn.rollback()
+                cur.execute(
+                    """
+                    SELECT channel_id, channel_title, channel_handle, subscriber_count,
+                           similarity_score, rank, source, discovered_at, last_analyzed_at
+                    FROM yt_competitor_channels
+                    WHERE workspace_id = %s
+                    ORDER BY rank ASC
+                    """,
+                    (workspace_id,),
+                )
+                rows = cur.fetchall()
+                has_topic_space = False
+
+    return {
+        "competitors": [
+            {
+                "channel_id":       r[0],
+                "title":            r[1],
+                "handle":           r[2],
+                "subscriber_count": r[3],
+                "similarity_score": float(r[4] or 0),
+                "rank":             r[5],
+                "source":           r[6],
+                "discovered_at":    r[7].isoformat() if r[7] else None,
+                "last_analyzed_at": r[8].isoformat() if r[8] else None,
+                "topic_space":      (r[9] if has_topic_space else None) or [],
+            }
+            for r in rows
+        ],
+        "has_data": len(rows) > 0,
+    }
+
+
+@app.post("/youtube/competitor-intel/competitors")
+async def yt_ci_add_competitor(request: Request):
+    """Manually add a competitor channel by URL / handle / channel_id."""
+    _auth(request)
+    body         = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    channel_url  = body.get("channel_url", "").strip()
+    if not workspace_id or not channel_url:
+        raise HTTPException(status_code=400, detail="workspace_id and channel_url required")
+
+    from services.agent_swarm.connectors.yt_competitor import (
+        resolve_channel_id_from_handle, get_channel_meta,
+    )
+    from services.agent_swarm.config import YOUTUBE_API_KEY
+
+    ch_id = resolve_channel_id_from_handle(channel_url, YOUTUBE_API_KEY)
+    if not ch_id:
+        raise HTTPException(status_code=404, detail="Could not resolve YouTube channel")
+
+    meta = get_channel_meta(ch_id, YOUTUBE_API_KEY)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO yt_competitor_channels
+                    (workspace_id, channel_id, channel_title, channel_handle,
+                     subscriber_count, similarity_score, rank, source)
+                VALUES (%s, %s, %s, %s, %s, 0, 99, 'manual')
+                ON CONFLICT (workspace_id, channel_id) DO UPDATE SET
+                    channel_title = EXCLUDED.channel_title,
+                    source        = 'manual'
+                """,
+                (
+                    workspace_id, ch_id,
+                    meta.get("title", "")[:200],
+                    meta.get("handle", ""),
+                    meta.get("subscriber_count"),
+                ),
+            )
+        conn.commit()
+
+    return {"ok": True, "channel_id": ch_id, "title": meta.get("title", "")}
+
+
+@app.delete("/youtube/competitor-intel/competitors")
+async def yt_ci_remove_competitor(request: Request):
+    """Remove a competitor channel from this workspace."""
+    _auth(request)
+    body         = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    channel_id   = body.get("channel_id", "")
+    if not workspace_id or not channel_id:
+        raise HTTPException(status_code=400, detail="workspace_id and channel_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Cascade-clean all analysis data for this channel in this workspace
+            for tbl in ("yt_topic_clusters", "yt_channel_profiles"):
+                cur.execute(
+                    f"DELETE FROM {tbl} WHERE workspace_id = %s AND channel_id = %s",
+                    (workspace_id, channel_id),
+                )
+            # Video-level tables keyed by video_id — delete via subquery
+            for tbl in ("yt_ai_features", "yt_video_features"):
+                cur.execute(
+                    f"""DELETE FROM {tbl} WHERE video_id IN (
+                        SELECT video_id FROM yt_competitor_videos
+                        WHERE workspace_id = %s AND channel_id = %s
+                    )""",
+                    (workspace_id, channel_id),
+                )
+            cur.execute(
+                "DELETE FROM yt_competitor_videos WHERE workspace_id = %s AND channel_id = %s",
+                (workspace_id, channel_id),
+            )
+            cur.execute(
+                "DELETE FROM yt_competitor_channels WHERE workspace_id = %s AND channel_id = %s",
+                (workspace_id, channel_id),
+            )
+        conn.commit()
+
+    return {"ok": True}
+
+
+@app.get("/youtube/competitor-intel/topics")
+async def yt_ci_topics(request: Request, workspace_id: str = None):
+    """Layer 2: Topic clusters ranked by avg_velocity across all competitor channels."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT tc.topic_name, tc.subthemes, tc.cluster_size, tc.avg_velocity,
+                       tc.median_velocity, tc.hit_rate, tc.trs_score,
+                       tc.shelf_life, tc.half_life_weeks, tc.channel_id,
+                       cc.channel_title
+                FROM yt_topic_clusters tc
+                INNER JOIN yt_competitor_channels cc
+                    ON cc.workspace_id = tc.workspace_id AND cc.channel_id = tc.channel_id
+                WHERE tc.workspace_id = %s
+                ORDER BY tc.avg_velocity DESC
+                LIMIT 60
+                """,
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+
+    return {
+        "clusters": [
+            {
+                "topic_name":       r[0],
+                "subthemes":        r[1] if isinstance(r[1], list) else [],
+                "cluster_size":     r[2],
+                "avg_velocity":     float(r[3] or 0),
+                "median_velocity":  float(r[4] or 0),
+                "hit_rate":         float(r[5] or 0),
+                "trs_score":        r[6],
+                "shelf_life":       r[7],
+                "half_life_weeks":  r[8],
+                "channel_id":       r[9],
+                "channel_title":    r[10] or r[9],
+            }
+            for r in rows
+        ],
+        "has_data": len(rows) > 0,
+    }
+
+
+@app.get("/youtube/competitor-intel/formats")
+async def yt_ci_formats(request: Request, workspace_id: str = None):
+    """Layer 3: Format scaling scores — avg velocity and hit rate per format label."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Format → velocity aggregation
+            cur.execute(
+                """
+                SELECT a.format_label,
+                       COUNT(*) AS cnt,
+                       AVG(f.velocity) AS avg_velocity,
+                       PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY f.velocity) AS p75,
+                       AVG(f.engagement_rate) AS avg_engagement
+                FROM yt_ai_features a
+                JOIN yt_video_features f ON f.video_id = a.video_id
+                JOIN yt_competitor_videos v ON v.video_id = a.video_id
+                JOIN yt_competitor_channels cc
+                    ON cc.workspace_id = v.workspace_id AND cc.channel_id = v.channel_id
+                WHERE f.workspace_id = %s AND a.format_label IS NOT NULL
+                GROUP BY a.format_label
+                ORDER BY avg_velocity DESC
+                """,
+                (workspace_id,),
+            )
+            fmt_rows = cur.fetchall()
+
+            # Global p75 for hit_rate
+            cur.execute(
+                "SELECT PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY velocity) FROM yt_video_features WHERE workspace_id = %s",
+                (workspace_id,),
+            )
+            p75_row   = cur.fetchone()
+            global_p75 = float(p75_row[0] or 0) if p75_row else 0
+
+            # Sample titles per format (top 3 by velocity)
+            sample_titles: dict[str, list[str]] = {}
+            for row in fmt_rows:
+                fmt = row[0]
+                cur.execute(
+                    """
+                    SELECT v.title FROM yt_ai_features a
+                    JOIN yt_video_features f ON f.video_id = a.video_id
+                    JOIN yt_competitor_videos v ON v.video_id = a.video_id
+                    WHERE f.workspace_id = %s AND a.format_label = %s
+                    ORDER BY f.velocity DESC LIMIT 3
+                    """,
+                    (workspace_id, fmt),
+                )
+                sample_titles[fmt] = [r[0] for r in cur.fetchall() if r[0]]
+
+    results = []
+    for row in fmt_rows:
+        fmt, cnt, avg_vel, p75_fmt, avg_eng = row
+        hit_rate = round(
+            sum(1 for _ in range(int(cnt))) / max(cnt, 1) * 100, 1
+        )  # simplified — p75_fmt vs global_p75
+        hit_rate_actual = round(
+            (float(p75_fmt or 0) > global_p75) * 100, 1
+        ) if global_p75 > 0 else 0.0
+        # avg_hit_rate: share of this format's videos above the global p75 velocity
+        avg_hit_rate = round(
+            (float(p75_fmt or 0) > global_p75) * 1.0, 2
+        ) if global_p75 > 0 else 0.0
+        results.append({
+            "format_label":  fmt,
+            "video_count":   int(cnt),
+            "avg_velocity":  round(float(avg_vel or 0), 2),
+            "avg_hit_rate":  avg_hit_rate,
+            "sample_titles": sample_titles.get(fmt, []),
+        })
+
+    return {"formats": results, "has_data": len(results) > 0}
+
+
+@app.get("/youtube/competitor-intel/title-patterns")
+async def yt_ci_title_patterns(request: Request, workspace_id: str = None):
+    """Layer 4: Title pattern velocity uplift vs baseline."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT AVG(velocity) FROM yt_video_features WHERE workspace_id = %s",
+                (workspace_id,),
+            )
+            baseline_row     = cur.fetchone()
+            baseline_avg_vel = float(baseline_row[0] or 0) if baseline_row else 0
+
+            cur.execute(
+                """
+                SELECT a.title_patterns, f.velocity
+                FROM yt_ai_features a
+                JOIN yt_video_features f ON f.video_id = a.video_id
+                JOIN yt_competitor_videos v ON v.video_id = a.video_id
+                JOIN yt_competitor_channels cc
+                    ON cc.workspace_id = v.workspace_id AND cc.channel_id = v.channel_id
+                WHERE f.workspace_id = %s AND a.title_patterns IS NOT NULL
+                """,
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+
+    # Aggregate per pattern
+    from collections import defaultdict
+    pattern_vels: dict = defaultdict(list)
+    for title_patterns_raw, velocity in rows:
+        patterns: list = title_patterns_raw if isinstance(title_patterns_raw, list) else []
+        for pat in patterns:
+            pattern_vels[pat].append(float(velocity or 0))
+
+    results = []
+    for pat, vels in pattern_vels.items():
+        avg_vel     = sum(vels) / len(vels)
+        uplift_pct  = round((avg_vel - baseline_avg_vel) / max(baseline_avg_vel, 0.01) * 100, 1)
+        results.append({
+            "pattern":      pat,
+            "video_count":  len(vels),
+            "avg_velocity": round(avg_vel, 2),
+            "uplift_pct":   uplift_pct,
+        })
+
+    results.sort(key=lambda x: x["uplift_pct"], reverse=True)
+    return {
+        "patterns":        results,
+        "baseline_avg_velocity": round(baseline_avg_vel, 2),
+        "has_data":        len(results) > 0,
+    }
+
+
+@app.get("/youtube/competitor-intel/thumbnails")
+async def yt_ci_thumbnails(request: Request, workspace_id: str = None):
+    """Layer 5: Thumbnail psychology — face/text/emotion velocity analysis."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT a.thumb_face, a.thumb_text, a.thumb_emotion, a.thumb_style, f.velocity
+                FROM yt_ai_features a
+                JOIN yt_video_features f ON f.video_id = a.video_id
+                JOIN yt_competitor_videos v ON v.video_id = a.video_id
+                JOIN yt_competitor_channels cc
+                    ON cc.workspace_id = v.workspace_id AND cc.channel_id = v.channel_id
+                WHERE f.workspace_id = %s
+                  AND a.thumb_face IS NOT NULL
+                """,
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+
+    if not rows:
+        return {"has_data": False, "face_vs_no_face": {}, "emotions": [], "top_combos": []}
+
+    face_vels    = {"face": [], "no_face": []}
+    emotion_vels: dict = {}
+    style_vels:  dict  = {}
+    combo_vels:  dict  = {}
+
+    for thumb_face, thumb_text, thumb_emotion, thumb_style, velocity in rows:
+        vel  = float(velocity or 0)
+        key  = "face" if thumb_face else "no_face"
+        face_vels[key].append(vel)
+
+        if thumb_emotion:
+            emotion_vels.setdefault(thumb_emotion, []).append(vel)
+        if thumb_style:
+            style_vels.setdefault(thumb_style, []).append(vel)
+
+        # Combo: face+text+emotion
+        combo = f"{'face' if thumb_face else 'no_face'}+{'text' if thumb_text else 'no_text'}+{thumb_emotion or 'unknown'}"
+        combo_vels.setdefault(combo, []).append(vel)
+
+    def _avg(lst: list) -> float:
+        return round(sum(lst) / len(lst), 2) if lst else 0.0
+
+    emotion_table = [
+        {"emotion": e, "avg_velocity": _avg(v), "count": len(v)}
+        for e, v in emotion_vels.items()
+    ]
+    emotion_table.sort(key=lambda x: x["avg_velocity"], reverse=True)
+
+    combo_table = [
+        {"combo": c, "avg_velocity": _avg(v), "count": len(v)}
+        for c, v in combo_vels.items()
+    ]
+    combo_table.sort(key=lambda x: x["avg_velocity"], reverse=True)
+
+    # Parse combo string "face+text+emotion" → structured dict for frontend
+    def _parse_combo(c: dict) -> dict:
+        parts = c["combo"].split("+")
+        has_face = parts[0] == "face" if parts else False
+        has_text = parts[1] == "text" if len(parts) > 1 else False
+        emotion  = parts[2] if len(parts) > 2 else None
+        return {
+            "face":          has_face,
+            "text":          has_text,
+            "emotion":       emotion,
+            "avg_velocity":  c["avg_velocity"],
+            "count":         c["count"],
+        }
+
+    return {
+        "face_vs_no_face": {
+            "face_avg_velocity":    _avg(face_vels["face"]),
+            "no_face_avg_velocity": _avg(face_vels["no_face"]),
+            "face":                 len(face_vels["face"]),
+            "no_face":              len(face_vels["no_face"]),
+        },
+        "emotion_breakdown": emotion_table,
+        "top_combos":        [_parse_combo(c) for c in combo_table[:10]],
+        "has_data":          True,
+    }
+
+
+@app.get("/youtube/competitor-intel/rhythm")
+async def yt_ci_rhythm(request: Request, workspace_id: str = None):
+    """Layer 6 + 8: Publishing cadence + pre-breakout momentum windows."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    import statistics as _stat
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Channel cadence profiles
+            cur.execute(
+                """
+                SELECT p.channel_id, cc.channel_title,
+                       p.cadence_pattern, p.median_gap_days, p.breakout_rate, p.risk_profile
+                FROM yt_channel_profiles p
+                INNER JOIN yt_competitor_channels cc
+                    ON cc.workspace_id = p.workspace_id AND cc.channel_id = p.channel_id
+                WHERE p.workspace_id = %s
+                ORDER BY p.breakout_rate DESC
+                """,
+                (workspace_id,),
+            )
+            profiles = cur.fetchall()
+
+            # Pre-breakout cadence: for each breakout video, get gap of 3 prior uploads
+            cur.execute(
+                """
+                SELECT v.channel_id, v.published_at, f.is_breakout, f.upload_gap_days
+                FROM yt_competitor_videos v
+                JOIN yt_video_features f ON f.video_id = v.video_id
+                WHERE v.workspace_id = %s
+                ORDER BY v.channel_id, v.published_at ASC
+                """,
+                (workspace_id,),
+            )
+            vid_rows = cur.fetchall()
+
+    # Group by channel to find pre-breakout gaps
+    from collections import defaultdict
+    ch_vids: dict = defaultdict(list)
+    for ch, pub_at, is_brk, gap in vid_rows:
+        ch_vids[ch].append((pub_at, bool(is_brk), float(gap) if gap else None))
+
+    pre_breakout_gaps: list[float] = []
+    for ch, vids in ch_vids.items():
+        for i, (pub_at, is_brk, gap) in enumerate(vids):
+            if is_brk and i >= 3:
+                prior = [vids[j][2] for j in range(max(0, i - 3), i) if vids[j][2] is not None]
+                if prior:
+                    pre_breakout_gaps.append(_stat.median(prior))
+
+    pre_breakout_median = round(_stat.median(pre_breakout_gaps), 1) if pre_breakout_gaps else None
+
+    return {
+        "channels": [
+            {
+                "channel_id":       r[0],
+                "title":            r[1] or r[0],
+                "cadence_pattern":  r[2],
+                "median_gap_days":  float(r[3] or 0),
+                "breakout_rate":    float(r[4] or 0),
+                "risk_profile":     r[5],
+            }
+            for r in profiles
+        ],
+        "pre_breakout_median_gap_days": pre_breakout_median,
+        "momentum_window": (
+            f"Breakouts tend to follow ~{pre_breakout_median:.1f}-day upload gaps"
+            if pre_breakout_median else None
+        ),
+        "has_data": len(profiles) > 0,
+    }
+
+
+@app.get("/youtube/competitor-intel/lifecycle")
+async def yt_ci_lifecycle(request: Request, workspace_id: str = None):
+    """Layer 7: Topic lifecycle — evergreen vs trend classification."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT topic_name, shelf_life, half_life_weeks, avg_velocity, cluster_size, channel_id
+                FROM yt_topic_clusters
+                WHERE workspace_id = %s AND shelf_life IS NOT NULL
+                ORDER BY avg_velocity DESC
+                """,
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+
+    def _to_dict(r) -> dict:
+        return {
+            "topic_name":       r[0],
+            "shelf_life":       r[1],
+            "half_life_weeks":  r[2],
+            "avg_velocity":     float(r[3] or 0),
+            "cluster_size":     r[4],
+            "channel_id":       r[5],
+        }
+
+    evergreen = [_to_dict(r) for r in rows if r[1] == "evergreen"]
+    trend     = [_to_dict(r) for r in rows if r[1] == "trend"]
+
+    return {
+        "evergreen_topics":  evergreen,
+        "trend_topics":      trend,
+        "topic_shelf_lives": [_to_dict(r) for r in rows],
+        "has_data":          len(rows) > 0,
+    }
+
+
+@app.get("/youtube/competitor-intel/channels")
+async def yt_ci_channels(request: Request, workspace_id: str = None):
+    """Layer 8: Channel risk profiles — velocity distributions and cadence."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT p.channel_id, cc.channel_title, cc.subscriber_count,
+                       p.median_velocity, p.p75_velocity, p.p90_velocity,
+                       p.iqr, p.std_velocity,
+                       p.hit_rate, p.underperform_rate, p.breakout_rate,
+                       p.risk_profile, p.cadence_pattern, p.median_gap_days
+                FROM yt_channel_profiles p
+                INNER JOIN yt_competitor_channels cc
+                    ON cc.workspace_id = p.workspace_id AND cc.channel_id = p.channel_id
+                WHERE p.workspace_id = %s
+                ORDER BY p.p90_velocity DESC
+                """,
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+
+    return {
+        "channels": [
+            {
+                "channel_id":       r[0],
+                "title":            r[1] or r[0],
+                "subscriber_count": r[2],
+                "median_velocity":  float(r[3] or 0),
+                "p75_velocity":     float(r[4] or 0),
+                "p90_velocity":     float(r[5] or 0),
+                "iqr":              float(r[6] or 0),
+                "std_velocity":     float(r[7] or 0),
+                "hit_rate":         float(r[8] or 0),
+                "underperform_rate": float(r[9] or 0),
+                "breakout_rate":    float(r[10] or 0),
+                "risk_profile":     r[11],
+                "cadence_pattern":  r[12],
+                "median_gap_days":  float(r[13] or 0),
+            }
+            for r in rows
+        ],
+        "has_data": len(rows) > 0,
+    }
+
+
+@app.get("/youtube/competitor-intel/breakout-recipe")
+async def yt_ci_breakout_recipe(request: Request, workspace_id: str = None):
+    """Layer 9: Breakout recipe — ML feature importances + Claude Sonnet playbook."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT playbook_text, top_features, p90_threshold, breakout_count, trained_at
+                FROM yt_breakout_recipe
+                WHERE workspace_id = %s
+                """,
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return {"has_data": False}
+
+    return {
+        "has_data":       True,
+        "playbook_text":  row[0],
+        "top_features":   row[1] if isinstance(row[1], dict) else {},
+        "p90_threshold":  float(row[2] or 0),
+        "breakout_count": row[3],
+        "trained_at":     row[4].isoformat() if row[4] else None,
+    }
+
+
+# ── Own-channel comparison + Growth Recipe ───────────────────────────────────
+
+@app.get("/youtube/competitor-intel/own-analysis")
+async def yt_ci_own_analysis(request: Request, workspace_id: str = None):
+    """Own-channel snapshot: velocities, formats, gaps vs competitors."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        # Own channel videos
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT video_id, title, views, velocity, engagement_rate,
+                       format_label, title_patterns, thumb_face, thumb_emotion,
+                       thumb_text, is_short, published_at
+                FROM yt_own_channel_snapshot
+                WHERE workspace_id = %s
+                ORDER BY velocity DESC
+                """,
+                (workspace_id,),
+            )
+            own_rows = cur.fetchall()
+
+        if not own_rows:
+            # Check if we have a "not enough" record
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT own_video_count FROM yt_growth_recipe WHERE workspace_id = %s",
+                    (workspace_id,),
+                )
+                nr = cur.fetchone()
+            count = nr[0] if nr else 0
+            return {
+                "has_data": False,
+                "not_enough_videos": True,
+                "video_count": count,
+                "message": f"Only {count} video{'s' if count != 1 else ''} found on your channel. Post at least 5 videos to unlock My Channel analysis.",
+            }
+
+        # Competitor percentiles
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY f.velocity),
+                    PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY f.velocity),
+                    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY f.velocity),
+                    PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY f.velocity)
+                FROM yt_video_features f
+                JOIN yt_competitor_videos v ON v.video_id = f.video_id
+                JOIN yt_competitor_channels cc
+                    ON cc.workspace_id = v.workspace_id AND cc.channel_id = v.channel_id
+                WHERE f.workspace_id = %s
+                """,
+                (workspace_id,),
+            )
+            prow = cur.fetchone()
+        comp_p25 = float(prow[0] or 0) if prow else 0
+        comp_p50 = float(prow[1] or 0) if prow else 0
+        comp_p75 = float(prow[2] or 0) if prow else 0
+        comp_p90 = float(prow[3] or 0) if prow else 0
+
+        own_velocities = [float(r[3] or 0) for r in own_rows]
+        own_avg_vel    = sum(own_velocities) / len(own_velocities) if own_velocities else 0
+
+        from services.agent_swarm.core.yt_intelligence import _compute_percentile
+        own_percentile = _compute_percentile(own_avg_vel, comp_p25, comp_p50, comp_p75, comp_p90)
+
+        videos = [
+            {
+                "video_id":        r[0],
+                "title":           r[1],
+                "views":           r[2],
+                "velocity":        float(r[3] or 0),
+                "engagement_rate": float(r[4] or 0),
+                "format_label":    r[5],
+                "title_patterns":  r[6] if isinstance(r[6], list) else [],
+                "thumb_face":      r[7],
+                "thumb_emotion":   r[8],
+                "thumb_text":      r[9],
+                "is_short":        r[10],
+                "published_at":    r[11].isoformat() if r[11] else None,
+            }
+            for r in own_rows
+        ]
+
+    return {
+        "has_data":              True,
+        "video_count":           len(videos),
+        "own_avg_velocity":      round(own_avg_vel, 2),
+        "own_velocity_percentile": round(min(own_percentile, 99), 1),
+        "comp_p25":              round(comp_p25, 2),
+        "comp_p50":              round(comp_p50, 2),
+        "comp_p75":              round(comp_p75, 2),
+        "comp_p90":              round(comp_p90, 2),
+        "videos":                videos,
+    }
+
+
+@app.get("/youtube/competitor-intel/growth-recipe-v2")
+async def yt_ci_growth_recipe_v2(request: Request, workspace_id: str = None):
+    """Workspace-type-aware 15-day + 30-day growth recipe from yt_growth_recipe."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    SELECT own_video_count, own_velocity_avg, own_velocity_percentile,
+                           content_gaps, plan_15d, plan_30d, thumbnail_brief,
+                           hooks_library, emerging_topics, generated_at, recipe_text
+                    FROM yt_growth_recipe
+                    WHERE workspace_id = %s
+                    """,
+                    (workspace_id,),
+                )
+                row = cur.fetchone()
+                has_recipe_text = True
+            except Exception:
+                conn.rollback()
+                cur.execute(
+                    """
+                    SELECT own_video_count, own_velocity_avg, own_velocity_percentile,
+                           content_gaps, plan_15d, plan_30d, thumbnail_brief,
+                           hooks_library, emerging_topics, generated_at
+                    FROM yt_growth_recipe
+                    WHERE workspace_id = %s
+                    """,
+                    (workspace_id,),
+                )
+                row = cur.fetchone()
+                has_recipe_text = False
+
+        if not row:
+            return {"has_data": False}
+
+        # Also fetch workspace_type
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    "SELECT workspace_type FROM workspaces WHERE id = %s",
+                    (workspace_id,),
+                )
+                wt = cur.fetchone()
+                workspace_type = (wt[0] or "d2c") if wt else "d2c"
+            except Exception:
+                conn.rollback()
+                workspace_type = "d2c"
+
+    recipe_text_val = row[10] if has_recipe_text else None
+
+    # If plan_15d is None/empty → not enough videos yet
+    if not row[4] and not recipe_text_val:
+        return {
+            "has_data":     True,
+            "not_enough_videos": True,
+            "video_count":  row[0],
+            "message":      f"Only {row[0]} video{'s' if row[0] != 1 else ''} found. Post at least 5 videos to unlock your Growth Recipe.",
+            "workspace_type": workspace_type,
+        }
+
+    return {
+        "has_data":                True,
+        "workspace_type":          workspace_type,
+        "own_video_count":         row[0],
+        "own_velocity_avg":        float(row[1] or 0),
+        "own_velocity_percentile": float(row[2] or 0),
+        "content_gaps":            row[3] if isinstance(row[3], dict) else {},
+        "plan_15d":                row[4],
+        "plan_30d":                row[5],
+        "thumbnail_brief":         row[6],
+        "hooks_library":           row[7],
+        "emerging_topics":         row[8],
+        "generated_at":            row[9].isoformat() if row[9] else None,
+        "recipe_text":             recipe_text_val,   # full Claude response as fallback
+    }
+
+
+@app.patch("/workspace/type")
+async def update_workspace_type(request: Request):
+    """Set workspace_type for a workspace (d2c | creator | saas | agency | media)."""
+    _auth(request)
+    body          = await request.json()
+    workspace_id  = body.get("workspace_id", "")
+    workspace_type = body.get("workspace_type", "")
+
+    VALID_TYPES = {"d2c", "creator", "saas", "agency", "media"}
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    if workspace_type not in VALID_TYPES:
+        raise HTTPException(status_code=400, detail=f"workspace_type must be one of: {', '.join(sorted(VALID_TYPES))}")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    "UPDATE workspaces SET workspace_type = %s WHERE id = %s",
+                    (workspace_type, workspace_id),
+                )
+            except Exception:
+                conn.rollback()
+                raise HTTPException(status_code=500, detail="workspace_type column not found — run /admin/migrate first")
+        conn.commit()
+
+    return {"ok": True, "workspace_type": workspace_type}
+
+
+@app.patch("/workspace/complete-onboarding")
+async def complete_onboarding(request: Request):
+    """Mark onboarding complete and save workspace_type + channel preferences."""
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    workspace_type = body.get("workspace_type", "d2c")
+    onboarding_channels = body.get("onboarding_channels", [])
+
+    VALID_TYPES = {"d2c", "creator", "saas", "agency", "media"}
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    if workspace_type not in VALID_TYPES:
+        workspace_type = "d2c"
+
+    import json as _json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE workspaces
+                   SET onboarding_complete = TRUE,
+                       workspace_type = %s,
+                       onboarding_channels = %s
+                   WHERE id = %s""",
+                (workspace_type, _json.dumps(onboarding_channels), workspace_id),
+            )
+        conn.commit()
+
+    return {"ok": True, "workspace_type": workspace_type}
+
+
+@app.post("/youtube/competitor-intel/regenerate-recipe")
+async def yt_ci_regenerate_recipe(request: Request, background_tasks: BackgroundTasks):
+    """Re-generate growth recipe from existing intel (no full re-analysis needed).
+
+    Useful when: user changes workspace_type, or wants a fresh recipe plan.
+    Runs in background and returns immediately.
+    """
+    _auth(request)
+    body         = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    # Deduct credits before re-generation
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_and_deduct_credits(conn, org_id, workspace_id,
+                                  FEATURE_COSTS["growth_recipe_regen"], "growth_recipe_regen")
+
+    async def _regen():
+        from services.agent_swarm.db import get_conn as _gc
+        from services.agent_swarm.core.yt_intelligence import generate_growth_recipe as _gen
+        try:
+            with _gc() as conn:
+                with conn.cursor() as cur:
+                    try:
+                        cur.execute(
+                            "SELECT workspace_type FROM workspaces WHERE id = %s",
+                            (workspace_id,),
+                        )
+                        wt = cur.fetchone()
+                        workspace_type = (wt[0] or "d2c") if wt else "d2c"
+                    except Exception:
+                        conn.rollback()
+                        workspace_type = "d2c"
+                _gen(workspace_id, workspace_type, conn)
+        except Exception as e:
+            print(f"[yt_intel] regenerate_recipe error: {e}")
+
+    background_tasks.add_task(_regen)
+    return {"ok": True, "message": "Growth recipe regeneration started — refresh in ~1 minute."}
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Meta Ad Library — competitor ad intelligence                                 ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@app.post("/meta/ad-library/sync")
+async def meta_ad_library_sync(request: Request):
+    """Sync competitor ads from Meta Ad Library. Returns result directly."""
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    from services.agent_swarm.db import get_conn
+    from services.agent_swarm.connectors.meta_ad_library import sync_workspace_ads
+    with get_conn() as conn:
+        result = sync_workspace_ads(workspace_id, conn)
+    return result
+
+
+@app.get("/meta/ad-library/ads")
+async def meta_ad_library_get(workspace_id: str = ""):
+    """Return stored competitor ads for a workspace."""
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    from services.agent_swarm.db import get_conn
+    from services.agent_swarm.connectors.meta_ad_library import get_competitor_ads
+    with get_conn() as conn:
+        return get_competitor_ads(workspace_id, conn)
+
+
+@app.get("/meta/competitor-pages")
+async def meta_competitor_pages_list(workspace_id: str = ""):
+    """List manually-added competitor page names for Meta Ad Library."""
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT page_name, added_at FROM meta_competitor_pages "
+                "WHERE workspace_id=%s ORDER BY added_at ASC",
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+    return {"pages": [{"page_name": r[0], "added_at": r[1].isoformat()} for r in rows]}
+
+
+@app.post("/meta/competitor-pages")
+async def meta_competitor_pages_add(request: Request):
+    """Add a competitor page name for Meta Ad Library monitoring."""
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    page_name = (body.get("page_name") or "").strip()
+    if not workspace_id or not page_name:
+        raise HTTPException(status_code=400, detail="workspace_id and page_name required")
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO meta_competitor_pages (workspace_id, page_name) "
+                "VALUES (%s, %s) ON CONFLICT (workspace_id, page_name) DO NOTHING",
+                (workspace_id, page_name),
+            )
+        conn.commit()
+    return {"status": "ok", "page_name": page_name}
+
+
+@app.delete("/meta/competitor-pages")
+async def meta_competitor_pages_delete(request: Request):
+    """Remove a competitor page name."""
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    page_name = (body.get("page_name") or "").strip()
+    if not workspace_id or not page_name:
+        raise HTTPException(status_code=400, detail="workspace_id and page_name required")
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM meta_competitor_pages WHERE workspace_id=%s AND page_name=%s",
+                (workspace_id, page_name),
+            )
+        conn.commit()
+    return {"status": "ok"}
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Growth OS — Unified Command Center                                           ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@app.post("/growth-os/generate")
+async def growth_os_generate(request: Request, background_tasks: BackgroundTasks):
+    """Trigger async Growth OS plan generation for a workspace.
+
+    Body: { "workspace_id": "..." }
+    Returns immediately with plan_id; poll /growth-os/latest for result.
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = (body.get("workspace_id") or "").strip()
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    # Deduct credits before generating AI plan
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_and_deduct_credits(conn, org_id, workspace_id,
+                                  FEATURE_COSTS["growth_os"], "growth_os")
+
+    import uuid as _uuid
+
+    plan_id = str(_uuid.uuid4())
+
+    async def _gen():
+        from services.agent_swarm.db import get_conn as _gc
+        from services.agent_swarm.core.growth_os import generate_action_plan as _gen_plan
+        try:
+            with _gc() as conn:
+                _gen_plan(workspace_id, conn)
+        except Exception as e:
+            print(f"[growth_os] background generate error: {e}")
+
+    background_tasks.add_task(_gen)
+    return {"ok": True, "plan_id": plan_id, "status": "generating"}
+
+
+@app.get("/growth-os/latest")
+async def growth_os_latest(request: Request, workspace_id: str = None):
+    """Return the latest Growth OS plan for a workspace.
+
+    Query param: workspace_id
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    from services.agent_swarm.db import get_conn as _gc
+    import json as _json
+
+    with _gc() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, generated_at, plan_json, sources_used
+                FROM growth_os_plans
+                WHERE workspace_id = %s
+                ORDER BY generated_at DESC
+                LIMIT 1
+                """,
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return {"plan_id": None, "generated_at": None, "actions": [], "sources_used": {}}
+
+    plan_json = row[2] if isinstance(row[2], dict) else _json.loads(row[2] or "{}")
+    sources_used = row[3] if isinstance(row[3], dict) else _json.loads(row[3] or "{}")
+
+    return {
+        "plan_id": str(row[0]),
+        "generated_at": row[1].isoformat() if row[1] else None,
+        "actions": plan_json.get("actions", []),
+        "sources_used": sources_used,
+    }
+
+
+@app.post("/growth-os/send-to-approvals")
+async def growth_os_send_to_approvals(request: Request):
+    """Save selected Growth OS actions to the approvals queue.
+
+    Body: { "workspace_id": "...", "actions": [...] }
+    Returns list of created action_log ids.
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = (body.get("workspace_id") or "").strip()
+    actions = body.get("actions") or []
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    if not isinstance(actions, list):
+        raise HTTPException(status_code=400, detail="actions must be a list")
+
+    from services.agent_swarm.db import get_conn as _gc
+    from services.agent_swarm.core.growth_os import send_action_to_approvals as _send
+
+    created_ids = []
+    with _gc() as conn:
+        for action in actions:
+            aid = _send(workspace_id, action, conn)
+            if aid:
+                created_ids.append(aid)
+
+    return {"ok": True, "created_count": len(created_ids), "action_ids": created_ids}
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Admin — Data Management                                                     ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@app.post("/admin/clear-yt-data")
+async def admin_clear_yt_data(request: Request):
+    """Delete ALL YouTube Competitor Intelligence data for a workspace (all 9-layer tables).
+
+    Use this to reset for fresh testing.
+    Protected by X-Admin-Token header.
+    Body: { "workspace_id": "..." }
+    """
+    _admin_auth(request)
+    body         = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    tables = [
+        "yt_ai_features",
+        "yt_video_features",
+        "yt_topic_clusters",
+        "yt_competitor_videos",
+        "yt_channel_profiles",
+        "yt_breakout_recipe",
+        "yt_own_channel_snapshot",
+        "yt_growth_recipe",
+        "yt_competitor_channels",
+        "yt_analysis_jobs",
+    ]
+
+    deleted: dict[str, int] = {}
+    with get_conn() as conn:
+        for table in tables:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(f"DELETE FROM {table} WHERE workspace_id = %s", (workspace_id,))
+                    deleted[table] = cur.rowcount
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                deleted[table] = -1
+                print(f"[admin] clear-yt-data: {table} error: {e}")
+
+    return {"ok": True, "workspace_id": workspace_id, "deleted": deleted}
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Billing — Credit System                                                      ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@app.get("/billing/status")
+async def billing_status(request: Request, workspace_id: str = None):
+    """Return org plan, credit balance, and recent ledger entries for a workspace."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        with conn.cursor() as cur:
+            # Plan + credits from organizations
+            cur.execute(
+                "SELECT plan, credit_balance FROM organizations WHERE id = %s",
+                (org_id,),
+            )
+            org_row = cur.fetchone()
+            if not org_row:
+                raise HTTPException(status_code=404, detail="Organization not found")
+            plan, credit_balance = org_row[0], org_row[1]
+
+            # Active subscription info
+            cur.execute(
+                """SELECT status, trial_ends_at, current_period_end
+                   FROM subscriptions WHERE org_id = %s
+                   ORDER BY created_at DESC LIMIT 1""",
+                (org_id,),
+            )
+            sub = cur.fetchone()
+
+            # Recent ledger (last 20 entries)
+            try:
+                cur.execute(
+                    """SELECT amount, balance_after, type, feature, description, created_at
+                       FROM credit_ledger WHERE org_id = %s
+                       ORDER BY created_at DESC LIMIT 20""",
+                    (org_id,),
+                )
+                ledger_rows = cur.fetchall()
+                ledger = [
+                    {
+                        "amount": r[0], "balance_after": r[1], "type": r[2],
+                        "feature": r[3], "description": r[4],
+                        "created_at": r[5].isoformat() if r[5] else None,
+                    }
+                    for r in ledger_rows
+                ]
+            except Exception:
+                ledger = []
+
+    return {
+        "plan": plan,
+        "credit_balance": credit_balance,
+        "subscription_status": sub[0] if sub else None,
+        "trial_ends_at": sub[1].isoformat() if sub and sub[1] else None,
+        "current_period_end": sub[2].isoformat() if sub and sub[2] else None,
+        "recent_ledger": ledger,
+        "credit_packs": CREDIT_PACKS,
+        "feature_costs": FEATURE_COSTS,
+        "plan_monthly_credits": PLAN_MONTHLY_CREDITS,
+    }
+
+
+@app.post("/billing/topup")
+async def billing_topup(request: Request):
+    """Create a Razorpay order for a credit top-up pack.
+    Body: {workspace_id, pack: "100"|"250"|"600"}
+    Returns Razorpay order details for frontend checkout.
+    If RAZORPAY_KEY_ID is not set, returns a stub order for testing.
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    pack_key     = str(body.get("pack", "100"))
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    if pack_key not in CREDIT_PACKS:
+        raise HTTPException(status_code=400, detail=f"Invalid pack. Choose: {list(CREDIT_PACKS.keys())}")
+
+    pack = CREDIT_PACKS[pack_key]
+    import json as _json
+    from services.agent_swarm.config import RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET
+
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+
+        if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET:
+            import httpx as _httpx
+            import base64 as _b64
+            auth = _b64.b64encode(f"{RAZORPAY_KEY_ID}:{RAZORPAY_KEY_SECRET}".encode()).decode()
+            resp = _httpx.post(
+                "https://api.razorpay.com/v1/orders",
+                headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"},
+                json={"amount": pack["amount_paise"], "currency": "INR", "receipt": f"topup_{workspace_id[:8]}"},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                raise HTTPException(status_code=502, detail=f"Razorpay error: {resp.text}")
+            rzp_order = resp.json()
+            rzp_order_id = rzp_order["id"]
+        else:
+            # Stub for testing without Razorpay credentials
+            import uuid as _uuid
+            rzp_order_id = f"stub_order_{_uuid.uuid4().hex[:12]}"
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO billing_orders
+                   (org_id, razorpay_order_id, type, credits, amount_paise, status)
+                   VALUES (%s, %s, 'topup', %s, %s, 'pending')""",
+                (org_id, rzp_order_id, pack["credits"], pack["amount_paise"]),
+            )
+        conn.commit()
+
+    return {
+        "order_id": rzp_order_id,
+        "amount_paise": pack["amount_paise"],
+        "credits": pack["credits"],
+        "razorpay_key_id": RAZORPAY_KEY_ID or "TEST_MODE",
+        "currency": "INR",
+    }
+
+
+@app.post("/billing/topup-confirm")
+async def billing_topup_confirm(request: Request):
+    """Verify Razorpay payment and grant credits.
+    Body: {workspace_id, razorpay_order_id, razorpay_payment_id, razorpay_signature}
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id        = body.get("workspace_id", "")
+    razorpay_order_id   = body.get("razorpay_order_id", "")
+    razorpay_payment_id = body.get("razorpay_payment_id", "")
+    razorpay_signature  = body.get("razorpay_signature", "")
+    if not workspace_id or not razorpay_order_id:
+        raise HTTPException(status_code=400, detail="workspace_id and razorpay_order_id required")
+
+    import hmac as _hmac, hashlib as _hs
+    from services.agent_swarm.config import RAZORPAY_KEY_SECRET
+
+    # Verify signature (skip for stub orders in test mode)
+    if RAZORPAY_KEY_SECRET and not razorpay_order_id.startswith("stub_"):
+        expected = _hmac.new(
+            RAZORPAY_KEY_SECRET.encode(), f"{razorpay_order_id}|{razorpay_payment_id}".encode(), _hs.sha256
+        ).hexdigest()
+        if not _hmac.compare_digest(expected, razorpay_signature):
+            raise HTTPException(status_code=400, detail="Invalid payment signature")
+
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT credits, status FROM billing_orders WHERE razorpay_order_id = %s AND org_id = %s",
+                (razorpay_order_id, org_id),
+            )
+            order = cur.fetchone()
+            if not order:
+                raise HTTPException(status_code=404, detail="Order not found")
+            if order[1] == "paid":
+                # Already processed (idempotent)
+                cur.execute("SELECT credit_balance FROM organizations WHERE id = %s", (org_id,))
+                bal = cur.fetchone()
+                return {"ok": True, "new_balance": bal[0] if bal else 0, "already_processed": True}
+            credits_to_add = order[0]
+            cur.execute(
+                "UPDATE billing_orders SET status='paid', razorpay_payment_id=%s, updated_at=NOW() WHERE razorpay_order_id=%s",
+                (razorpay_payment_id, razorpay_order_id),
+            )
+        conn.commit()
+        new_balance = _grant_credits(conn, org_id, workspace_id, credits_to_add, "topup",
+                                     razorpay_payment_id=razorpay_payment_id,
+                                     description=f"Top-up: {credits_to_add} credits via Razorpay")
+
+    return {"ok": True, "credits_added": credits_to_add, "new_balance": new_balance}
+
+
+@app.post("/billing/webhook")
+async def billing_webhook(request: Request):
+    """Razorpay webhook handler. Handles payment.captured event.
+    Verifies X-Razorpay-Signature header.
+    """
+    import hmac as _hmac, hashlib as _hs, json as _json
+    from services.agent_swarm.config import RAZORPAY_WEBHOOK_SECRET
+
+    body_bytes = await request.body()
+    sig = request.headers.get("X-Razorpay-Signature", "")
+
+    if RAZORPAY_WEBHOOK_SECRET and sig:
+        expected = _hmac.new(RAZORPAY_WEBHOOK_SECRET.encode(), body_bytes, _hs.sha256).hexdigest()
+        if not _hmac.compare_digest(expected, sig):
+            raise HTTPException(status_code=400, detail="Invalid webhook signature")
+
+    try:
+        event = _json.loads(body_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    if event.get("event") != "payment.captured":
+        return {"ok": True, "skipped": True}
+
+    payment = event.get("payload", {}).get("payment", {}).get("entity", {})
+    rzp_payment_id = payment.get("id", "")
+    rzp_order_id   = payment.get("order_id", "")
+    if not rzp_order_id:
+        return {"ok": True, "skipped": True}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, org_id, credits, status FROM billing_orders WHERE razorpay_order_id = %s",
+                (rzp_order_id,),
+            )
+            order = cur.fetchone()
+        if not order or order[3] == "paid":
+            return {"ok": True, "skipped": True, "reason": "not_found_or_already_paid"}
+        _, org_id, credits_to_add, _ = order
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE billing_orders SET status='paid', razorpay_payment_id=%s, updated_at=NOW() WHERE razorpay_order_id=%s",
+                (rzp_payment_id, rzp_order_id),
+            )
+        conn.commit()
+        _grant_credits(conn, str(org_id), None, credits_to_add, "topup",
+                       razorpay_payment_id=rzp_payment_id,
+                       description=f"Top-up: {credits_to_add} credits via Razorpay webhook")
+
+    return {"ok": True, "credits_added": credits_to_add}
+
+
+@app.post("/billing/upgrade")
+async def billing_upgrade(request: Request):
+    """Return Razorpay payment link (or stub URL) for a plan upgrade.
+    Body: {workspace_id, plan: "starter"|"growth"|"agency", period: "monthly"|"yearly"}
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    plan   = body.get("plan", "starter")
+    period = body.get("period", "monthly")
+
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    if plan not in VALID_PLANS or plan == "free":
+        raise HTTPException(status_code=400, detail="plan must be starter|growth|agency")
+
+    prices = PLAN_PRICES_YEARLY if period == "yearly" else PLAN_PRICES_MONTHLY
+    amount_paise = prices.get(plan, 199900)
+
+    from services.agent_swarm.config import RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET
+    if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET:
+        import httpx as _httpx, base64 as _b64
+        auth = _b64.b64encode(f"{RAZORPAY_KEY_ID}:{RAZORPAY_KEY_SECRET}".encode()).decode()
+        resp = _httpx.post(
+            "https://api.razorpay.com/v1/payment_links",
+            headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"},
+            json={
+                "amount": amount_paise, "currency": "INR",
+                "description": f"Runway Studios {plan.title()} Plan ({period})",
+                "callback_url": "https://app.runwaystudios.co/billing?upgraded=1",
+                "callback_method": "get",
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return {"payment_url": resp.json().get("short_url", ""), "plan": plan, "period": period}
+    # Stub response when Razorpay not configured
+    return {
+        "payment_url": "https://razorpay.com",
+        "plan": plan,
+        "period": period,
+        "stub": True,
+        "message": "Set RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET to enable payments",
+    }
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Admin — Client Dashboard                                                     ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@app.get("/admin/billing-dashboard")
+async def admin_billing_dashboard(request: Request):
+    """Super-admin view: all orgs with plan, credits, workspace count, last active.
+    Protected by X-Admin-Token header.
+    """
+    _admin_auth(request)
+    import json as _json
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    o.id,
+                    o.name,
+                    o.plan,
+                    o.credit_balance,
+                    o.clerk_user_id,
+                    COUNT(DISTINCT w.id) AS workspace_count,
+                    MAX(cl.created_at) AS last_credit_activity,
+                    s.status AS subscription_status,
+                    s.current_period_end
+                FROM organizations o
+                LEFT JOIN workspaces w ON w.org_id = o.id AND w.active = TRUE
+                LEFT JOIN credit_ledger cl ON cl.org_id = o.id
+                LEFT JOIN subscriptions s ON s.org_id = o.id
+                GROUP BY o.id, o.name, o.plan, o.credit_balance, o.clerk_user_id, s.status, s.current_period_end
+                ORDER BY o.created_at DESC
+                """,
+            )
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+            orgs = [dict(zip(cols, r)) for r in rows]
+
+        # Convert non-serializable types
+        for org in orgs:
+            for k, v in org.items():
+                if hasattr(v, "isoformat"):
+                    org[k] = v.isoformat()
+
+        # Summary stats
+        total_orgs    = len(orgs)
+        paying_orgs   = sum(1 for o in orgs if o.get("plan") != "free")
+        total_credits = sum(o.get("credit_balance", 0) for o in orgs)
+        mrr_estimate  = sum(
+            PLAN_PRICES_MONTHLY.get(o.get("plan", "free"), 0) // 100
+            for o in orgs
+            if o.get("subscription_status") in ("active", "trialing")
+        )
+
+    return {
+        "orgs": orgs,
+        "summary": {
+            "total_orgs": total_orgs,
+            "paying_orgs": paying_orgs,
+            "total_credits_outstanding": total_credits,
+            "mrr_estimate_inr": mrr_estimate,
+        },
+    }
+
+
+@app.post("/admin/add-credits")
+async def admin_add_credits(request: Request):
+    """Manually add credits to an organization.
+    Body: {org_id, amount, reason}
+    Protected by X-Admin-Token header.
+    """
+    _admin_auth(request)
+    body   = await request.json()
+    org_id = body.get("org_id", "")
+    amount = int(body.get("amount", 0))
+    reason = body.get("reason", "Admin grant")
+    if not org_id or amount <= 0:
+        raise HTTPException(status_code=400, detail="org_id and positive amount required")
+
+    with get_conn() as conn:
+        new_balance = _grant_credits(conn, org_id, None, amount, "admin_grant",
+                                     description=f"Admin: {reason}")
+
+    return {"ok": True, "org_id": org_id, "credits_added": amount, "new_balance": new_balance}
+
+
+@app.post("/admin/set-plan")
+async def admin_set_plan(request: Request):
+    """Change an org's plan tier and optionally grant the monthly credit allocation.
+    Body: {org_id, plan, grant_monthly_credits: true|false}
+    Protected by X-Admin-Token header.
+    """
+    _admin_auth(request)
+    body  = await request.json()
+    org_id = body.get("org_id", "")
+    plan   = body.get("plan", "free")
+    grant  = body.get("grant_monthly_credits", True)
+    if not org_id:
+        raise HTTPException(status_code=400, detail="org_id required")
+    if plan not in VALID_PLANS:
+        raise HTTPException(status_code=400, detail=f"plan must be one of {VALID_PLANS}")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE organizations SET plan = %s WHERE id = %s", (plan, org_id))
+        conn.commit()
+        credits_granted = 0
+        if grant and PLAN_MONTHLY_CREDITS.get(plan, 0) > 0:
+            credits_granted = PLAN_MONTHLY_CREDITS[plan]
+            _grant_credits(conn, org_id, None, credits_granted, "admin_grant",
+                           description=f"Plan set to {plan} — monthly credit allocation")
+
+    return {"ok": True, "org_id": org_id, "plan": plan, "credits_granted": credits_granted}
+
+
+@app.post("/admin/claim-org")
+async def admin_claim_org(request: Request):
+    """Link a Clerk user ID to an existing org (for legacy migration).
+    Body: {org_id, clerk_user_id}
+    Protected by X-Admin-Token header.
+    """
+    _admin_auth(request)
+    body          = await request.json()
+    org_id        = body.get("org_id", "")
+    clerk_user_id = body.get("clerk_user_id", "")
+    if not org_id or not clerk_user_id:
+        raise HTTPException(status_code=400, detail="org_id and clerk_user_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE organizations SET clerk_user_id = %s WHERE id = %s",
+                (clerk_user_id, org_id),
+            )
+        conn.commit()
+
+    return {"ok": True, "org_id": org_id, "clerk_user_id": clerk_user_id}
+
+
+@app.post("/cron/billing/monthly-credits")
+async def cron_billing_monthly_credits(request: Request):
+    """Add monthly plan credits to all orgs on paid plans.
+    Idempotent — checks credit_ledger for current month before adding.
+    Protected by X-Cron-Token header.
+    """
+    _auth(request)
+    import json as _json
+    from datetime import datetime as _dt
+
+    results = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, plan FROM organizations WHERE plan != 'free' AND plan IS NOT NULL"
+            )
+            orgs = cur.fetchall()
+
+        for org_id, plan in orgs:
+            monthly = PLAN_MONTHLY_CREDITS.get(plan, 0)
+            if monthly <= 0:
+                continue
+            # Idempotent check: has monthly_plan credit been granted this calendar month?
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT COUNT(*) FROM credit_ledger
+                       WHERE org_id = %s AND type = 'monthly_plan'
+                         AND created_at >= date_trunc('month', NOW())""",
+                    (str(org_id),),
+                )
+                already = cur.fetchone()[0]
+            if already > 0:
+                results.append({"org_id": str(org_id), "plan": plan, "skipped": True})
+                continue
+            new_bal = _grant_credits(conn, str(org_id), None, monthly, "monthly_plan",
+                                     description=f"Monthly credits for {plan} plan — {_dt.utcnow().strftime('%B %Y')}")
+            results.append({"org_id": str(org_id), "plan": plan, "credits_added": monthly, "new_balance": new_bal})
+
+    return {"ok": True, "processed": len(results), "results": results}
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Workspace — Self-Serve Creation                                              ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@app.post("/workspace/create")
+async def workspace_create(request: Request):
+    """Self-serve workspace + org creation. Grants 50 free signup credits.
+    Body: {name, store_url?, workspace_type?}
+    Returns: {workspace_id, org_id, credit_balance}
+    """
+    body = await request.json()
+    name           = (body.get("name") or "").strip()
+    store_url      = body.get("store_url", "")
+    workspace_type = body.get("workspace_type", "d2c")
+    clerk_user_id  = (body.get("clerk_user_id") or "").strip() or None
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+
+    import uuid as _uuid, re as _re
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Prevent duplicate org for same Clerk user
+            if clerk_user_id:
+                cur.execute(
+                    "SELECT id FROM organizations WHERE clerk_user_id = %s LIMIT 1",
+                    (clerk_user_id,),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    raise HTTPException(status_code=409, detail="workspace_exists")
+            # Create organization
+            org_id = str(_uuid.uuid4())
+            # Generate a unique slug from name + short id suffix
+            base_slug = _re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-') or 'org'
+            slug = f"{base_slug}-{org_id[:8]}"
+            cur.execute(
+                """INSERT INTO organizations (id, name, slug, plan, credit_balance, clerk_user_id)
+                   VALUES (%s, %s, %s, 'free', 0, %s)""",
+                (org_id, name, slug, clerk_user_id),
+            )
+            # Create workspace linked to org
+            ws_id = str(_uuid.uuid4())
+            cur.execute(
+                """INSERT INTO workspaces (id, org_id, name, store_url, workspace_type, active)
+                   VALUES (%s, %s, %s, %s, %s, TRUE)""",
+                (ws_id, org_id, name, store_url or None, workspace_type),
+            )
+        conn.commit()
+        # Grant 50 signup credits
+        new_balance = _grant_credits(conn, org_id, ws_id, 50, "signup_grant",
+                                     description="Welcome! 50 free credits to explore the platform")
+
+    return {
+        "ok": True,
+        "workspace_id": ws_id,
+        "org_id": org_id,
+        "credit_balance": new_balance,
+        "plan": "free",
     }

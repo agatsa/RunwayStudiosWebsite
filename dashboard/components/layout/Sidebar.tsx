@@ -6,9 +6,12 @@ import { useEffect, useState } from 'react'
 import {
   LayoutDashboard, CheckSquare, Package, Megaphone, BarChart2,
   PlayCircle, Zap, Settings, ShoppingBag, TrendingUp, Crosshair,
-  MessageSquare, ClipboardList, Layout, Layers, Send, Mail, Activity,
+  MessageSquare, ClipboardList, Layout, Layers, Send, Mail,
+  Sparkles, CreditCard,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useWorkspace } from '@/components/layout/WorkspaceProvider'
+import CreditBalance from '@/components/billing/CreditBalance'
 
 interface NavItem {
   label: string
@@ -16,6 +19,7 @@ interface NavItem {
   icon: React.ElementType
   soon?: boolean
   badge?: boolean
+  highlight?: boolean
 }
 
 interface NavSection {
@@ -39,9 +43,14 @@ const navSections: NavSection[] = [
     ],
   },
   {
+    title: 'GROWTH OS',
+    items: [
+      { label: 'Command Center', href: '/growth-os', icon: Sparkles, highlight: true },
+    ],
+  },
+  {
     title: 'INTELLIGENCE',
     items: [
-      { label: 'Analytics',          href: '/analytics',        icon: Activity },
       { label: 'Search Trends',      href: '/search-trends',   icon: TrendingUp },
       { label: 'Competitor Intel',   href: '/competitor-intel', icon: Crosshair },
       { label: 'Comments & Reviews', href: '/comments',        icon: MessageSquare },
@@ -62,17 +71,37 @@ const navSections: NavSection[] = [
       { label: 'Catalog',       href: '/catalog',       icon: Package },
       { label: 'Approvals',     href: '/approvals',     icon: CheckSquare, badge: true },
       { label: 'Email',         href: '/email-intel',   icon: Mail, soon: true },
+      { label: 'Billing',       href: '/billing',       icon: CreditCard },
     ],
   },
 ]
 
 const settingsItem: NavItem = { label: 'Settings', href: '/settings', icon: Settings }
 
+const CHANNEL_ORDER: Record<string, string[]> = {
+  d2c:     ['Meta Ads', 'Google Ads', 'Marketplace', 'YouTube'],
+  creator: ['YouTube', 'Competitor Intel', 'Meta Ads', 'Google Ads', 'Marketplace'],
+  agency:  ['Meta Ads', 'Google Ads', 'YouTube', 'Marketplace'],
+  saas:    ['Meta Ads', 'Google Ads', 'YouTube', 'Marketplace'],
+  media:   ['YouTube', 'Meta Ads', 'Google Ads', 'Marketplace'],
+}
+
+function sortedChannels(items: NavItem[], wsType: string): NavItem[] {
+  const order = CHANNEL_ORDER[wsType] ?? CHANNEL_ORDER['d2c']
+  return [...items].sort((a, b) => {
+    const ai = order.indexOf(a.label)
+    const bi = order.indexOf(b.label)
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
+  })
+}
+
 export default function Sidebar() {
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const wsId = searchParams.get('ws') ?? ''
   const [pendingCount, setPendingCount] = useState<number | null>(null)
+  const { current } = useWorkspace()
+  const wsType = current?.workspace_type ?? 'd2c'
 
   useEffect(() => {
     if (!wsId) return
@@ -99,8 +128,12 @@ export default function Sidebar() {
         href={dest}
         className={cn(
           'flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-          active
+          active && item.highlight
+            ? 'bg-amber-50 text-amber-700'
+            : active
             ? 'bg-brand-50 text-brand-700'
+            : item.highlight
+            ? 'text-amber-600 hover:bg-amber-50 hover:text-amber-700'
             : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900',
         )}
       >
@@ -134,21 +167,69 @@ export default function Sidebar() {
       </div>
 
       <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-4">
-        {navSections.map((section, si) => (
-          <div key={si}>
-            {section.title && (
-              <p className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-widest text-gray-400">
-                {section.title}
-              </p>
-            )}
-            <div className="space-y-0.5">
-              {section.items.map(renderItem)}
+        {navSections.map((section, si) => {
+          const items = section.title === 'CHANNELS'
+            ? sortedChannels(section.items, wsType)
+            : section.items
+          const topLabel = section.title === 'CHANNELS' ? items[0]?.label : null
+          return (
+            <div key={si}>
+              {section.title && (
+                <p className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-widest text-gray-400">
+                  {section.title}
+                </p>
+              )}
+              <div className="space-y-0.5">
+                {items.map(item => {
+                  const isTop = item.label === topLabel
+                  const active = pathname.startsWith(item.href)
+                  const dest = wsId ? `${item.href}?ws=${wsId}` : item.href
+                  const showBadge = item.badge && pendingCount != null && pendingCount > 0
+                  return (
+                    <Link
+                      key={item.href}
+                      href={dest}
+                      className={cn(
+                        'flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                        active && item.highlight
+                          ? 'bg-amber-50 text-amber-700'
+                          : active
+                          ? 'bg-brand-50 text-brand-700'
+                          : item.highlight
+                          ? 'text-amber-600 hover:bg-amber-50 hover:text-amber-700'
+                          : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900',
+                      )}
+                    >
+                      <span className="flex items-center gap-2.5 min-w-0">
+                        <item.icon className="h-4 w-4 shrink-0" />
+                        <span className="truncate">{item.label}</span>
+                        {isTop && !active && (
+                          <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" />
+                        )}
+                      </span>
+                      <span className="flex items-center gap-1 shrink-0">
+                        {item.soon && (
+                          <span className="rounded px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide bg-gray-100 text-gray-400">
+                            Soon
+                          </span>
+                        )}
+                        {showBadge && (
+                          <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white">
+                            {pendingCount}
+                          </span>
+                        )}
+                      </span>
+                    </Link>
+                  )
+                })}
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </nav>
 
       <div className="px-2 pb-2 border-t border-gray-100 pt-2">
+        {wsId && <CreditBalance wsId={wsId} />}
         {renderItem(settingsItem)}
         <p className="mt-2 px-3 text-xs text-gray-400">AI Growth OS v2.0</p>
       </div>

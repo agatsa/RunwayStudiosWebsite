@@ -3,6 +3,8 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import type { Workspace } from '@/lib/types'
+import OnboardingModal from '@/components/onboarding/OnboardingModal'
+import SetupWorkspaceModal from '@/components/onboarding/SetupWorkspaceModal'
 
 interface WorkspaceContextValue {
   workspaces: Workspace[]
@@ -75,6 +77,14 @@ export default function WorkspaceProvider({ children }: { children: React.ReactN
   return (
     <WorkspaceContext.Provider value={{ workspaces, current, setCurrent, loading, refresh: load }}>
       {children}
+      {/* New user — no workspace yet */}
+      {!loading && workspaces.length === 0 && (
+        <SetupWorkspaceModal onCreated={() => load()} />
+      )}
+      {/* Existing workspace needs onboarding */}
+      {!loading && workspaces.length > 0 && current && current.onboarding_complete === false && (
+        <OnboardingModal workspaceId={current.id} onComplete={() => load()} />
+      )}
     </WorkspaceContext.Provider>
   )
 }

@@ -1,4 +1,19 @@
 /**
+ * Fetch the billing plan for a workspace (server-side, returns 'free' on error).
+ */
+export async function fetchBillingPlan(workspaceId: string): Promise<string> {
+  if (!workspaceId) return 'free'
+  try {
+    const r = await fetchFromFastAPI(`/billing/status?workspace_id=${workspaceId}`)
+    if (!r.ok) return 'free'
+    const d = await r.json()
+    return (d.plan as string) ?? 'free'
+  } catch {
+    return 'free'
+  }
+}
+
+/**
  * Server-side helper — calls FastAPI directly (bypasses the Next.js API proxy).
  * Only call this from Server Components or API route handlers.
  */

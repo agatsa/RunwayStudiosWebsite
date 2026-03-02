@@ -6,6 +6,9 @@ export interface Workspace {
   store_url?: string
   store_platform?: string
   active: boolean
+  workspace_type?: 'd2c' | 'creator' | 'saas' | 'agency' | 'media'
+  onboarding_complete?: boolean
+  onboarding_channels?: string[]
 }
 
 // ── KPI / Dashboard ────────────────────────────────────────
@@ -257,4 +260,29 @@ export interface YouTubeGrowthPlanResponse {
 export interface ConnectionsResponse {
   connections: PlatformConnection[]
   workspace_id: string
+}
+
+// ── Billing ──────────────────────────────────────────────────
+
+export type PlanName = 'free' | 'starter' | 'growth' | 'agency'
+
+export interface CreditLedgerEntry {
+  amount: number
+  balance_after: number
+  type: string
+  feature: string | null
+  description: string
+  created_at: string
+}
+
+export interface BillingStatus {
+  plan: PlanName
+  credit_balance: number
+  subscription_status: string | null
+  trial_ends_at: string | null
+  current_period_end: string | null
+  recent_ledger: CreditLedgerEntry[]
+  credit_packs: Record<string, { credits: number; amount_paise: number }>
+  feature_costs: Record<string, number>
+  plan_monthly_credits: Record<string, number>
 }

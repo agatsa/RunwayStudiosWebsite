@@ -90,7 +90,11 @@ export default function BriefForm({ workspaceId }: BriefFormProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workspace_id: workspaceId }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
+      if (res.status === 402) {
+        alert(`Insufficient credits — need ${data.required ?? 3} credits but have ${data.balance ?? 0}. Visit Billing to top up.`)
+        return
+      }
       if (!res.ok) throw new Error(data.detail || 'Auto-generation failed')
       setResult(data)
       setEditedCopy(data.concept?.body_copy ?? '')
@@ -116,7 +120,11 @@ export default function BriefForm({ workspaceId }: BriefFormProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workspace_id: workspaceId, ...form }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
+      if (res.status === 402) {
+        alert(`Insufficient credits — need ${data.required ?? 3} credits but have ${data.balance ?? 0}. Visit Billing to top up.`)
+        return
+      }
       if (!res.ok) throw new Error(data.detail || 'Failed to generate brief')
       setResult(data)
       setEditedCopy(data.concept?.body_copy ?? '')
@@ -216,6 +224,7 @@ export default function BriefForm({ workspaceId }: BriefFormProps) {
                 className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-3 text-base font-semibold text-white hover:bg-sky-700"
               >
                 <Zap className="h-5 w-5" /> Generate AI Growth Plan
+                <span className="ml-2 rounded-full bg-sky-500 px-2 py-0.5 text-xs font-medium opacity-90">3 credits</span>
               </button>
             )}
           </div>
@@ -339,6 +348,7 @@ export default function BriefForm({ workspaceId }: BriefFormProps) {
                 className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-3 text-base font-semibold text-white hover:bg-indigo-700"
               >
                 <Lightbulb className="h-5 w-5" /> Generate Campaign Brief
+                <span className="ml-2 rounded-full bg-indigo-500 px-2 py-0.5 text-xs font-medium opacity-90">3 credits</span>
               </button>
             )}
           </>

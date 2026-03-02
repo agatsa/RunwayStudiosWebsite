@@ -1,11 +1,12 @@
 import Link from 'next/link'
-import { fetchFromFastAPI } from '@/lib/api'
+import { fetchFromFastAPI, fetchBillingPlan } from '@/lib/api'
 import YouTubeOverview from '@/components/youtube/YouTubeOverview'
 import YouTubeGrowthPlan from '@/components/youtube/YouTubeGrowthPlan'
 import YouTubeVideoTable from '@/components/youtube/YouTubeVideoTable'
 import YouTubeTrafficSources from '@/components/youtube/YouTubeTrafficSources'
 import YouTubeUploadTiming from '@/components/youtube/YouTubeUploadTiming'
 import YouTubeOrganicOpportunities from '@/components/youtube/YouTubeOrganicOpportunities'
+import PlanGateBanner from '@/components/billing/PlanGateBanner'
 import type {
   YouTubeChannelStatsResponse,
   YouTubeVideosResponse,
@@ -90,6 +91,38 @@ export default async function YouTubePage({ searchParams }: PageProps) {
     )
   }
 
+  // Check billing plan — YouTube requires Growth+
+  const plan = await fetchBillingPlan(workspaceId)
+  const planRank: Record<string, number> = { free: 0, starter: 1, growth: 2, agency: 3 }
+  if (planRank[plan] < planRank['growth']) {
+    return (
+      <div className="space-y-4">
+        <div>
+          <h1 className="text-xl font-bold text-gray-900">YouTube Channel</h1>
+          <p className="text-sm text-gray-500">AI-powered YouTube growth intelligence</p>
+        </div>
+        <div className="flex flex-col items-center gap-5 rounded-xl border-2 border-dashed border-amber-200 bg-amber-50/40 p-12 text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-amber-100">
+            <YTIcon className="h-7 w-7 fill-amber-600" />
+          </div>
+          <div>
+            <p className="text-base font-semibold text-gray-900">Growth Plan Required</p>
+            <p className="mt-1 text-sm text-gray-500 max-w-sm">
+              YouTube Channel Intelligence & AI Growth Recipe requires the Growth plan or higher.
+              You&apos;re currently on the <strong className="capitalize">{plan}</strong> plan.
+            </p>
+          </div>
+          <Link
+            href={`/billing?ws=${workspaceId}`}
+            className="inline-flex items-center gap-2 rounded-lg bg-amber-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-amber-600"
+          >
+            Upgrade to Growth
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
   // Always check status first — it's lightweight and requires no OAuth
   const status = await fetchStatus(workspaceId)
 
@@ -149,6 +182,15 @@ export default async function YouTubePage({ searchParams }: PageProps) {
 
   return (
     <div className="space-y-6">
+      {/* Plan gate banner — hidden for Growth+ users (they already qualify) */}
+      <PlanGateBanner
+        requiredPlan="Growth"
+        feature="YouTube Competitor Intelligence & AI Growth Recipe"
+        creditCost={20}
+        wsId={workspaceId}
+        currentPlan={plan as 'free' | 'starter' | 'growth' | 'agency'}
+      />
+
       {/* Header */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">

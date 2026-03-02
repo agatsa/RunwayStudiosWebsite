@@ -3,7 +3,14 @@ import SettingsView from '@/components/settings/SettingsView'
 import type { ConnectionsResponse, Workspace } from '@/lib/types'
 
 interface PageProps {
-  searchParams: { ws?: string; google_connected?: string; google_error?: string }
+  searchParams: {
+    ws?: string
+    google_connected?: string
+    google_error?: string
+    meta_connected?: string
+    meta_session?: string
+    meta_error?: string
+  }
 }
 
 async function fetchConnections(workspaceId: string): Promise<ConnectionsResponse | null> {
@@ -32,6 +39,9 @@ export default async function SettingsPage({ searchParams }: PageProps) {
   const workspaceId = searchParams.ws ?? ''
   const googleConnected = searchParams.google_connected === '1'
   const googleError = searchParams.google_error
+  const metaConnected = searchParams.meta_connected === '1'
+  const metaSession = searchParams.meta_session
+  const metaError = searchParams.meta_error
 
   // Check dashboard's own env var — this controls whether OAuth can actually start.
   // No FastAPI round-trip needed; server components can read process.env directly.
@@ -71,6 +81,9 @@ export default async function SettingsPage({ searchParams }: PageProps) {
       googleOAuthConfigured={googleOAuthConfigured}
       ga4PropertyId={ga4Status?.property_id ?? null}
       ga4Connected={!!(ga4Status?.connected && ga4Status?.has_property)}
+      metaConnected={metaConnected}
+      metaSession={metaSession}
+      metaError={metaError}
     />
   )
 }

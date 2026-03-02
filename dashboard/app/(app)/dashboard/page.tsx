@@ -36,27 +36,46 @@ async function fetchDailyBrief(workspaceId: string) {
   }
 }
 
-// Brand Equity: GA4 organic signals + YouTube channel authority
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function fetchBrandEquity(workspaceId: string): Promise<{ ga4: any | null; youtube: any | null }> {
-  const [ga4, youtube] = await Promise.all([
-    fetchFromFastAPI(`/ga4/overview?workspace_id=${workspaceId}&days=30`)
-      .then(r => (r.ok ? r.json() : null))
-      .catch(() => null),
-    fetchFromFastAPI(`/youtube/channel-stats?workspace_id=${workspaceId}&days=30`)
-      .then(r => (r.ok ? r.json() : null))
-      .catch(() => null),
+async function fetchGA4Full(workspaceId: string): Promise<{
+  ga4Status: any | null
+  ga4: any | null
+  youtube: any | null
+  sources: any[]
+  devices: any[]
+  landing: any[]
+}> {
+  const days = 30
+  const [statusRes, ga4Res, ytRes, sourcesRes, devicesRes, landingRes] = await Promise.allSettled([
+    fetchFromFastAPI(`/ga4/status?workspace_id=${workspaceId}`),
+    fetchFromFastAPI(`/ga4/overview?workspace_id=${workspaceId}&days=${days}`),
+    fetchFromFastAPI(`/youtube/channel-stats?workspace_id=${workspaceId}&days=${days}`),
+    fetchFromFastAPI(`/ga4/traffic-sources?workspace_id=${workspaceId}&days=${days}`),
+    fetchFromFastAPI(`/ga4/devices?workspace_id=${workspaceId}&days=${days}`),
+    fetchFromFastAPI(`/ga4/landing-pages?workspace_id=${workspaceId}&days=${days}`),
   ])
-  return { ga4, youtube }
+  const ok = (r: PromiseSettledResult<Response>) =>
+    r.status === 'fulfilled' && r.value.ok ? r.value.json() : Promise.resolve(null)
+  const [ga4Status, ga4, youtube, sourcesRaw, devicesRaw, landingRaw] = await Promise.all([
+    ok(statusRes), ok(ga4Res), ok(ytRes), ok(sourcesRes), ok(devicesRes), ok(landingRes),
+  ])
+  return {
+    ga4Status,
+    ga4,
+    youtube,
+    sources: sourcesRaw?.sources ?? [],
+    devices: devicesRaw?.devices ?? [],
+    landing: landingRaw?.landing_pages ?? [],
+  }
 }
 
 export default async function DashboardPage({ searchParams }: PageProps) {
   const workspaceId = searchParams.ws ?? ''
   const days = parseInt(searchParams.days ?? '365', 10) || 365
-  const [kpi, brief, brandEquity] = await Promise.all([
+  const [kpi, brief, ga4Full] = await Promise.all([
     fetchKpi(workspaceId, days),
     fetchDailyBrief(workspaceId),
-    workspaceId ? fetchBrandEquity(workspaceId) : Promise.resolve({ ga4: null, youtube: null }),
+    workspaceId ? fetchGA4Full(workspaceId) : Promise.resolve({ ga4Status: null, ga4: null, youtube: null, sources: [], devices: [], landing: [] }),
   ])
 
   const emptyKpi: KpiSummaryResponse = {
@@ -331,8 +350,8 @@ export default async function DashboardPage({ searchParams }: PageProps) {
 
         {/* Brand Equity — derived from GA4 organic signals + YouTube authority */}
         {(() => {
-          const ga4 = brandEquity.ga4
-          const yt  = brandEquity.youtube
+          const ga4 = ga4Full.ga4
+          const yt  = ga4Full.youtube
 
           // GA4 signals
           const sessions      = ga4?.current?.sessions ?? 0
@@ -489,6 +508,195 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           )
         })()}
       </div>
+
+      {/* ── WEBSITE PERFORMANCE — GA4 ── */}
+      {(() => {
+        const ga4Status = ga4Full.ga4Status
+        const connected = ga4Status?.connected && ga4Status?.has_property
+        const cur       = ga4Full.ga4?.current ?? {}
+        const pct       = ga4Full.ga4?.pct_changes ?? {}
+        const sources   = ga4Full.sources
+        const devices   = ga4Full.devices
+        const landing   = ga4Full.landing
+
+        const fmtN = (n: number | null | undefined) => {
+          if (n == null) return '—'
+          if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+          if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+          return n.toLocaleString('en-IN')
+        }
+        const fmtDur = (s: number | null | undefined) => {
+          if (!s) return '—'
+          const m = Math.floor(s / 60), sec = Math.round(s % 60)
+          return `${m}m ${sec}s`
+        }
+
+        if (!connected) {
+          return (
+            <div className="rounded-xl border border-gray-200 bg-white p-5 flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-sm font-semibold text-gray-900">Website Performance</h2>
+                <p className="text-xs text-gray-500 mt-0.5">Connect GA4 to see sessions, traffic sources, and landing page performance</p>
+              </div>
+              <a href={workspaceId ? `/settings?ws=${workspaceId}` : '/settings'}
+                className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-orange-600 px-3 py-2 text-xs font-medium text-white hover:bg-orange-700">
+                Connect GA4 →
+              </a>
+            </div>
+          )
+        }
+
+        const worst3 = [...landing]
+          .sort((a: { drop_off_pct: number }, b: { drop_off_pct: number }) => b.drop_off_pct - a.drop_off_pct)
+          .slice(0, 3)
+
+        return (
+          <div className="space-y-4">
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-gray-900">Website Performance</h2>
+                <p className="text-xs text-gray-400">
+                  GA4 · Last 30 days
+                  {ga4Status?.property_id && <span> · Property {ga4Status.property_id}</span>}
+                </p>
+              </div>
+              <a href={workspaceId ? `/landing-pages?ws=${workspaceId}` : '/landing-pages'}
+                className="text-xs text-blue-600 hover:underline">
+                Landing pages →
+              </a>
+            </div>
+
+            {/* 4 KPI cards */}
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              {([
+                { label: 'Sessions',    value: fmtN(cur.sessions),    change: pct.sessions,    icon: '🌐' },
+                { label: 'Users',       value: fmtN(cur.users),       change: pct.users,       icon: '👥' },
+                { label: 'Conversions', value: fmtN(cur.conversions), change: pct.conversions, icon: '🛒' },
+                { label: 'Revenue',     value: cur.revenue != null ? `₹${fmtN(cur.revenue)}` : '—', change: pct.revenue, icon: '💰' },
+              ] as { label: string; value: string; change: number | null | undefined; icon: string }[]).map(c => (
+                <div key={c.label} className="rounded-xl border border-gray-200 bg-white p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-base">{c.icon}</span>
+                    {c.change != null && (
+                      <span className={`text-xs font-semibold ${c.change >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {c.change >= 0 ? '↑' : '↓'}{Math.abs(c.change)}%
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xl font-bold text-gray-900">{c.value}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{c.label}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Secondary metrics */}
+            <div className="grid grid-cols-3 gap-4">
+              <div className="rounded-xl border border-gray-200 bg-white p-4 text-center">
+                <p className="text-xl font-bold text-gray-900">{cur.bounce_rate != null ? `${cur.bounce_rate}%` : '—'}</p>
+                <p className="text-xs text-gray-500 mt-0.5">Bounce Rate</p>
+              </div>
+              <div className="rounded-xl border border-gray-200 bg-white p-4 text-center">
+                <p className="text-xl font-bold text-gray-900">{fmtDur(cur.avg_session_duration)}</p>
+                <p className="text-xs text-gray-500 mt-0.5">Avg. Session</p>
+              </div>
+              <div className="rounded-xl border border-gray-200 bg-white p-4 text-center">
+                <p className="text-xl font-bold text-gray-900">{fmtN(cur.new_users)}</p>
+                <p className="text-xs text-gray-500 mt-0.5">New Users</p>
+              </div>
+            </div>
+
+            {/* Traffic Sources + Device Breakdown */}
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+                <div className="border-b border-gray-100 bg-gray-50 px-4 py-3">
+                  <h3 className="text-xs font-semibold text-gray-700">Traffic Sources</h3>
+                </div>
+                {sources.length === 0 ? (
+                  <p className="p-4 text-sm text-gray-400">No data</p>
+                ) : (
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-gray-50 text-left text-gray-400">
+                        <th className="px-4 py-2 font-medium">Source / Medium</th>
+                        <th className="px-4 py-2 text-right font-medium">Sessions</th>
+                        <th className="px-4 py-2 text-right font-medium">Conv.</th>
+                        <th className="px-4 py-2 text-right font-medium">Revenue</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {sources.slice(0, 5).map((s: { source_medium: string; sessions: number; conversions: number; revenue: number }, i: number) => (
+                        <tr key={i} className="hover:bg-gray-50">
+                          <td className="px-4 py-2 text-gray-700 font-medium truncate max-w-[140px]">{s.source_medium}</td>
+                          <td className="px-4 py-2 text-right text-gray-600">{fmtN(s.sessions)}</td>
+                          <td className="px-4 py-2 text-right text-gray-600">{fmtN(s.conversions)}</td>
+                          <td className="px-4 py-2 text-right text-gray-600">₹{fmtN(s.revenue)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+                <div className="border-b border-gray-100 bg-gray-50 px-4 py-3">
+                  <h3 className="text-xs font-semibold text-gray-700">Device Breakdown</h3>
+                </div>
+                {devices.length === 0 ? (
+                  <p className="p-4 text-sm text-gray-400">No data</p>
+                ) : (
+                  <div className="p-4 space-y-3">
+                    {devices.map((d: { device: string; sessions: number; conversions: number; pct_of_total: number }, i: number) => (
+                      <div key={i} className="flex items-center gap-3">
+                        <span className="text-xs font-medium text-gray-700 capitalize w-16 shrink-0">{d.device}</span>
+                        <div className="flex-1 h-2 rounded-full bg-gray-100">
+                          <div className="h-2 rounded-full bg-blue-400 transition-all" style={{ width: `${d.pct_of_total}%` }} />
+                        </div>
+                        <span className="text-xs text-gray-500 w-10 text-right shrink-0">{d.pct_of_total}%</span>
+                        <span className="text-xs text-gray-600 w-12 text-right shrink-0 font-medium">{fmtN(d.sessions)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Landing Pages — top 3 highest drop-off */}
+            {worst3.length > 0 && (
+              <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+                <div className="border-b border-gray-100 bg-gray-50 px-4 py-3 flex items-center justify-between">
+                  <h3 className="text-xs font-semibold text-gray-700">Highest Drop-off Pages</h3>
+                  <a href={workspaceId ? `/landing-pages?ws=${workspaceId}` : '/landing-pages'}
+                    className="text-xs text-blue-600 hover:underline">
+                    Full report →
+                  </a>
+                </div>
+                <div className="divide-y divide-gray-50">
+                  {worst3.map((p: { page_path: string; sessions: number; drop_off_pct: number }, i: number) => (
+                    <div key={i} className="px-4 py-3">
+                      <div className="flex items-center justify-between mb-1.5 text-xs">
+                        <span className="font-medium text-gray-800 truncate max-w-[55%]" title={p.page_path}>{p.page_path}</span>
+                        <span className="flex items-center gap-3 text-gray-500 shrink-0">
+                          <span>{fmtN(p.sessions)} sessions</span>
+                          <span className={`font-semibold ${p.drop_off_pct >= 70 ? 'text-red-600' : p.drop_off_pct >= 50 ? 'text-amber-600' : 'text-green-600'}`}>
+                            {p.drop_off_pct}% drop-off
+                          </span>
+                        </span>
+                      </div>
+                      <div className="h-1.5 w-full rounded-full bg-gray-100">
+                        <div
+                          className={`h-1.5 rounded-full transition-all ${p.drop_off_pct >= 70 ? 'bg-red-400' : p.drop_off_pct >= 50 ? 'bg-amber-400' : 'bg-green-400'}`}
+                          style={{ width: `${p.drop_off_pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })()}
 
     </div>
   )

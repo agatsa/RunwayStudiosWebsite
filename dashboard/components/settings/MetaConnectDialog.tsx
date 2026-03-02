@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
-import { Loader2, CheckCircle } from 'lucide-react'
+import { Loader2, CheckCircle, ExternalLink } from 'lucide-react'
 
 interface AdAccount {
   id: string
@@ -15,57 +15,52 @@ interface Props {
   workspaceId: string
   onConnected: () => void
   onClose: () => void
+  /** If set, we already have an OAuth session — skip straight to account picker */
+  sessionId?: string
 }
 
-export default function MetaConnectDialog({ workspaceId, onConnected, onClose }: Props) {
-  const [step, setStep] = useState<'token' | 'accounts' | 'done'>('token')
-  const [token, setToken] = useState('')
+export default function MetaConnectDialog({ workspaceId, onConnected, onClose, sessionId }: Props) {
+  const [step, setStep] = useState<'connect' | 'accounts' | 'done'>(sessionId ? 'accounts' : 'connect')
   const [userName, setUserName] = useState('')
   const [adAccounts, setAdAccounts] = useState<AdAccount[]>([])
   const [selectedAccount, setSelectedAccount] = useState('')
   const [loading, setLoading] = useState(false)
+  const [activeSession, setActiveSession] = useState(sessionId ?? '')
 
-  const validateToken = async () => {
-    if (!token.trim()) return toast.error('Enter your Meta access token')
+  // When opened in session mode — load ad accounts from the pending session
+  useEffect(() => {
+    if (!sessionId) return
     setLoading(true)
-    try {
-      const res = await fetch('/api/settings/meta-connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace_id: workspaceId, access_token: token.trim() }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail ?? 'Validation failed')
-      if (data.step === 'select_account') {
+    fetch(`/api/meta/oauth/session?session_id=${sessionId}`)
+      .then(r => r.json())
+      .then(data => {
         setUserName(data.user_name ?? '')
         setAdAccounts(data.ad_accounts ?? [])
         setSelectedAccount(data.ad_accounts?.[0]?.id ?? '')
-        setStep('accounts')
-      }
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Failed to validate token')
-    } finally {
-      setLoading(false)
-    }
+        setActiveSession(sessionId)
+      })
+      .catch(() => toast.error('Failed to load Facebook account data'))
+      .finally(() => setLoading(false))
+  }, [sessionId])
+
+  const startOAuth = () => {
+    // Redirect the full page to the OAuth start route
+    window.location.href = `/api/meta/oauth/start?ws=${workspaceId}`
   }
 
   const connectAccount = async () => {
     if (!selectedAccount) return toast.error('Select an ad account')
     setLoading(true)
     try {
-      const res = await fetch('/api/settings/meta-connect', {
+      const res = await fetch('/api/meta/oauth/select', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspace_id: workspaceId,
-          access_token: token.trim(),
-          ad_account_id: selectedAccount,
-        }),
+        body: JSON.stringify({ session_id: activeSession, ad_account_id: selectedAccount }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail ?? 'Connection failed')
       setStep('done')
-      toast.success('Meta account connected!')
+      toast.success('Meta Ads connected!')
       setTimeout(() => { onConnected(); onClose() }, 1500)
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Failed to connect account')
@@ -84,43 +79,25 @@ export default function MetaConnectDialog({ workspaceId, onConnected, onClose }:
           </div>
           <div>
             <h2 className="text-base font-semibold text-gray-900">Connect Meta Ads</h2>
-            <p className="text-xs text-gray-500">Link your Meta Business account</p>
+            <p className="text-xs text-gray-500">Sign in with Facebook to link your ad account</p>
           </div>
         </div>
 
-        {/* Step 1: Token */}
-        {step === 'token' && (
+        {/* Step 1: Connect via Facebook OAuth */}
+        {step === 'connect' && (
           <div className="space-y-4">
-            <div className="rounded-lg bg-blue-50 p-3 text-xs text-blue-700">
-              <p className="font-semibold">How to get your access token:</p>
-              <ol className="mt-1 list-inside list-decimal space-y-0.5">
-                <li>
-                  Go to{' '}
-                  <a
-                    href="https://developers.facebook.com/tools/explorer/"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="underline"
-                  >
-                    Meta Graph API Explorer
-                  </a>
-                </li>
-                <li>Select your App → Generate Access Token</li>
-                <li>Grant <strong>ads_management</strong> + <strong>ads_read</strong></li>
-                <li>Copy the token and paste below</li>
-              </ol>
+            <div className="rounded-lg bg-blue-50 p-4 text-sm text-blue-800">
+              <p className="font-semibold mb-1">What happens when you connect:</p>
+              <ul className="space-y-1 text-xs text-blue-700 list-disc list-inside">
+                <li>Log in with your Facebook account</li>
+                <li>Grant access to your Meta Ads Manager</li>
+                <li>Select which ad account to link</li>
+                <li>We&apos;ll pull campaign data automatically</li>
+              </ul>
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-700">
-                Access Token
-              </label>
-              <textarea
-                value={token}
-                onChange={e => setToken(e.target.value)}
-                placeholder="EAAUk58rh..."
-                rows={3}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+            <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 text-xs text-gray-500">
+              We request <strong>ads_management</strong> + <strong>ads_read</strong> permissions only.
+              You can revoke access from your Facebook settings at any time.
             </div>
             <div className="flex gap-2">
               <button
@@ -130,66 +107,76 @@ export default function MetaConnectDialog({ workspaceId, onConnected, onClose }:
                 Cancel
               </button>
               <button
-                onClick={validateToken}
-                disabled={loading}
-                className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
+                onClick={startOAuth}
+                className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
               >
-                {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                Validate & Fetch Accounts
+                <ExternalLink className="h-3.5 w-3.5" />
+                Connect with Facebook
               </button>
             </div>
           </div>
         )}
 
-        {/* Step 2: Account selection */}
+        {/* Step 2: Account selection (after OAuth with multiple accounts) */}
         {step === 'accounts' && (
           <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              Signed in as <strong>{userName}</strong>. Select an ad account:
-            </p>
-            <div className="max-h-48 space-y-1.5 overflow-y-auto">
-              {adAccounts.map(acc => (
-                <label
-                  key={acc.id}
-                  className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${
-                    selectedAccount === acc.id
-                      ? 'border-blue-500 bg-blue-50'
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="account"
-                    value={acc.id}
-                    checked={selectedAccount === acc.id}
-                    onChange={e => setSelectedAccount(e.target.value)}
-                    className="accent-blue-600"
-                  />
-                  <div>
-                    <p className="text-sm font-medium text-gray-900">{acc.name}</p>
-                    <p className="text-xs text-gray-400">
-                      {acc.id} · {acc.currency}
-                    </p>
-                  </div>
-                </label>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setStep('token')}
-                className="flex-1 rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
-              >
-                Back
-              </button>
-              <button
-                onClick={connectAccount}
-                disabled={loading || !selectedAccount}
-                className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
-              >
-                {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                Connect Account
-              </button>
-            </div>
+            {loading ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="h-6 w-6 animate-spin text-blue-500" />
+              </div>
+            ) : (
+              <>
+                <p className="text-sm text-gray-600">
+                  Signed in as <strong>{userName}</strong>. Select an ad account to link:
+                </p>
+                <div className="max-h-52 space-y-1.5 overflow-y-auto">
+                  {adAccounts.map(acc => (
+                    <label
+                      key={acc.id}
+                      className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${
+                        selectedAccount === acc.id
+                          ? 'border-blue-500 bg-blue-50'
+                          : 'border-gray-200 hover:border-gray-300'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="account"
+                        value={acc.id}
+                        checked={selectedAccount === acc.id}
+                        onChange={e => setSelectedAccount(e.target.value)}
+                        className="accent-blue-600"
+                      />
+                      <div>
+                        <p className="text-sm font-medium text-gray-900">{acc.name}</p>
+                        <p className="text-xs text-gray-400">
+                          {acc.id} · {acc.currency}
+                          {acc.account_status !== 1 && (
+                            <span className="ml-1 text-amber-500">(inactive)</span>
+                          )}
+                        </p>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={onClose}
+                    className="flex-1 rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={connectAccount}
+                    disabled={loading || !selectedAccount}
+                    className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
+                  >
+                    {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                    Connect Account
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         )}
 

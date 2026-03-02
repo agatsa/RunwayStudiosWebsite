@@ -68,6 +68,16 @@ META_PAGE_ID = os.getenv("META_PAGE_ID", "203855559983211")
 # ── New campaign defaults ──────────────────────────────────
 NEW_CAMPAIGN_DAILY_BUDGET_INR = float(os.getenv("NEW_CAMPAIGN_DAILY_BUDGET_INR", "300"))
 
+# ── YouTube Competitor Intelligence ────────────────────────
+# Pool of recent videos fetched per channel before selecting best/worst
+YT_INTEL_POOL_SIZE   = int(os.getenv("YT_INTEL_POOL_SIZE",   "30"))
+# From that pool: keep N_BEST highest-view + N_WORST lowest-view videos
+YT_INTEL_N_BEST      = int(os.getenv("YT_INTEL_N_BEST",      "6"))
+YT_INTEL_N_WORST     = int(os.getenv("YT_INTEL_N_WORST",     "4"))
+YT_INTEL_COMPETITORS = int(os.getenv("YT_INTEL_COMPETITORS", "5"))
+# Own channel: how many recent videos to analyse for comparison
+YT_INTEL_OWN_VIDEOS  = int(os.getenv("YT_INTEL_OWN_VIDEOS",  "15"))
+
 # ── Shopify App ────────────────────────────────────────────
 SHOPIFY_API_KEY    = os.getenv("SHOPIFY_API_KEY", "")
 SHOPIFY_API_SECRET = os.getenv("SHOPIFY_API_SECRET", "")
@@ -78,3 +88,16 @@ CRON_TOKEN = os.getenv("CRON_TOKEN", "")
 
 # ── Timezone ───────────────────────────────────────────────
 AD_TIMEZONE = os.getenv("META_AD_TIMEZONE", "Asia/Kolkata")
+
+# ── Meta OAuth App (for Facebook Login / Ads OAuth) ────────
+FACEBOOK_APP_ID         = os.getenv("FACEBOOK_APP_ID", "")
+FACEBOOK_APP_SECRET     = os.getenv("FACEBOOK_APP_SECRET", "")
+META_OAUTH_REDIRECT_URI = os.getenv("META_OAUTH_REDIRECT_URI", "https://app.runwaystudios.co/api/meta/oauth/callback")
+
+# ── Razorpay (billing) ─────────────────────────────────────
+RAZORPAY_KEY_ID         = os.getenv("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET     = os.getenv("RAZORPAY_KEY_SECRET", "")
+RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
+
+# ── Admin (dashboard super-admin) ──────────────────────────
+ADMIN_EMAILS = os.getenv("ADMIN_EMAILS", "")  # comma-separated email list
