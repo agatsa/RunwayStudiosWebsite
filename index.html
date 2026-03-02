@@ -240,8 +240,9 @@
     }
     .form-submit:hover { background: var(--brand-dark); }
 
-    /* ── PRIVACY POLICY ── */
+    /* ── PRIVACY POLICY & TERMS ── */
     .privacy { background: var(--gray-100); }
+    .tos { background: white; }
     .privacy-content {
       background: white; border: 1px solid var(--gray-200); border-radius: 12px;
       padding: 2.5rem; margin-top: 2rem;
@@ -617,41 +618,6 @@
   </div>
 </section>
 
-<!-- API USE CASE -->
-<section class="api-use" id="api-use">
-  <div class="container">
-    <div class="section-badge">Google Ads API Usage</div>
-    <div class="section-title">How we use the Google Ads API</div>
-    <p class="section-sub">Runway Studios accesses the Google Ads API strictly for performance reporting and analytics on behalf of our clients.</p>
-
-    <div class="api-box">
-      <h3>Purpose of API Access</h3>
-      <p>Our platform uses the Google Ads API to retrieve advertising performance metrics for our client accounts. This data powers our analytics dashboard, AI-generated insights, and cross-channel reporting features. We do not use the API to create, modify, or delete any campaigns or ads.</p>
-      <ul class="api-list">
-        <li>Read campaign, ad group, and ad performance metrics (impressions, clicks, spend, conversions)</li>
-        <li>Read keyword performance including Quality Score, match types, and search terms</li>
-        <li>Read geographic performance reports (city, region, country breakdown)</li>
-        <li>Read device performance reports (mobile, desktop, tablet)</li>
-        <li>Read time-of-day and day-of-week performance segmentation</li>
-        <li>Read auction insights reports (impression share, overlap rate, competitor data)</li>
-        <li>List accessible customer accounts for multi-account agency management</li>
-      </ul>
-    </div>
-
-    <div class="api-box" style="margin-top:1rem">
-      <h3>Data Handling & Security</h3>
-      <p>All Google Ads data retrieved through the API is:</p>
-      <ul class="api-list">
-        <li>Stored encrypted in a PostgreSQL database on Google Cloud SQL (asia-south1)</li>
-        <li>Accessible only to the workspace owner and authorised team members</li>
-        <li>Never sold, shared, or transferred to any third party</li>
-        <li>Retained only as long as the client account is active</li>
-        <li>Deletable on request via account deletion workflow</li>
-      </ul>
-    </div>
-  </div>
-</section>
-
 <!-- CONTACT -->
 <section class="contact" id="contact">
   <div class="container">
@@ -673,7 +639,7 @@
         </div>
         <div class="contact-item">
           <div class="contact-label">Email</div>
-          <div class="contact-value"><a href="mailto:hello@runwaystudios.co">hello@runwaystudios.co</a></div>
+          <div class="contact-value"><a href="mailto:info@runwaystudios.co">info@runwaystudios.co</a></div>
         </div>
         <div class="contact-item">
           <div class="contact-label">Phone</div>
@@ -714,69 +680,6 @@
   </div>
 </section>
 
-<!-- PRIVACY POLICY -->
-<section class="privacy" id="privacy">
-  <div class="container">
-    <div class="section-badge">Legal</div>
-    <div class="section-title">Privacy Policy</div>
-    <p class="section-sub">Last updated: February 2026</p>
-
-    <div class="privacy-content">
-      <h3>1. Who We Are</h3>
-      <p>Runway Studios ("we", "us", "our") operates an AI-powered marketing intelligence platform accessible at runwaystudios.co and its subdomains. We are committed to protecting the privacy of our users and clients.</p>
-
-      <h3>2. Information We Collect</h3>
-      <p>We collect the following types of information:</p>
-      <ul>
-        <li><strong>Account information:</strong> Name, email address, phone number, and organisation details provided during registration.</li>
-        <li><strong>Ad platform data:</strong> Advertising performance metrics retrieved via authorised API connections (Meta Marketing API, Google Ads API, YouTube Data API). This includes impressions, clicks, spend, conversions, keywords, and campaign metadata.</li>
-        <li><strong>Uploaded reports:</strong> CSV/Excel files containing advertising performance reports uploaded by users for analysis.</li>
-        <li><strong>Usage data:</strong> Pages visited, features used, and actions taken within the platform.</li>
-        <li><strong>Communications:</strong> Messages sent through our contact form or WhatsApp/Telegram integrations.</li>
-      </ul>
-
-      <h3>3. How We Use Your Information</h3>
-      <ul>
-        <li>To provide, operate, and improve the Runway Studios platform</li>
-        <li>To generate analytics, reports, and AI-powered recommendations based on your ad data</li>
-        <li>To send performance alerts and summaries via WhatsApp, Telegram, or email (with your consent)</li>
-        <li>To respond to support requests and communications</li>
-        <li>To comply with legal obligations</li>
-      </ul>
-
-      <h3>4. Google Ads API Data</h3>
-      <p>When you connect your Google Ads account, we access your advertising data via the Google Ads API using OAuth2 authorisation. This access is read-only — we never create, modify, or delete your campaigns. Data retrieved is used solely to power your analytics dashboard and AI recommendations within our platform. We do not share Google Ads data with any third party, and we do not use it for advertising or resale purposes. You can revoke access at any time through your Google Account settings.</p>
-
-      <h3>5. Data Storage and Security</h3>
-      <p>Your data is stored in a PostgreSQL database hosted on Google Cloud SQL in the asia-south1 (Mumbai) region. We implement industry-standard security measures including encryption at rest and in transit, access controls, and regular security reviews. OAuth tokens are stored encrypted and refreshed automatically.</p>
-
-      <h3>6. Data Retention</h3>
-      <p>We retain your data for as long as your account is active. You may request deletion of your account and all associated data by contacting us at hello@runwaystudios.co. Upon request, data will be permanently deleted within 30 days.</p>
-
-      <h3>7. Third-Party Services</h3>
-      <p>We integrate with the following third-party platforms using their respective APIs:</p>
-      <ul>
-        <li>Meta Platforms (Meta Marketing API) — <a href="https://www.facebook.com/privacy/policy/" target="_blank" rel="noopener">Meta Privacy Policy</a></li>
-        <li>Google LLC (Google Ads API, YouTube Data API, YouTube Analytics API) — <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a></li>
-        <li>Anthropic (Claude AI API) — used for generating insights and recommendations</li>
-        <li>Google Cloud Platform — infrastructure and database hosting</li>
-      </ul>
-
-      <h3>8. Your Rights</h3>
-      <p>You have the right to: access the personal data we hold about you; correct inaccurate data; request deletion of your data; withdraw consent for data processing; and receive a copy of your data in a portable format. To exercise these rights, contact us at hello@runwaystudios.co.</p>
-
-      <h3>9. Cookies</h3>
-      <p>Our platform uses session cookies required for authentication and functionality. We do not use advertising or tracking cookies. We do not sell data to advertisers.</p>
-
-      <h3>10. Changes to This Policy</h3>
-      <p>We may update this Privacy Policy from time to time. We will notify registered users of significant changes via email. Continued use of the platform after changes constitutes acceptance of the updated policy.</p>
-
-      <h3>11. Contact Us</h3>
-      <p>For any privacy-related questions or requests: <a href="mailto:hello@runwaystudios.co">hello@runwaystudios.co</a></p>
-    </div>
-  </div>
-</section>
-
 <!-- FOOTER -->
 <footer>
   <div class="footer-inner">
@@ -791,7 +694,7 @@
         <li><a href="#how">How It Works</a></li>
         <li><a href="#pricing">Pricing</a></li>
         <li><a href="#platforms">Integrations</a></li>
-        <li><a href="#api-use">API Usage</a></li>
+        <li><a href="api-use.html">API Usage</a></li>
       </ul>
     </div>
     <div class="footer-col">
@@ -799,8 +702,9 @@
       <ul>
         <li><a href="#about">About</a></li>
         <li><a href="#contact">Contact</a></li>
-        <li><a href="#privacy">Privacy Policy</a></li>
-        <li><a href="mailto:hello@runwaystudios.co">hello@runwaystudios.co</a></li>
+        <li><a href="privacy.html">Privacy Policy</a></li>
+        <li><a href="tos.html">Terms of Service</a></li>
+        <li><a href="mailto:info@runwaystudios.co">info@runwaystudios.co</a></li>
       </ul>
     </div>
   </div>
