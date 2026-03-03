@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Runway Studios — AI-Powered Growth OS for Indian Brands</title>
-  <meta name="description" content="Runway Studios is an AI-powered marketing intelligence platform that helps Indian brands grow faster with unified ad analytics across Meta, Google, YouTube, and marketplaces." />
+  <title>Runway Studios — AI-Powered Growth OS for Brands Worldwide</title>
+  <meta name="description" content="Runway Studios is an AI-powered marketing intelligence platform that helps brands grow faster with unified ad analytics across Meta, Google, YouTube, and marketplaces." />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -49,6 +49,13 @@
       transition: color 0.2s;
     }
     .nav-links a:hover { color: var(--brand); }
+    .nav-actions { display: flex; align-items: center; gap: 0.75rem; }
+    .nav-login {
+      text-decoration: none; color: var(--gray-700); font-size: 0.875rem; font-weight: 600;
+      padding: 0.45rem 1rem; border-radius: 6px; border: 1px solid var(--gray-200);
+      transition: all 0.2s;
+    }
+    .nav-login:hover { border-color: var(--brand); color: var(--brand); }
     .nav-cta {
       background: var(--brand); color: white; padding: 0.45rem 1.1rem;
       border-radius: 6px; text-decoration: none; font-size: 0.875rem; font-weight: 600;
@@ -372,14 +379,17 @@
     <li><a href="#about">About</a></li>
     <li><a href="#contact">Contact</a></li>
   </ul>
-  <a href="https://app.runwaystudios.co/sign-up" class="nav-cta">Start Free</a>
+  <div class="nav-actions">
+    <a href="https://app.runwaystudios.co/sign-in" class="nav-login">Log in</a>
+    <a href="https://app.runwaystudios.co/sign-up" class="nav-cta">Start Free</a>
+  </div>
 </nav>
 
 <!-- HERO -->
 <section class="hero">
   <div class="hero-badge">AI-Powered Marketing Intelligence</div>
   <h1>Grow Faster with <span>Unified Ad Intelligence</span> Across Every Channel</h1>
-  <p>Runway Studios is a full-stack AI growth platform for Indian brands — connecting Meta, Google, YouTube, and marketplaces into one intelligent dashboard.</p>
+  <p>Runway Studios is a full-stack AI growth platform for ambitious brands worldwide — connecting Meta, Google, YouTube, and marketplaces into one intelligent dashboard.</p>
   <div class="hero-buttons">
     <a href="https://app.runwaystudios.co/sign-up" class="btn-primary">Start Free →</a>
     <a href="#pricing" class="btn-secondary">See Pricing</a>
@@ -394,7 +404,7 @@
       <div class="stat-label">Ad Platforms Connected</div>
     </div>
     <div>
-      <div class="stat-value">₹18L+</div>
+      <div class="stat-value">$200K+</div>
       <div class="stat-label">Ad Spend Tracked</div>
     </div>
     <div>
@@ -509,16 +519,18 @@
     <p class="section-sub">Every plan includes AI-powered insights. Buy credits for on-demand AI features. No long-term commitment needed.</p>
 
     <div class="pricing-toggle">
-      <button class="active" onclick="setPeriod('monthly')">Monthly</button>
-      <button onclick="setPeriod('yearly')">Yearly <span class="save-badge">Save 20%</span></button>
+      <button class="active" onclick="setPeriod('monthly',this)">Monthly</button>
+      <button onclick="setPeriod('yearly',this)">Yearly <span class="save-badge">Save 20%</span></button>
     </div>
 
     <div class="pricing-grid" id="pricing-grid">
       <!-- Free -->
       <div class="plan-card">
         <p class="plan-name">Free</p>
-        <p class="plan-price monthly-price">₹0<span>/mo</span></p>
-        <p class="plan-price yearly-price" style="display:none">₹0<span>/yr</span></p>
+        <p class="plan-price monthly-price inr-price">₹0<span>/mo</span></p>
+        <p class="plan-price monthly-price usd-price" style="display:none">$0<span>/mo</span></p>
+        <p class="plan-price yearly-price inr-price" style="display:none">₹0<span>/yr</span></p>
+        <p class="plan-price yearly-price usd-price" style="display:none">$0<span>/yr</span></p>
         <p class="plan-credits">⚡ 50 one-time signup credits</p>
         <ul class="plan-features">
           <li>1 workspace</li>
@@ -533,8 +545,10 @@
       <!-- Starter -->
       <div class="plan-card">
         <p class="plan-name">Starter</p>
-        <p class="plan-price monthly-price">₹1,999<span>/mo</span></p>
-        <p class="plan-price yearly-price" style="display:none">₹19,999<span>/yr</span></p>
+        <p class="plan-price monthly-price inr-price">₹1,999<span>/mo</span></p>
+        <p class="plan-price monthly-price usd-price" style="display:none">$25<span>/mo</span></p>
+        <p class="plan-price yearly-price inr-price" style="display:none">₹19,999<span>/yr</span></p>
+        <p class="plan-price yearly-price usd-price" style="display:none">$249<span>/yr</span></p>
         <p class="plan-credits">⚡ 150 credits/month</p>
         <ul class="plan-features">
           <li>1 workspace</li>
@@ -550,8 +564,10 @@
       <div class="plan-card popular">
         <span class="plan-popular-badge">Most Popular</span>
         <p class="plan-name">Growth</p>
-        <p class="plan-price monthly-price">₹4,999<span>/mo</span></p>
-        <p class="plan-price yearly-price" style="display:none">₹47,988<span>/yr</span></p>
+        <p class="plan-price monthly-price inr-price">₹4,999<span>/mo</span></p>
+        <p class="plan-price monthly-price usd-price" style="display:none">$59<span>/mo</span></p>
+        <p class="plan-price yearly-price inr-price" style="display:none">₹47,988<span>/yr</span></p>
+        <p class="plan-price yearly-price usd-price" style="display:none">$569<span>/yr</span></p>
         <p class="plan-credits">⚡ 500 credits/month</p>
         <ul class="plan-features">
           <li>1 workspace</li>
@@ -567,8 +583,10 @@
       <!-- Agency -->
       <div class="plan-card">
         <p class="plan-name">Agency</p>
-        <p class="plan-price monthly-price">₹11,999<span>/mo</span></p>
-        <p class="plan-price yearly-price" style="display:none">₹1,11,999<span>/yr</span></p>
+        <p class="plan-price monthly-price inr-price">₹11,999<span>/mo</span></p>
+        <p class="plan-price monthly-price usd-price" style="display:none">$139<span>/mo</span></p>
+        <p class="plan-price yearly-price inr-price" style="display:none">₹1,11,999<span>/yr</span></p>
+        <p class="plan-price yearly-price usd-price" style="display:none">$1,349<span>/yr</span></p>
         <p class="plan-credits">⚡ 2,000 credits/month</p>
         <ul class="plan-features">
           <li>5 workspaces</li>
@@ -583,7 +601,8 @@
 
     <!-- Top-up callout -->
     <div class="topup-box">
-      <p><strong>Need more credits?</strong> Buy top-up packs anytime — credits never expire. From ₹799 for 100 credits.</p>
+      <p class="inr-price"><strong>Need more credits?</strong> Buy top-up packs anytime — credits never expire. From ₹799 for 100 credits.</p>
+      <p class="usd-price" style="display:none"><strong>Need more credits?</strong> Buy top-up packs anytime — credits never expire. From $10 for 100 credits.</p>
       <a href="https://app.runwaystudios.co/sign-up">Buy Top-Up Credits →</a>
     </div>
   </div>
@@ -593,8 +612,8 @@
 <section class="about" id="about">
   <div class="container">
     <div class="section-badge" style="background:rgba(255,255,255,0.15);color:white;">About Us</div>
-    <div class="section-title">Built for India's growth-stage brands</div>
-    <p class="section-sub">Runway Studios was founded to give Indian D2C brands and agencies access to the same AI-powered marketing intelligence tools that Fortune 500 companies use — at a fraction of the cost.</p>
+    <div class="section-title">Built for ambitious brands worldwide</div>
+    <p class="section-sub">Runway Studios was founded to give D2C brands and agencies access to the same AI-powered marketing intelligence tools that Fortune 500 companies use — at a fraction of the cost.</p>
 
     <div class="about-grid">
       <div class="about-text">
@@ -611,7 +630,7 @@
           <li>Cross-channel ROAS computation blending Meta, Google, and marketplace data</li>
           <li>AI-generated action plans with projected impact estimates</li>
           <li>Secure OAuth2 authentication — no passwords stored, tokens refreshed automatically</li>
-          <li>All data processed and stored on Google Cloud (asia-south1) within India</li>
+          <li>All data processed and stored securely on Google Cloud infrastructure</li>
         </ul>
       </div>
     </div>
@@ -651,7 +670,7 @@
         </div>
         <div class="contact-item">
           <div class="contact-label">Platform Status</div>
-          <div class="contact-value">Early Access — Invite Only</div>
+          <div class="contact-value">Open Beta</div>
         </div>
       </div>
 
@@ -685,7 +704,7 @@
   <div class="footer-inner">
     <div class="footer-brand">
       <div class="footer-logo">Runway Studios</div>
-      <p class="footer-tagline">AI-powered marketing intelligence for Indian brands. Unify your ad data. Amplify your growth.</p>
+      <p class="footer-tagline">AI-powered marketing intelligence for brands worldwide. Unify your ad data. Amplify your growth.</p>
     </div>
     <div class="footer-col">
       <h4>Platform</h4>
@@ -717,27 +736,40 @@
 </footer>
 
 <script>
+  // ── Currency auto-detection ───────────────────────────────────────────
+  const _tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const _isIndia = _tz === 'Asia/Kolkata' || _tz === 'Asia/Calcutta';
+  let _period = 'monthly';
+
+  function _applyPrices() {
+    // Period
+    document.querySelectorAll('.monthly-price').forEach(el => el.style.display = _period === 'monthly' ? '' : 'none');
+    document.querySelectorAll('.yearly-price').forEach(el => el.style.display = _period === 'yearly' ? '' : 'none');
+    // Currency — within period, show only the right currency
+    document.querySelectorAll('.' + _period + '-price.inr-price').forEach(el => el.style.display = _isIndia ? '' : 'none');
+    document.querySelectorAll('.' + _period + '-price.usd-price').forEach(el => el.style.display = _isIndia ? 'none' : '');
+    // Top-up box
+    document.querySelectorAll('.topup-box .inr-price').forEach(el => el.style.display = _isIndia ? '' : 'none');
+    document.querySelectorAll('.topup-box .usd-price').forEach(el => el.style.display = _isIndia ? 'none' : '');
+  }
+
+  function setPeriod(period, btn) {
+    _period = period;
+    document.querySelectorAll('.pricing-toggle button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    _applyPrices();
+  }
+
+  // Run on load
+  document.addEventListener('DOMContentLoaded', _applyPrices);
+
+  // ── Contact form ──────────────────────────────────────────────────────
   function handleSubmit(e) {
     e.preventDefault();
     const btn = e.target.querySelector('.form-submit');
     btn.textContent = 'Message Sent ✓';
     btn.style.background = '#16a34a';
     btn.disabled = true;
-    // In production, wire to a form backend (Formspree, EmailJS, etc.)
-  }
-
-  function setPeriod(period) {
-    const btns = document.querySelectorAll('.pricing-toggle button');
-    btns.forEach(b => b.classList.remove('active'));
-    event.target.classList.add('active');
-    const grid = document.getElementById('pricing-grid');
-    if (period === 'yearly') {
-      grid.querySelectorAll('.monthly-price').forEach(el => el.style.display = 'none');
-      grid.querySelectorAll('.yearly-price').forEach(el => el.style.display = '');
-    } else {
-      grid.querySelectorAll('.monthly-price').forEach(el => el.style.display = '');
-      grid.querySelectorAll('.yearly-price').forEach(el => el.style.display = 'none');
-    }
   }
 </script>
 
