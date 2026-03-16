@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Support — Runway Studios</title>
+  <meta name="description" content="Submit a support ticket to the Runway Studios team. We typically respond within 24 hours." />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="theme-color" content="#7c3aed" />
+  <style>
+    :root {
+      --brand: #7c3aed;
+      --brand-dark: #6d28d9;
+      --brand-light: #ede9fe;
+      --gray-50: #f9fafb;
+      --gray-100: #f3f4f6;
+      --gray-200: #e5e7eb;
+      --gray-400: #9ca3af;
+      --gray-500: #6b7280;
+      --gray-700: #374151;
+      --gray-900: #111827;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--gray-900); background: var(--gray-50); }
+
+    /* NAV */
+    nav {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 2rem; height: 64px; background: white;
+      border-bottom: 1px solid var(--gray-200); position: sticky; top: 0; z-index: 100;
+    }
+    .nav-logo { font-size: 1rem; font-weight: 800; color: var(--gray-900); text-decoration: none; }
+    .nav-actions { display: flex; align-items: center; gap: 0.75rem; }
+    .nav-login {
+      padding: 0.4rem 1rem; border-radius: 8px; border: 1px solid var(--gray-200);
+      font-size: 0.875rem; font-weight: 500; color: var(--gray-700); text-decoration: none;
+      transition: border-color 0.2s, color 0.2s;
+    }
+    .nav-login:hover { border-color: var(--brand); color: var(--brand); }
+    .nav-cta {
+      padding: 0.4rem 1rem; border-radius: 8px; background: var(--brand);
+      font-size: 0.875rem; font-weight: 600; color: white; text-decoration: none;
+      transition: background 0.2s;
+    }
+    .nav-cta:hover { background: var(--brand-dark); }
+
+    /* HERO */
+    .hero {
+      background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%);
+      padding: 4rem 2rem 3rem; text-align: center; color: white;
+    }
+    .hero h1 { font-size: 2.25rem; font-weight: 800; margin-bottom: 0.75rem; }
+    .hero p { font-size: 1rem; color: #ddd6fe; max-width: 520px; margin: 0 auto; }
+
+    /* MAIN */
+    .main { max-width: 800px; margin: 0 auto; padding: 3rem 1.5rem; }
+
+    .card {
+      background: white; border-radius: 16px; border: 1px solid var(--gray-200);
+      padding: 2.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+
+    .card-title { font-size: 1.125rem; font-weight: 700; color: var(--gray-900); margin-bottom: 0.25rem; }
+    .card-sub { font-size: 0.875rem; color: var(--gray-500); margin-bottom: 2rem; }
+
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .form-group { margin-bottom: 1.25rem; }
+    .form-group label { display: block; font-size: 0.8125rem; font-weight: 600; color: var(--gray-700); margin-bottom: 0.4rem; }
+    .form-group input, .form-group select, .form-group textarea {
+      width: 100%; padding: 0.625rem 0.875rem; border: 1px solid var(--gray-200);
+      border-radius: 8px; font-size: 0.9rem; color: var(--gray-900);
+      background: white; outline: none; transition: border-color 0.2s, box-shadow 0.2s;
+      font-family: inherit;
+    }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+      border-color: var(--brand); box-shadow: 0 0 0 3px rgba(124,58,237,0.1);
+    }
+    .form-group textarea { resize: vertical; min-height: 120px; }
+
+    .priority-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .priority-btn {
+      padding: 0.4rem 1rem; border-radius: 99px; border: 1.5px solid var(--gray-200);
+      font-size: 0.8125rem; font-weight: 600; cursor: pointer;
+      background: white; color: var(--gray-600); transition: all 0.15s;
+    }
+    .priority-btn:hover { border-color: var(--brand); color: var(--brand); }
+    .priority-btn.active { border-color: var(--brand); background: var(--brand-light); color: var(--brand); }
+
+    .submit-btn {
+      width: 100%; padding: 0.875rem; border-radius: 10px; border: none;
+      background: var(--brand); color: white; font-size: 0.9375rem; font-weight: 700;
+      cursor: pointer; transition: background 0.2s, transform 0.1s; margin-top: 0.5rem;
+    }
+    .submit-btn:hover:not(:disabled) { background: var(--brand-dark); transform: translateY(-1px); }
+    .submit-btn:disabled { opacity: 0.7; cursor: not-allowed; }
+
+    .alert {
+      padding: 1rem 1.25rem; border-radius: 10px; font-size: 0.875rem;
+      margin-bottom: 1.5rem; display: none;
+    }
+    .alert-success { background: #f0fdf4; border: 1px solid #86efac; color: #166534; }
+    .alert-error   { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; }
+
+    /* SIDE INFO */
+    .layout { display: grid; grid-template-columns: 1fr 320px; gap: 2rem; align-items: start; }
+    .info-card {
+      background: white; border-radius: 16px; border: 1px solid var(--gray-200);
+      padding: 1.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .info-card h3 { font-size: 0.9375rem; font-weight: 700; margin-bottom: 1.25rem; color: var(--gray-900); }
+    .info-item { margin-bottom: 1.25rem; }
+    .info-label { font-size: 0.75rem; font-weight: 600; color: var(--gray-400); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.2rem; }
+    .info-value { font-size: 0.875rem; color: var(--gray-900); }
+    .info-value a { color: var(--brand); text-decoration: none; }
+    .sla-chips { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem; }
+    .sla-chip {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.5rem 0.75rem; border-radius: 8px; background: var(--gray-50);
+      border: 1px solid var(--gray-200); font-size: 0.8125rem;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .dot-low    { background: #3b82f6; }
+    .dot-normal { background: #f59e0b; }
+    .dot-high   { background: #ef4444; }
+
+    @media (max-width: 768px) {
+      .layout { grid-template-columns: 1fr; }
+      .form-row { grid-template-columns: 1fr; }
+      .hero h1 { font-size: 1.75rem; }
+    }
+
+    /* FOOTER */
+    footer {
+      background: #111827; color: #9ca3af;
+      padding: 2rem; text-align: center; font-size: 0.8125rem; margin-top: 4rem;
+    }
+    footer a { color: #9ca3af; text-decoration: none; }
+    footer a:hover { color: white; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <a href="/" class="nav-logo">Runway Studios</a>
+  <div class="nav-actions">
+    <a href="https://app.runwaystudios.co/sign-in" class="nav-login">Log in</a>
+    <a href="https://app.runwaystudios.co/sign-up" class="nav-cta">Start Free</a>
+  </div>
+</nav>
+
+<div class="hero">
+  <h1>Submit a Support Ticket</h1>
+  <p>Our team typically responds within 24 hours. For urgent issues, mention it in Priority.</p>
+</div>
+
+<div class="main">
+  <div class="layout">
+    <!-- FORM -->
+    <div class="card">
+      <div class="card-title">Tell us what's going on</div>
+      <div class="card-sub">We'll get back to you at the email address you provide.</div>
+
+      <div id="alert-success" class="alert alert-success">
+        <strong>Ticket submitted!</strong> We've received your message and will reply within 24 hours.
+      </div>
+      <div id="alert-error" class="alert alert-error">
+        Something went wrong. Please try again or email us at <a href="mailto:info@runwaystudios.co">info@runwaystudios.co</a>.
+      </div>
+
+      <form id="ticket-form" onsubmit="handleTicket(event)">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="t-name">Your Name *</label>
+            <input type="text" id="t-name" placeholder="Rahul Sharma" required />
+          </div>
+          <div class="form-group">
+            <label for="t-email">Email Address *</label>
+            <input type="email" id="t-email" placeholder="rahul@yourbrand.com" required />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="t-company">Company / Brand</label>
+            <input type="text" id="t-company" placeholder="Your Brand Name" />
+          </div>
+          <div class="form-group">
+            <label for="t-category">Category *</label>
+            <select id="t-category" required>
+              <option value="General">General Question</option>
+              <option value="Bug">Bug / Something not working</option>
+              <option value="Billing">Billing / Credits</option>
+              <option value="Integration">Integration (Meta / Google / Shopify)</option>
+              <option value="Feature">Feature Request</option>
+              <option value="Account">Account / Login</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Priority</label>
+          <div class="priority-row">
+            <button type="button" class="priority-btn" onclick="setPriority('Low', this)">Low</button>
+            <button type="button" class="priority-btn active" onclick="setPriority('Normal', this)">Normal</button>
+            <button type="button" class="priority-btn" onclick="setPriority('High', this)">High — blocking my work</button>
+            <button type="button" class="priority-btn" onclick="setPriority('Critical', this)">Critical — data loss / outage</button>
+          </div>
+          <input type="hidden" id="t-priority" value="Normal" />
+        </div>
+
+        <div class="form-group">
+          <label for="t-message">Describe the issue *</label>
+          <textarea id="t-message" placeholder="Please describe what happened, what you expected, and any steps to reproduce. Screenshots or error messages are very helpful." required></textarea>
+        </div>
+
+        <button type="submit" class="submit-btn" id="submit-btn">Submit Ticket</button>
+      </form>
+    </div>
+
+    <!-- SIDE INFO -->
+    <div>
+      <div class="info-card">
+        <h3>Contact Information</h3>
+        <div class="info-item">
+          <div class="info-label">Email</div>
+          <div class="info-value"><a href="mailto:info@runwaystudios.co">info@runwaystudios.co</a></div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Phone / WhatsApp</div>
+          <div class="info-value"><a href="tel:+918826283840">+91 88262 83840</a></div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Response time</div>
+          <div class="sla-chips">
+            <div class="sla-chip"><span class="dot dot-high"></span><span><strong>Critical</strong> — within 4 hours</span></div>
+            <div class="sla-chip"><span class="dot dot-normal"></span><span><strong>High</strong> — within 12 hours</span></div>
+            <div class="sla-chip"><span class="dot dot-low"></span><span><strong>Normal / Low</strong> — within 24 hours</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="info-card" style="margin-top:1rem">
+        <h3>Quick Links</h3>
+        <div class="info-item">
+          <div class="info-value"><a href="https://app.runwaystudios.co/settings">⚙️ Connect integrations</a></div>
+        </div>
+        <div class="info-item">
+          <div class="info-value"><a href="https://app.runwaystudios.co/billing">💳 Billing &amp; Credits</a></div>
+        </div>
+        <div class="info-item">
+          <div class="info-value"><a href="/privacy.html">🔒 Privacy Policy</a></div>
+        </div>
+        <div class="info-item">
+          <div class="info-value"><a href="/tos.html">📄 Terms of Service</a></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <p>© 2026 Runway Studios · <a href="/">runwaystudios.co</a> · <a href="mailto:info@runwaystudios.co">info@runwaystudios.co</a></p>
+</footer>
+
+<script>
+  const BACKEND = 'https://agent-swarm-771420308292.asia-south1.run.app';
+
+  function setPriority(val, btn) {
+    document.querySelectorAll('.priority-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('t-priority').value = val;
+  }
+
+  async function handleTicket(e) {
+    e.preventDefault();
+    const btn = document.getElementById('submit-btn');
+    const successEl = document.getElementById('alert-success');
+    const errorEl = document.getElementById('alert-error');
+    successEl.style.display = 'none';
+    errorEl.style.display = 'none';
+
+    btn.textContent = 'Submitting…';
+    btn.disabled = true;
+
+    const payload = {
+      name:     document.getElementById('t-name').value.trim(),
+      email:    document.getElementById('t-email').value.trim(),
+      company:  document.getElementById('t-company').value.trim(),
+      category: document.getElementById('t-category').value,
+      priority: document.getElementById('t-priority').value,
+      message:  document.getElementById('t-message').value.trim(),
+    };
+
+    try {
+      const res = await fetch(`${BACKEND}/public/submit-ticket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error('Server error');
+      successEl.style.display = 'block';
+      document.getElementById('ticket-form').reset();
+      document.querySelectorAll('.priority-btn').forEach(b => b.classList.remove('active'));
+      document.querySelector('.priority-btn:nth-child(2)').classList.add('active');
+      document.getElementById('t-priority').value = 'Normal';
+    } catch (_) {
+      errorEl.style.display = 'block';
+    } finally {
+      btn.textContent = 'Submit Ticket';
+      btn.disabled = false;
+    }
+  }
+</script>
+
+</body>
+</html>

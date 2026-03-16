@@ -381,6 +381,7 @@
     <li><a href="#pricing">Pricing</a></li>
     <li><a href="#about">About</a></li>
     <li><a href="#contact">Contact</a></li>
+    <li><a href="/support.html">Support</a></li>
   </ul>
   <div class="nav-actions">
     <a href="https://app.runwaystudios.co/sign-in" class="nav-login">Log in</a>
@@ -675,10 +676,18 @@
           <div class="contact-label">Platform Status</div>
           <div class="contact-value">Open Beta</div>
         </div>
+        <div class="contact-item" style="margin-top:1.5rem">
+          <a href="/support.html" style="display:inline-flex;align-items:center;gap:0.5rem;padding:0.6rem 1.25rem;background:#7c3aed;color:white;border-radius:8px;font-size:0.875rem;font-weight:600;text-decoration:none;transition:background 0.2s" onmouseover="this.style.background='#6d28d9'" onmouseout="this.style.background='#7c3aed'">
+            🎫 Submit a Support Ticket
+          </a>
+        </div>
       </div>
 
       <div class="contact-form">
-        <form onsubmit="handleSubmit(event)">
+        <div id="contact-success" style="display:none;padding:1rem;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;color:#166534;font-size:0.875rem;margin-bottom:1rem">
+          <strong>Message sent!</strong> We'll get back to you within 24 hours.
+        </div>
+        <form id="contact-form" onsubmit="handleSubmit(event)">
           <div class="form-group">
             <label for="name">Your Name</label>
             <input type="text" id="name" placeholder="Rahul Sharma" required />
@@ -695,7 +704,7 @@
             <label for="message">Message</label>
             <textarea id="message" placeholder="Tell us about your brand and what you're looking for..."></textarea>
           </div>
-          <button type="submit" class="form-submit">Send Message</button>
+          <button type="submit" class="form-submit" id="contact-btn">Send Message</button>
         </form>
       </div>
     </div>
@@ -724,6 +733,7 @@
       <ul>
         <li><a href="#about">About</a></li>
         <li><a href="#contact">Contact</a></li>
+        <li><a href="/support.html">Support</a></li>
         <li><a href="privacy.html">Privacy Policy</a></li>
         <li><a href="tos.html">Terms of Service</a></li>
         <li><a href="data-deletion.html">Data Deletion</a></li>
@@ -767,12 +777,39 @@
   document.addEventListener('DOMContentLoaded', _applyPrices);
 
   // ── Contact form ──────────────────────────────────────────────────────
-  function handleSubmit(e) {
+  const _BACKEND = 'https://agent-swarm-771420308292.asia-south1.run.app';
+
+  async function handleSubmit(e) {
     e.preventDefault();
-    const btn = e.target.querySelector('.form-submit');
-    btn.textContent = 'Message Sent ✓';
-    btn.style.background = '#16a34a';
+    const btn = document.getElementById('contact-btn');
+    btn.textContent = 'Sending…';
     btn.disabled = true;
+
+    const payload = {
+      name:     document.getElementById('name').value.trim(),
+      email:    document.getElementById('email').value.trim(),
+      company:  document.getElementById('company').value.trim(),
+      category: 'General',
+      priority: 'Normal',
+      message:  document.getElementById('message').value.trim(),
+    };
+
+    try {
+      const res = await fetch(`${_BACKEND}/public/submit-ticket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error('error');
+      document.getElementById('contact-success').style.display = 'block';
+      document.getElementById('contact-form').reset();
+    } catch (_) {
+      // Fallback: open mailto
+      window.location.href = `mailto:info@runwaystudios.co?subject=Contact from ${payload.name}&body=${encodeURIComponent(payload.message)}`;
+    } finally {
+      btn.textContent = 'Send Message';
+      btn.disabled = false;
+    }
   }
 </script>
 
