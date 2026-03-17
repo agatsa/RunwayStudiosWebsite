@@ -1,15 +1,14 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { toast } from 'sonner'
-import { CheckCircle, Link2, Trash2, Loader2, RefreshCw, ShoppingBag, Crown, Lock } from 'lucide-react'
+import { CheckCircle, Link2, Trash2, Loader2, RefreshCw, ShoppingBag, Crown, Lock, Youtube, Building2, MonitorSmartphone } from 'lucide-react'
 import MetaConnectDialog from './MetaConnectDialog'
 import GoogleConnectDialog from './GoogleConnectDialog'
 import GoogleAccountSelectDialog from './GoogleAccountSelectDialog'
 import YouTubeConnectDialog from './YouTubeConnectDialog'
-import ShopifyConnectDialog from './ShopifyConnectDialog'
 import ExcelUploadDialog from './ExcelUploadDialog'
 import ProductUrlsSection from './ProductUrlsSection'
 import MetaCompetitorPages from './MetaCompetitorPages'
@@ -78,10 +77,15 @@ function PlatformCard({
           <div>
             <p className="font-semibold text-gray-900">{name}</p>
             {isConnected ? (
-              <p className="text-xs text-gray-500">
-                {connection?.account_name ?? connection?.account_id ?? 'Connected'}
-                {connection?.ad_account_id ? ` · ${connection.ad_account_id}` : ''}
-              </p>
+              <div>
+                <p className="text-xs text-gray-500">
+                  {connection?.account_name ?? connection?.account_id ?? 'Connected'}
+                  {connection?.ad_account_id ? ` · ${connection.ad_account_id}` : ''}
+                </p>
+                {connection?.account_name && connection?.account_id && connection.account_name !== connection.account_id && (
+                  <p className="text-[10px] text-gray-400 font-mono mt-0.5">{connection.account_id}</p>
+                )}
+              </div>
             ) : (
               <p className="text-xs text-gray-400">Not connected</p>
             )}
@@ -137,73 +141,43 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
   const [showMetaDialog, setShowMetaDialog] = useState(false)
   const [showGoogleDialog, setShowGoogleDialog] = useState(false)
   const [showYouTubeDialog, setShowYouTubeDialog] = useState(false)
-  const [showShopifyDialog, setShowShopifyDialog] = useState(false)
   const [showGoogleAccountSelect, setShowGoogleAccountSelect] = useState(false)
   const [showUpload, setShowUpload] = useState<'meta' | 'google' | null>(null)
-  const [shopifyStatus, setShopifyStatus] = useState<{ connected: boolean; shop_domain?: string; shop_name?: string; synced_at?: string; products_count?: number } | null>(null)
-  const [shopifyLoading, setShopifyLoading] = useState(false)
   const [plan, setPlan] = useState<PlanName | null>(null)
   const [planGate, setPlanGate] = useState<{ platform: string; required: string } | null>(null)
+  const [workspaceType, setWorkspaceType] = useState<string | null>(null)
+  const [savingType, setSavingType] = useState(false)
   const router = useRouter()
 
-  const fetchShopifyStatus = useCallback(async () => {
-    if (!workspaceId) return
-    try {
-      const r = await fetch(`/api/shopify/status?workspace_id=${workspaceId}`)
-      if (r.ok) setShopifyStatus(await r.json())
-    } catch { /* ignore */ }
-  }, [workspaceId])
-
-  const handleShopifySync = async () => {
-    setShopifyLoading(true)
-    try {
-      const r = await fetch('/api/shopify/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace_id: workspaceId }),
-      })
-      const d = await r.json()
-      if (!r.ok) throw new Error(d.detail ?? 'Sync failed')
-      toast.success(`Synced ${d.products_synced} products from Shopify`)
-      fetchShopifyStatus()
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Sync failed')
-    } finally {
-      setShopifyLoading(false)
-    }
-  }
-
-  const handleShopifyDisconnect = async () => {
-    if (!confirm('Disconnect Shopify? Product catalog will no longer auto-sync.')) return
-    setShopifyLoading(true)
-    try {
-      const r = await fetch('/api/shopify/disconnect', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace_id: workspaceId }),
-      })
-      if (!r.ok) throw new Error('Failed')
-      toast.success('Shopify disconnected')
-      setShopifyStatus({ connected: false })
-    } catch {
-      toast.error('Failed to disconnect Shopify')
-    } finally {
-      setShopifyLoading(false)
-    }
-  }
-
-  // Fetch billing plan on mount
+  // Fetch billing plan + workspace type on mount
   useEffect(() => {
     if (!workspaceId) return
     fetch(`/api/billing/status?workspace_id=${workspaceId}`)
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d?.plan) setPlan(d.plan) })
       .catch(() => {})
+    fetch(`/api/workspace?workspace_id=${workspaceId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.workspace_type) setWorkspaceType(d.workspace_type) })
+      .catch(() => {})
   }, [workspaceId])
 
-  useEffect(() => {
-    fetchShopifyStatus()
-  }, [fetchShopifyStatus])
+  const handleSaveWorkspaceType = async (type: string) => {
+    setWorkspaceType(type)
+    setSavingType(true)
+    try {
+      await fetch('/api/workspace/type', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspace_id: workspaceId, workspace_type: type }),
+      })
+      toast.success('Business type updated')
+    } catch {
+      toast.error('Failed to save')
+    } finally {
+      setSavingType(false)
+    }
+  }
 
   // Plan-gate helpers
   const isStarterLocked = plan === 'free'                                    // Meta, Google require Starter+
@@ -250,23 +224,6 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
         server_error: 'Server error during Meta OAuth. Please try again.',
       }
       toast.error(metaErrMessages[metaError] ?? `Meta connect error: ${decodeURIComponent(metaError)}`)
-    }
-    // Shopify OAuth result toasts
-    const params = new URLSearchParams(window.location.search)
-    if (params.get('shopify_connected') === '1') {
-      toast.success('Shopify store connected! Products are syncing now.')
-      fetchShopifyStatus()
-    }
-    const shopifyError = params.get('shopify_error')
-    if (shopifyError) {
-      const errMessages: Record<string, string> = {
-        invalid_state: 'Invalid OAuth state — please try again.',
-        hmac_failed: 'Security check failed — please try again.',
-        missing_params: 'Shopify did not return required parameters.',
-        token_exchange_failed: 'Could not exchange token with Shopify. Check app credentials.',
-        save_failed: 'Could not save Shopify connection. Try again or contact support.',
-      }
-      toast.error(errMessages[shopifyError] ?? `Shopify error: ${shopifyError}`)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -375,64 +332,6 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
           }
         />
 
-        {/* Shopify */}
-        <div className="rounded-xl border border-gray-200 bg-white p-5">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-green-600 shrink-0">
-                <ShoppingBag className="h-5 w-5 text-white" />
-              </div>
-              <div>
-                <p className="font-semibold text-gray-900">Shopify Store</p>
-                {shopifyStatus?.connected ? (
-                  <p className="text-xs text-gray-500">
-                    {shopifyStatus.shop_name ?? shopifyStatus.shop_domain}
-                    {shopifyStatus.products_count != null ? ` · ${shopifyStatus.products_count} products` : ''}
-                    {shopifyStatus.synced_at ? ` · Synced ${new Date(shopifyStatus.synced_at).toLocaleDateString()}` : ''}
-                  </p>
-                ) : (
-                  <p className="text-xs text-gray-400">Not connected — connect to auto-sync products + images</p>
-                )}
-              </div>
-            </div>
-
-            <div className="flex shrink-0 items-center gap-2">
-              {shopifyStatus?.connected ? (
-                <>
-                  <span className="flex items-center gap-1 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700">
-                    <CheckCircle className="h-3 w-3" />
-                    Connected
-                  </span>
-                  <button
-                    onClick={handleShopifySync}
-                    disabled={shopifyLoading}
-                    className="flex items-center gap-1 rounded-lg border border-green-200 px-2.5 py-1 text-xs text-green-700 hover:bg-green-50 disabled:opacity-50"
-                  >
-                    {shopifyLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                    Sync Now
-                  </button>
-                  <button
-                    onClick={handleShopifyDisconnect}
-                    disabled={shopifyLoading}
-                    className="flex items-center gap-1 rounded-lg border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                    Disconnect
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={() => setShowShopifyDialog(true)}
-                  className="flex items-center gap-1.5 rounded-lg bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
-                >
-                  <Link2 className="h-3 w-3" />
-                  Connect Store
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-
         {/* GA4 — auto-discovered via Google OAuth */}
         <div className="rounded-xl border border-gray-200 bg-white p-5">
           <div className="flex items-start justify-between gap-4">
@@ -500,25 +399,38 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
       <section className="space-y-3">
         <div>
           <h2 className="text-base font-semibold text-gray-900">Business Type</h2>
-          <p className="text-sm text-gray-500">Helps ARIA personalize recommendations for your business model</p>
+          <p className="text-sm text-gray-500">ARIA personalises your Growth OS, competitor intel and recommendations based on this.</p>
         </div>
         <div className="rounded-xl border border-gray-200 bg-white p-4">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {[
-              { key: 'd2c', label: 'D2C Product', desc: 'Meta → YouTube → Google → Marketplace' },
-              { key: 'creator', label: 'YouTuber / Creator', desc: 'YouTube-first → Instagram → Email' },
-              { key: 'service', label: 'Service / SaaS', desc: 'Google Search → LinkedIn → YouTube' },
-              { key: 'local', label: 'Local Business', desc: 'Google Maps → Local Search → Instagram' },
-              { key: 'b2b', label: 'B2B / Enterprise', desc: 'LinkedIn → Google → Email → Webinars' },
-            ].map(bt => (
-              <div key={bt.key}
-                className="rounded-lg border border-gray-200 p-3 cursor-pointer hover:border-brand-400 hover:bg-brand-50 transition-colors">
-                <p className="text-sm font-medium text-gray-900">{bt.label}</p>
-                <p className="text-[10px] text-gray-400 mt-0.5">{bt.desc}</p>
-              </div>
-            ))}
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {([
+              { key: 'd2c',     icon: ShoppingBag,      label: 'D2C Brand',       desc: 'Selling products via ads',       accent: 'text-blue-600',   bg: 'bg-blue-50',   border: 'border-blue-500' },
+              { key: 'creator', icon: Youtube,           label: 'Creator',         desc: 'Growing a YouTube channel',      accent: 'text-red-600',    bg: 'bg-red-50',    border: 'border-red-500' },
+              { key: 'agency',  icon: Building2,         label: 'Agency',          desc: 'Managing client accounts',       accent: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-500' },
+              { key: 'saas',    icon: MonitorSmartphone, label: 'SaaS / App',      desc: 'Driving signups & subs',         accent: 'text-emerald-600',bg: 'bg-emerald-50',border: 'border-emerald-500' },
+            ] as const).map(bt => {
+              const Icon = bt.icon
+              const selected = workspaceType === bt.key
+              return (
+                <button
+                  key={bt.key}
+                  onClick={() => handleSaveWorkspaceType(bt.key)}
+                  disabled={savingType}
+                  className={`relative flex flex-col items-start gap-2 rounded-xl border-2 p-3 text-left transition-all ${
+                    selected ? `${bt.border} ${bt.bg}` : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  {selected && <CheckCircle className={`absolute top-2.5 right-2.5 h-3.5 w-3.5 ${bt.accent}`} />}
+                  <Icon className={`h-5 w-5 ${selected ? bt.accent : 'text-gray-400'}`} />
+                  <div>
+                    <p className={`text-xs font-semibold ${selected ? 'text-gray-900' : 'text-gray-700'}`}>{bt.label}</p>
+                    <p className="text-[10px] text-gray-400 leading-tight mt-0.5">{bt.desc}</p>
+                  </div>
+                </button>
+              )
+            })}
           </div>
-          <p className="mt-3 text-xs text-gray-400">Saving business type — coming soon</p>
+          {savingType && <p className="mt-2 text-xs text-gray-400 flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" /> Saving…</p>}
         </div>
       </section>
 
@@ -584,14 +496,6 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
           workspaceId={workspaceId}
           onConnected={refresh}
           onClose={() => setShowYouTubeDialog(false)}
-        />
-      )}
-
-      {/* Shopify connect dialog */}
-      {showShopifyDialog && (
-        <ShopifyConnectDialog
-          workspaceId={workspaceId}
-          onClose={() => setShowShopifyDialog(false)}
         />
       )}
 

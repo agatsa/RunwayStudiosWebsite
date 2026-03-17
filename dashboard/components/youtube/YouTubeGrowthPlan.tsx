@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { CheckCircle2, PlusCircle, ChevronDown, ChevronUp } from 'lucide-react'
 import { AiBadge } from '@/components/ui/AiBadge'
+import BoldText from '@/components/ui/BoldText'
 import type { YouTubeGrowthPlanHistoryItem } from '@/lib/types'
 
 interface Props {
@@ -54,7 +55,7 @@ export default function YouTubeGrowthPlan({ planId, steps, history, workspaceId 
             <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-sky-600 text-xs font-bold text-white">
               {i + 1}
             </span>
-            <p className="flex-1 text-sm leading-relaxed text-gray-700">{step}</p>
+            <p className="flex-1 text-sm leading-relaxed text-gray-700"><BoldText text={step} /></p>
             {taskCreated[i] ? (
               <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-green-600">
                 <CheckCircle2 className="h-3.5 w-3.5" /> Added
@@ -98,7 +99,7 @@ export default function YouTubeGrowthPlan({ planId, steps, history, workspaceId 
                     {(plan.steps as string[]).map((s, i) => (
                       <li key={i} className="flex items-start gap-2 text-xs text-gray-600">
                         <span className="shrink-0 font-bold text-sky-400">{i + 1}.</span>
-                        {s}
+                        <BoldText text={s} />
                       </li>
                     ))}
                   </ol>

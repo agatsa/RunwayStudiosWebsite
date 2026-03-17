@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { Lightbulb, Loader2 } from 'lucide-react'
+import BoldText from '@/components/ui/BoldText'
 
 interface Props {
   workspaceId: string
@@ -57,7 +58,7 @@ export default function GoogleAdsActionPlan({ workspaceId }: Props) {
             <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-yellow-400 text-xs font-bold text-white">
               {i + 1}
             </span>
-            <p className="text-sm text-gray-700">{step}</p>
+            <p className="text-sm text-gray-700"><BoldText text={step} /></p>
           </li>
         ))}
       </ol>

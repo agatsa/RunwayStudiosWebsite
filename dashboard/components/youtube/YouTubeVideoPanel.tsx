@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { X, Lightbulb, Loader2 } from 'lucide-react'
 import { AreaChart } from '@tremor/react'
+import BoldText from '@/components/ui/BoldText'
 import { formatNumber } from '@/lib/utils'
 import type { YouTubeVideo, YouTubeVideoInsightsResponse } from '@/lib/types'
 
@@ -264,7 +265,7 @@ export default function YouTubeVideoPanel({ video, workspaceId, onClose }: Props
                       <span className="mt-0.5 shrink-0 text-xs font-bold text-yellow-600">
                         {i + 1}
                       </span>
-                      {s}
+                      <BoldText text={s} />
                     </li>
                   ))}
                 </ul>

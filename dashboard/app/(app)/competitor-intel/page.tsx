@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { Crosshair, BarChart2, UploadCloud, Lock } from 'lucide-react'
+import { Crosshair, BarChart2, UploadCloud } from 'lucide-react'
 import { fetchFromFastAPI, fetchBillingPlan } from '@/lib/api'
 import YouTubeCompetitorIntel from '@/components/youtube/YouTubeCompetitorIntel'
 import { Megaphone } from 'lucide-react'
@@ -48,7 +48,7 @@ export default async function CompetitorIntelPage({ searchParams }: PageProps) {
   const hasAuction = auctionData?.has_data === true
   const planRank = PLAN_RANK[plan] ?? 0
   const isStarterPlus = planRank >= 1  // Starter+: Meta competitor AI
-  const isGrowthPlus  = planRank >= 2  // Growth+: YouTube Competitor Intel (20 credits)
+  // YouTube Competitor Intel is credit-gated (20 credits/run), accessible on any plan
 
   return (
     <div className="space-y-6">
@@ -74,29 +74,15 @@ export default async function CompetitorIntelPage({ searchParams }: PageProps) {
         currentPlan={plan as 'free' | 'starter' | 'growth' | 'agency'}
       />
 
-      {/* YouTube Competitor Intelligence — Growth+ required (20 credits/run) */}
-      {isGrowthPlus ? (
-        workspaceId && <YouTubeCompetitorIntel workspaceId={workspaceId} />
-      ) : (
-        <div className="flex items-center gap-4 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-100">
-            <Lock className="h-5 w-5 text-amber-600" />
-          </div>
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-amber-800">YouTube Competitor Intelligence — Growth Plan Required</p>
-            <p className="text-xs text-amber-700 mt-0.5">
-              9-layer AI analysis of competitor channels costs 20 credits/run and requires Growth or higher.
-              You&apos;re on <strong className="capitalize">{plan}</strong>.
-            </p>
-          </div>
-          <Link
-            href={`/billing?ws=${workspaceId}`}
-            className="shrink-0 rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-white hover:bg-amber-600"
-          >
-            Upgrade
-          </Link>
-        </div>
-      )}
+      {/* YouTube Competitor Intelligence — credit-gated (20 credits/run), any plan */}
+      <PlanGateBanner
+        requiredPlan="Growth"
+        feature="YouTube Competitor Intelligence"
+        creditCost={20}
+        wsId={workspaceId}
+        currentPlan={plan as 'free' | 'starter' | 'growth' | 'agency'}
+      />
+      {workspaceId && <YouTubeCompetitorIntel workspaceId={workspaceId} />}
 
       {/* Google Auction Insights — real data */}
       <div className="rounded-xl border border-gray-200 overflow-hidden">

@@ -4,6 +4,14 @@ const isPublicRoute = createRouteMatcher([
   '/sign-in(.*)',
   '/sign-up(.*)',
   '/api/webhooks(.*)',
+  // OAuth callbacks — Shopify/Meta/Google redirect here without a Clerk session
+  '/api/shopify/callback(.*)',
+  '/api/meta/oauth/callback(.*)',
+  '/api/google/oauth/callback(.*)',
+  // Public email unsubscribe (token-based, no session needed)
+  '/unsubscribe(.*)',
+  // Internal debug route for email domain diagnosis
+  '/api/email/domain/debug(.*)',
 ])
 
 export default clerkMiddleware((auth, request) => {

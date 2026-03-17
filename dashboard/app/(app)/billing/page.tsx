@@ -6,6 +6,7 @@ import { Zap, Crown, CheckCircle2, ArrowRight, TrendingUp } from 'lucide-react'
 import type { BillingStatus, PlanName } from '@/lib/types'
 import PlanBadge from '@/components/billing/PlanBadge'
 import TopUpModal from '@/components/billing/TopUpModal'
+import PageLoader from '@/components/ui/PageLoader'
 
 const PLANS: { key: PlanName; label: string; monthly: string; yearly: string; credits: number; features: string[]; highlight?: boolean }[] = [
   {
@@ -78,11 +79,7 @@ export default function BillingPage() {
   }
 
   if (!billing) {
-    return (
-      <div className="flex h-64 items-center justify-center text-sm text-gray-400">
-        Loading billing info…
-      </div>
-    )
+    return <PageLoader section="Billing" />
   }
 
   return (

@@ -25,11 +25,10 @@ export async function GET(req: NextRequest) {
   const state = Buffer.from(JSON.stringify({ ws, nonce: Date.now() })).toString('base64url')
 
   const params = new URLSearchParams({
-    client_id:          SHOPIFY_API_KEY,
-    scope:              SHOPIFY_SCOPES,
-    redirect_uri:       REDIRECT_URI,
+    client_id:    SHOPIFY_API_KEY,
+    scope:        SHOPIFY_SCOPES,
+    redirect_uri: REDIRECT_URI,
     state,
-    'grant_options[]':  'per-user',
   })
 
   const oauthUrl = `https://${shopHost}/admin/oauth/authorize?${params.toString()}`

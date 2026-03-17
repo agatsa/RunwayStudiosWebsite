@@ -120,7 +120,7 @@ export interface Product {
   price_inr?: number
   mrp_inr?: number
   sku?: string
-  images?: string[]           // JSONB array of URLs
+  images?: Array<string | { url: string; alt?: string; position?: number }>
   product_url?: string
   category?: string
   brand?: string
@@ -132,6 +132,13 @@ export interface Product {
   last_synced_at?: string
   created_at?: string
   updated_at?: string
+  // Product Intelligence fields
+  is_competitor?: boolean
+  product_type?: string        // 'product' | 'youtube_channel'
+  key_features?: string[]
+  unique_selling_prop?: string
+  target_audience?: string
+  competitor_insights?: string
 }
 
 export interface ProductsResponse {
@@ -285,4 +292,76 @@ export interface BillingStatus {
   credit_packs: Record<string, { credits: number; amount_paise: number }>
   feature_costs: Record<string, number>
   plan_monthly_credits: Record<string, number>
+}
+
+// ── Email Marketing ────────────────────────────────────────────
+
+export interface EmailDomain {
+  id: string
+  domain: string
+  verified: boolean
+  status: 'pending' | 'verified' | 'failure' | 'not_started'
+  dns_records: Array<{
+    type: string
+    name: string
+    value: string
+    ttl?: number
+    priority?: number
+  }>
+  created_at: string | null
+}
+
+export interface EmailList {
+  id: string
+  name: string
+  description: string
+  source: string | null
+  contact_count: number
+  created_at: string
+}
+
+export interface EmailContact {
+  id: string
+  email: string
+  first_name: string | null
+  last_name: string | null
+  unsubscribed: boolean
+  bounced: boolean
+  source: string | null
+  created_at: string
+}
+
+export interface EmailCampaign {
+  id: string
+  name: string
+  subject: string
+  from_email: string
+  status: 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed'
+  total_recipients: number
+  sent_count: number
+  open_count?: number
+  click_count?: number
+  bounce_count?: number
+  unsub_count?: number
+  open_rate: number
+  click_rate: number
+  created_at: string | null
+  sent_at: string | null
+  scheduled_at: string | null
+}
+
+export interface EmailQuota {
+  email_plan: string
+  monthly_limit: number
+  monthly_used: number
+  monthly_remaining: number
+  reset_date: string
+  can_send: boolean
+}
+
+export interface EmailComposeResult {
+  subject: string
+  preheader: string
+  html_body: string
+  text_body: string
 }

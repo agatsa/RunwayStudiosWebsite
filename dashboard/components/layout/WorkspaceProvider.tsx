@@ -5,6 +5,18 @@ import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import type { Workspace } from '@/lib/types'
 import OnboardingModal from '@/components/onboarding/OnboardingModal'
 import SetupWorkspaceModal from '@/components/onboarding/SetupWorkspaceModal'
+import ConnectAccountsStepper from '@/components/onboarding/ConnectAccountsStepper'
+import AIChatPanel from '@/components/chat/AIChatPanel'
+import PageLoader from '@/components/ui/PageLoader'
+import { ChatProvider } from '@/components/chat/ChatContext'
+
+type WorkspaceType = 'd2c' | 'creator' | 'agency' | 'saas'
+
+interface PendingStepperState {
+  wsId: string
+  bizType: WorkspaceType
+  nextStepIdx: number
+}
 
 interface WorkspaceContextValue {
   workspaces: Workspace[]
@@ -34,9 +46,28 @@ export default function WorkspaceProvider({ children }: { children: React.ReactN
   const pathname = usePathname()
   const searchParams = useSearchParams()
 
+  // Connect accounts stepper state
+  const [showConnectStepper, setShowConnectStepper] = useState(false)
+  const [connectBizType, setConnectBizType] = useState<WorkspaceType>('d2c')
+  const [connectStartStep, setConnectStartStep] = useState(0)
+  const [pendingStepperState, setPendingStepperState] = useState<PendingStepperState | null>(null)
+
   // Keep a ref to always read the latest searchParams without making it a dep of load()
   const searchParamsRef = useRef(searchParams)
   useEffect(() => { searchParamsRef.current = searchParams }, [searchParams])
+
+  // Check sessionStorage on mount for stepper state restored after OAuth redirect
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const stored = sessionStorage.getItem('runway_connect_stepper')
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored) as PendingStepperState
+        sessionStorage.removeItem('runway_connect_stepper')
+        setPendingStepperState(parsed)
+      } catch { /* ignore malformed state */ }
+    }
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -67,6 +98,18 @@ export default function WorkspaceProvider({ children }: { children: React.ReactN
 
   useEffect(() => { load() }, [load])
 
+  // After workspace loads, apply any pending stepper state from sessionStorage
+  useEffect(() => {
+    if (!loading && pendingStepperState && current) {
+      if (current.id === pendingStepperState.wsId) {
+        setConnectBizType(pendingStepperState.bizType)
+        setConnectStartStep(pendingStepperState.nextStepIdx)
+        setShowConnectStepper(true)
+        setPendingStepperState(null)
+      }
+    }
+  }, [loading, current, pendingStepperState])
+
   const setCurrent = (ws: Workspace) => {
     setCurrent_(ws)
     if (typeof window !== 'undefined') {
@@ -74,17 +117,49 @@ export default function WorkspaceProvider({ children }: { children: React.ReactN
     }
   }
 
+  const handleOnboardingComplete = (bizType: WorkspaceType) => {
+    setConnectBizType(bizType)
+    setConnectStartStep(0)
+    setShowConnectStepper(true)
+    load()
+  }
+
+  const handleStepperDone = () => {
+    setShowConnectStepper(false)
+    load()
+  }
+
   return (
+    <ChatProvider>
     <WorkspaceContext.Provider value={{ workspaces, current, setCurrent, loading, refresh: load }}>
       {children}
+
+      {/* Full-screen loading overlay — fixed so it covers everything, fades out when done */}
+      {loading && workspaces.length === 0 && (
+        <div className="fixed inset-0 z-[9999] bg-gray-50 flex items-center justify-center">
+          <PageLoader section="Dashboard" />
+        </div>
+      )}
       {/* New user — no workspace yet */}
       {!loading && workspaces.length === 0 && (
         <SetupWorkspaceModal onCreated={() => load()} />
       )}
-      {/* Existing workspace needs onboarding */}
-      {!loading && workspaces.length > 0 && current && current.onboarding_complete === false && (
-        <OnboardingModal workspaceId={current.id} onComplete={() => load()} />
+      {/* Existing workspace needs onboarding — hide if stepper is already open */}
+      {!loading && !showConnectStepper && workspaces.length > 0 && current && current.onboarding_complete === false && (
+        <OnboardingModal workspaceId={current.id} onComplete={handleOnboardingComplete} />
       )}
+      {/* Post-onboarding account connection stepper */}
+      {showConnectStepper && current && (
+        <ConnectAccountsStepper
+          workspaceId={current.id}
+          bizType={connectBizType}
+          startStep={connectStartStep}
+          onDone={handleStepperDone}
+        />
+      )}
+      {/* AI Contextual Chat — visible on all pages when workspace is loaded */}
+      {current && <AIChatPanel workspaceId={current.id} />}
     </WorkspaceContext.Provider>
+    </ChatProvider>
   )
 }

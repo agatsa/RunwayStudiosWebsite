@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { RefreshCw, Send, CheckCircle2, AlertTriangle, Sparkles, Youtube, Megaphone, BarChart2, Globe } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import BoldText from '@/components/ui/BoldText'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -158,12 +159,12 @@ function ActionCard({
 
           {/* Title */}
           <h3 className="text-sm font-semibold text-gray-900 leading-tight mb-1.5">
-            {action.title}
+            <BoldText text={action.title} />
           </h3>
 
           {/* Rationale */}
           <p className="text-xs text-gray-600 leading-relaxed mb-2">
-            {action.rationale}
+            <BoldText text={action.rationale} />
           </p>
 
           {/* Source detail */}

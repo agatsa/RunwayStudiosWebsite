@@ -7,17 +7,19 @@ import {
   LayoutDashboard, CheckSquare, Package, Megaphone, BarChart2,
   PlayCircle, Zap, Settings, ShoppingBag, TrendingUp, Crosshair,
   MessageSquare, ClipboardList, Layout, Layers, Send, Mail,
-  Sparkles, CreditCard,
+  Sparkles, CreditCard, LifeBuoy, Search, Smartphone,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useWorkspace } from '@/components/layout/WorkspaceProvider'
 import CreditBalance from '@/components/billing/CreditBalance'
+import { useChat } from '@/components/chat/ChatContext'
 
 interface NavItem {
   label: string
   href: string
   icon: React.ElementType
   soon?: boolean
+  limited?: boolean   // amber "API Soon" badge — partial functionality
   badge?: boolean
   highlight?: boolean
 }
@@ -37,7 +39,7 @@ const navSections: NavSection[] = [
     title: 'CHANNELS',
     items: [
       { label: 'Meta Ads',    href: '/campaigns',       icon: Megaphone },
-      { label: 'Google Ads',  href: '/google-ads',      icon: BarChart2 },
+      { label: 'Google Ads',  href: '/google-ads',      icon: BarChart2,  limited: true },
       { label: 'YouTube',     href: '/youtube',         icon: PlayCircle },
       { label: 'Marketplace', href: '/marketplace',     icon: ShoppingBag },
     ],
@@ -46,32 +48,35 @@ const navSections: NavSection[] = [
     title: 'GROWTH OS',
     items: [
       { label: 'Command Center', href: '/growth-os', icon: Sparkles, highlight: true },
+      { label: 'App Growth',     href: '/app-growth', icon: Smartphone },
     ],
   },
   {
     title: 'INTELLIGENCE',
     items: [
-      { label: 'Search Trends',      href: '/search-trends',   icon: TrendingUp },
+      { label: 'Search Trends',      href: '/search-trends',    icon: TrendingUp,   soon: true },
       { label: 'Competitor Intel',   href: '/competitor-intel', icon: Crosshair },
-      { label: 'Comments & Reviews', href: '/comments',        icon: MessageSquare },
+      { label: 'Comments & Reviews', href: '/comments',         icon: MessageSquare },
+      { label: 'SEO',                href: '/seo',              icon: Search },
     ],
   },
   {
     title: 'PLANNING',
     items: [
       { label: 'Campaign Planner', href: '/campaign-planner', icon: ClipboardList },
-      { label: 'Landing Pages',    href: '/landing-pages',    icon: Layout },
-      { label: 'Awareness Funnel', href: '/awareness',        icon: Layers },
+      { label: 'Landing Pages',    href: '/landing-pages',    icon: Layout,       soon: true },
+      { label: 'Awareness Funnel', href: '/awareness',        icon: Layers,       soon: true },
     ],
   },
   {
     title: 'OPERATIONS',
     items: [
       { label: 'Organic Posts', href: '/organic-posts', icon: Send },
-      { label: 'Catalog',       href: '/catalog',       icon: Package },
+      { label: 'Products',      href: '/products',      icon: Package },
       { label: 'Approvals',     href: '/approvals',     icon: CheckSquare, badge: true },
-      { label: 'Email',         href: '/email-intel',   icon: Mail, soon: true },
+      { label: 'Email',         href: '/email-intel',   icon: Mail },
       { label: 'Billing',       href: '/billing',       icon: CreditCard },
+      { label: 'Support',       href: '/support',       icon: LifeBuoy },
     ],
   },
 ]
@@ -102,6 +107,7 @@ export default function Sidebar() {
   const [pendingCount, setPendingCount] = useState<number | null>(null)
   const { current } = useWorkspace()
   const wsType = current?.workspace_type ?? 'd2c'
+  const { setChatOpen } = useChat()
 
   useEffect(() => {
     if (!wsId) return
@@ -147,6 +153,11 @@ export default function Sidebar() {
               Soon
             </span>
           )}
+          {item.limited && (
+            <span className="rounded px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide bg-amber-100 text-amber-600">
+              Soon
+            </span>
+          )}
           {showBadge && (
             <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white">
               {pendingCount}
@@ -164,6 +175,19 @@ export default function Sidebar() {
         <span className="text-sm font-bold text-gray-900 leading-tight">
           Runway<br />Studios
         </span>
+      </div>
+
+      {/* Ask ARIA button */}
+      <div className="px-2 pt-3 pb-1">
+        <button
+          onClick={() => setChatOpen(true)}
+          className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
+          style={{ background: 'linear-gradient(135deg, #7c3aed, #4f46e5)' }}
+        >
+          <Sparkles className="h-4 w-4 shrink-0" />
+          <span className="flex-1 text-left">Ask ARIA</span>
+          <span className="rounded px-1.5 py-0.5 text-[9px] font-bold bg-white/20 text-white/80 tracking-wide">⌘K</span>
+        </button>
       </div>
 
       <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-4">
@@ -210,6 +234,11 @@ export default function Sidebar() {
                       <span className="flex items-center gap-1 shrink-0">
                         {item.soon && (
                           <span className="rounded px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide bg-gray-100 text-gray-400">
+                            Soon
+                          </span>
+                        )}
+                        {item.limited && (
+                          <span className="rounded px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide bg-amber-100 text-amber-600">
                             Soon
                           </span>
                         )}

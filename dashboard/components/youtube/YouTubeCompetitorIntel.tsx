@@ -742,8 +742,10 @@ export default function YouTubeCompetitorIntel({ workspaceId }: { workspaceId: s
         {tab === 'overview' && (() => {
           const ds = discovery?.discovery_status ?? 'idle'
 
-          // ── State: IDLE — no analysis yet (or previous completed) ─────────
-          if (ds === 'idle' || !discovery?.has_job) {
+          // ── State: IDLE — no analysis yet ────────────────────────────────
+          // Treat as completed if a previous job finished (legacy: discovery_status NULL → 'idle')
+          const hasCompletedJob = job?.status === 'completed' && competitors.length > 0
+          if ((ds === 'idle' || !discovery?.has_job) && !hasCompletedJob) {
             return (
               <div className="space-y-5">
                 {/* Last run info */}
@@ -802,8 +804,8 @@ export default function YouTubeCompetitorIntel({ workspaceId }: { workspaceId: s
 
           // ── State: DISCOVERING — live log feed ────────────────────────────
           if (ds === 'discovering') {
-            const logs = discovery.discovery_log ?? []
-            const ownTopicSpace = discovery.own_topic_space ?? []
+            const logs = discovery?.discovery_log ?? []
+            const ownTopicSpace = discovery?.own_topic_space ?? []
             return (
               <div className="space-y-4">
                 {/* Own Topic Space */}
@@ -856,8 +858,8 @@ export default function YouTubeCompetitorIntel({ workspaceId }: { workspaceId: s
 
           // ── State: AWAITING_CONFIRMATION — candidate cards + confirm ──────
           if (ds === 'awaiting_confirmation') {
-            const candidates = discovery.discovery_candidates ?? []
-            const ownTopicSpace = discovery.own_topic_space ?? []
+            const candidates = discovery?.discovery_candidates ?? []
+            const ownTopicSpace = discovery?.own_topic_space ?? []
             return (
               <div className="space-y-5">
                 {/* Own Topic Space */}

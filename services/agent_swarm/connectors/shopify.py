@@ -184,6 +184,74 @@ class ShopifyConnector:
         ).decode("utf-8")
         return _hmac.compare_digest(expected, hmac_header or "")
 
+    # ── SEO helpers ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def get_products_seo(shop_domain: str, access_token: str) -> list[dict]:
+        """Get all products with their SEO fields and image alt texts."""
+        import requests as _r
+        shop = _normalize_shop(shop_domain)
+        headers = {"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"}
+        products = []
+        url = f"https://{shop}/admin/api/2024-01/products.json?fields=id,title,handle,body_html,images,metafields_global_title_tag,metafields_global_description_tag&limit=50"
+        while url:
+            r = _r.get(url, headers=headers, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+            products.extend(data.get("products", []))
+            link = r.headers.get("Link", "")
+            url = _parse_next_link(link)
+        return products
+
+    @staticmethod
+    def update_product_seo(shop_domain: str, access_token: str, product_id: int,
+                            seo_title: str = None, seo_description: str = None) -> dict:
+        """Update a product's SEO title and/or meta description."""
+        import requests as _r
+        shop = _normalize_shop(shop_domain)
+        headers = {"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"}
+        payload: dict = {"product": {"id": product_id}}
+        if seo_title:
+            payload["product"]["metafields_global_title_tag"] = seo_title
+        if seo_description:
+            payload["product"]["metafields_global_description_tag"] = seo_description
+        r = _r.put(f"https://{shop}/admin/api/2024-01/products/{product_id}.json",
+                   headers=headers, json=payload, timeout=15)
+        r.raise_for_status()
+        return r.json().get("product", {})
+
+    @staticmethod
+    def update_image_alt(shop_domain: str, access_token: str,
+                          product_id: int, image_id: int, alt: str) -> dict:
+        """Update alt text for a product image."""
+        import requests as _r
+        shop = _normalize_shop(shop_domain)
+        headers = {"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"}
+        payload = {"image": {"id": image_id, "alt": alt}}
+        r = _r.put(f"https://{shop}/admin/api/2024-01/products/{product_id}/images/{image_id}.json",
+                   headers=headers, json=payload, timeout=15)
+        r.raise_for_status()
+        return r.json().get("image", {})
+
+    @staticmethod
+    def create_blog_post(shop_domain: str, access_token: str,
+                          title: str, body_html: str, tags: str = "", published: bool = False) -> dict:
+        """Create a new blog post (article) on the Shopify blog."""
+        import requests as _r
+        shop = _normalize_shop(shop_domain)
+        headers = {"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"}
+        # Get first blog ID
+        blogs_r = _r.get(f"https://{shop}/admin/api/2024-01/blogs.json", headers=headers, timeout=10)
+        blogs = blogs_r.json().get("blogs", [])
+        if not blogs:
+            raise ValueError("No blog found on this Shopify store")
+        blog_id = blogs[0]["id"]
+        payload = {"article": {"title": title, "body_html": body_html, "tags": tags, "published": published}}
+        r = _r.post(f"https://{shop}/admin/api/2024-01/blogs/{blog_id}/articles.json",
+                    headers=headers, json=payload, timeout=15)
+        r.raise_for_status()
+        return r.json().get("article", {})
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 

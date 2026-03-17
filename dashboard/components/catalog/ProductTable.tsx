@@ -15,7 +15,8 @@ interface Props {
 
 // ── Per-product image cell ─────────────────────────────────────────────────────
 function ProductImageCell({ product }: { product: Product }) {
-  const [imageUrl, setImageUrl]   = useState<string>(product.images?.[0] ?? '')
+  const _img0 = product.images?.[0]
+  const [imageUrl, setImageUrl]   = useState<string>(typeof _img0 === 'string' ? _img0 : (_img0 as any)?.url ?? '')
   const [mode, setMode]           = useState<'idle' | 'url' | 'uploading'>('idle')
   const [urlInput, setUrlInput]   = useState('')
   const [saving, setSaving]       = useState(false)

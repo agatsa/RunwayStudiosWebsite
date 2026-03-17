@@ -11,3 +11,5 @@ openai>=1.50.0
 scikit-learn>=1.5.0
 numpy>=1.26.0
 pandas>=2.2.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0

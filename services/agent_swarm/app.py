@@ -7,9 +7,12 @@ for backward compatibility.
 """
 import os
 import time
+import json
+import httpx
 from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 from services.agent_swarm.config import (
     CRON_TOKEN, META_AD_ACCOUNT_ID, META_ADS_TOKEN, META_PAGE_ID, META_PIXEL_ID,
@@ -34,6 +37,18 @@ from services.agent_swarm.reporter.whatsapp_hourly import generate_and_send_repo
 
 app = FastAPI(title="AI Agency — Agent Swarm", version="2.0.0")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://runwaystudios.co",
+        "https://www.runwaystudios.co",
+        "https://app.runwaystudios.co",
+        "https://dashboard-771420308292.asia-south1.run.app",
+    ],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
 PLATFORM = "meta"
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 
@@ -50,6 +65,7 @@ FEATURE_COSTS = {
     "campaign_brief":       3,
     "competitor_ai":        5,
     "growth_recipe_regen":  5,
+    "ai_chat":              1,
 }
 PLAN_MONTHLY_CREDITS = {"free": 0, "starter": 150, "growth": 500, "agency": 2000}
 PLAN_PRICES_MONTHLY  = {"starter": 199900, "growth": 499900,  "agency": 1199900}
@@ -4256,6 +4272,8 @@ async def settings_meta_connect(request: Request):
                 (workspace_id, user_id, user_name, ad_account_id, access_token),
             )
         conn.commit()
+    from services.agent_swarm.core.workspace import invalidate_workspace_cache
+    invalidate_workspace_cache(workspace_id)
 
     return {"status": "connected", "ad_account_id": ad_account_id, "user_name": user_name}
 
@@ -4278,7 +4296,7 @@ async def meta_oauth_start(workspace_id: str, request: Request):
         "state": workspace_id,
         "response_type": "code",
     }
-    oauth_url = f"https://www.facebook.com/{META_API_VERSION}/dialog/oauth?" + urllib.parse.urlencode(params)
+    oauth_url = f"https://www.facebook.com/v21.0/dialog/oauth?" + urllib.parse.urlencode(params)
     return {"oauth_url": oauth_url}
 
 
@@ -4372,6 +4390,8 @@ async def meta_oauth_save(request: Request):
                     (workspace_id, user_id, user_name, ad_account_id, long_token),
                 )
             conn.commit()
+            from services.agent_swarm.core.workspace import invalidate_workspace_cache
+            invalidate_workspace_cache(workspace_id)
             return {"status": "connected", "user_name": user_name, "ad_account_id": ad_account_id}
 
         # Multiple accounts: save pending session for the user to pick from
@@ -4463,6 +4483,8 @@ async def meta_oauth_select_account(request: Request):
             # Clean up the pending session
             cur.execute("DELETE FROM meta_oauth_sessions WHERE id = %s", (session_id,))
         conn.commit()
+        from services.agent_swarm.core.workspace import invalidate_workspace_cache
+        invalidate_workspace_cache(workspace_id)
 
     return {"status": "connected", "ad_account_id": ad_account_id, "user_name": user_name}
 
@@ -4582,6 +4604,21 @@ async def youtube_connect(request: Request):
     if not channel_id:
         raise HTTPException(status_code=400, detail="youtube_channel_id is required")
 
+    # Try to fetch the real channel title to save as account_name
+    channel_title = channel_id  # fallback to channel_id if fetch fails
+    try:
+        import os as _os
+        from services.agent_swarm import config as _cfg
+        _api_key = getattr(_cfg, "YOUTUBE_API_KEY", "") or _os.getenv("YOUTUBE_API_KEY", "")
+        if _api_key:
+            from services.agent_swarm.connectors.youtube import YouTubeConnector as _YTC
+            _yc = _YTC({"youtube_channel_id": channel_id}, {}, api_key=_api_key)
+            _info = _yc.get_channel_info()
+            if _info.get("title"):
+                channel_title = _info["title"]
+    except Exception as _e:
+        print(f"YouTube channel title fetch (non-fatal): {_e}")
+
     from services.agent_swarm.db import get_conn
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -4595,10 +4632,10 @@ async def youtube_connect(request: Request):
                     account_name = EXCLUDED.account_name,
                     updated_at   = NOW()
                 """,
-                (workspace_id, channel_id, channel_id),
+                (workspace_id, channel_id, channel_title),
             )
         conn.commit()
-    return {"ok": True, "workspace_id": workspace_id, "youtube_channel_id": channel_id}
+    return {"ok": True, "workspace_id": workspace_id, "youtube_channel_id": channel_id, "channel_title": channel_title}
 
 
 @app.get("/youtube/channel-stats")
@@ -4675,6 +4712,20 @@ async def youtube_channel_stats(
         channel_info = yc.get_channel_info()
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"YouTube API error: {e}")
+
+    # Keep account_name in platform_connections up to date with real channel title
+    if channel_info.get("title"):
+        try:
+            from services.agent_swarm.db import get_conn as _gc
+            with _gc() as _conn:
+                with _conn.cursor() as _cur:
+                    _cur.execute(
+                        "UPDATE platform_connections SET account_name = %s WHERE workspace_id = %s AND platform = 'youtube'",
+                        (channel_info["title"], workspace_id),
+                    )
+                _conn.commit()
+        except Exception as _e:
+            print(f"YouTube account_name update (non-fatal): {_e}")
 
     # Daily stats — requires OAuth2; skip gracefully if not available
     daily_rows: list = []
@@ -5545,20 +5596,29 @@ async def google_oauth_save(request: Request):
     except Exception as e:
         print(f"[oauth/save] GA4 property discovery error: {e}")
 
-    if not customer_id:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "No Google Ads accounts found for this Google account. "
-                "Make sure Google Ads is active before connecting."
-            ),
-        )
-
     from services.agent_swarm.db import get_conn
     with get_conn() as conn:
         with conn.cursor() as cur:
+            # If customer_id discovery failed, preserve the existing one from DB
+            if not customer_id:
+                cur.execute(
+                    "SELECT customer_id FROM google_auth_tokens WHERE workspace_id=%s LIMIT 1",
+                    (workspace_id,),
+                )
+                existing = cur.fetchone()
+                customer_id = existing[0] if existing else None
+                print(f"[oauth/save] customer_id discovery failed, preserved existing: {customer_id}")
+
+            if not customer_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "No Google Ads accounts found for this Google account. "
+                        "Make sure Google Ads is active before connecting."
+                    ),
+                )
+
             # Delete existing row for this workspace, then insert fresh.
-            # Avoids ON CONFLICT which requires a DB-level UNIQUE constraint.
             cur.execute(
                 "DELETE FROM google_auth_tokens WHERE workspace_id = %s",
                 (workspace_id,),
@@ -5585,13 +5645,27 @@ async def google_oauth_save(request: Request):
                     "DELETE FROM platform_connections WHERE workspace_id = %s AND platform = 'youtube'",
                     (workspace_id,),
                 )
+                # Try to fetch real channel title via OAuth (we have it at this point)
+                _yt_title = youtube_channel_id
+                try:
+                    from services.agent_swarm.connectors.youtube import YouTubeConnector as _YTCO
+                    import os as _os2
+                    from services.agent_swarm import config as _cfg2
+                    _yt_api_key = getattr(_cfg2, "YOUTUBE_API_KEY", "") or _os2.getenv("YOUTUBE_API_KEY", "")
+                    _yt_conn_row = {**google_row, "youtube_channel_id": youtube_channel_id}
+                    _ytc = _YTCO(_yt_conn_row, {}, api_key=_yt_api_key)
+                    _yt_info = _ytc.get_channel_info()
+                    if _yt_info.get("title"):
+                        _yt_title = _yt_info["title"]
+                except Exception as _yte:
+                    print(f"YouTube title fetch in oauth/save (non-fatal): {_yte}")
                 cur.execute(
                     """
                     INSERT INTO platform_connections
-                        (workspace_id, platform, account_id)
-                    VALUES (%s, 'youtube', %s)
+                        (workspace_id, platform, account_id, account_name)
+                    VALUES (%s, 'youtube', %s, %s)
                     """,
-                    (workspace_id, youtube_channel_id),
+                    (workspace_id, youtube_channel_id, _yt_title),
                 )
                 # Clear cached YouTube analytics so stale data from a previous
                 # channel doesn't show until the new channel is fetched.
@@ -9511,6 +9585,1188 @@ async def ga4_geo(request: Request, workspace_id: str = None, days: int = 30):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── SEO / Google Search Console ──────────────────────────────────────────────
+
+def _get_gsc_connector(workspace_id: str, site_url: str = ""):
+    """Load GSC credentials from google_auth_tokens and return a GSCConnector."""
+    from services.agent_swarm.connectors.gsc import GSCConnector
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT access_token, refresh_token, client_id, client_secret, gsc_site_url "
+                "FROM google_auth_tokens WHERE workspace_id=%s LIMIT 1",
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="Google not connected for this workspace")
+    access_token, refresh_token, client_id, client_secret, stored_site = row
+    return GSCConnector(
+        access_token=access_token or "",
+        refresh_token=refresh_token or "",
+        client_id=client_id or "",
+        client_secret=client_secret or "",
+        site_url=site_url or stored_site or "",
+    )
+
+
+@app.get("/seo/status")
+async def seo_status(request: Request, workspace_id: str = None):
+    """Return GSC connection status + list of verified sites."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    # Check if Google is connected at all
+    try:
+        gsc = _get_gsc_connector(workspace_id)
+    except HTTPException:
+        return {"connected": False, "sites": [], "active_site": "", "workspace_id": workspace_id}
+
+    # Try listing GSC sites — may fail if scope not granted or no verified sites
+    sites = []
+    gsc_error = None
+    try:
+        sites = gsc.list_sites()
+    except Exception as e:
+        gsc_error = str(e)
+
+    # Auto-save default site
+    site_url = gsc.site_url or (sites[0]["siteUrl"] if sites else "")
+    if site_url and not gsc.site_url:
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE google_auth_tokens SET gsc_site_url=%s WHERE workspace_id=%s",
+                        (site_url, workspace_id),
+                    )
+        except Exception:
+            pass
+
+    return {
+        "connected": True,  # Google OAuth is connected
+        "gsc_ready": len(sites) > 0,  # GSC scope + verified sites available
+        "gsc_error": gsc_error,
+        "sites": [{"url": s["siteUrl"], "permission": s.get("permissionLevel", "")}
+                  for s in sites],
+        "active_site": site_url,
+        "workspace_id": workspace_id,
+    }
+
+
+@app.get("/seo/keywords")
+async def seo_keywords(request: Request, workspace_id: str = None,
+                       days: int = 28, limit: int = 50, site_url: str = ""):
+    """Top organic keywords with clicks, impressions, CTR, position."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    try:
+        gsc = _get_gsc_connector(workspace_id, site_url)
+        if not gsc.site_url:
+            raise HTTPException(status_code=400,
+                detail="No GSC site found. Connect Google Search Console first.")
+        keywords = gsc.top_keywords(days=days, limit=limit)
+        return {"keywords": keywords, "count": len(keywords),
+                "days": days, "site": gsc.site_url}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/seo/pages")
+async def seo_pages(request: Request, workspace_id: str = None,
+                    days: int = 28, limit: int = 50, site_url: str = ""):
+    """Top pages by organic clicks."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    try:
+        gsc = _get_gsc_connector(workspace_id, site_url)
+        if not gsc.site_url:
+            raise HTTPException(status_code=400,
+                detail="No GSC site found. Connect Google Search Console first.")
+        pages = gsc.top_pages(days=days, limit=limit)
+        devices = gsc.device_breakdown(days=days)
+        countries = gsc.country_breakdown(days=days, limit=10)
+        return {"pages": pages, "devices": devices, "countries": countries,
+                "days": days, "site": gsc.site_url}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/seo/audit-url")
+async def seo_audit_url(request: Request):
+    """
+    On-page SEO audit for any URL.
+    Fetches with Jina/requests, then Claude grades and suggests improvements.
+    """
+    _auth(request)
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    workspace_id = body.get("workspace_id", "")
+    if not url or not workspace_id:
+        raise HTTPException(status_code=400, detail="url and workspace_id required")
+    if not url.startswith("http"):
+        url = "https://" + url
+
+    import requests as _req
+    import re as _re
+    import anthropic as _anthropic
+    import json as _json
+    from services.agent_swarm.config import ANTHROPIC_API_KEY as _AKEY, CLAUDE_MODEL as _MODEL
+    from bs4 import BeautifulSoup as _BS
+    from urllib.parse import urlparse as _up
+
+    # Fetch page
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; RunwaySEO/1.0)",
+        "Accept": "text/html,*/*",
+    }
+    try:
+        r = _req.get(url, headers=headers, timeout=12, allow_redirects=True)
+        html = r.text
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not fetch URL: {e}")
+
+    soup = _BS(html, "lxml")
+
+    # Extract key SEO signals
+    title_tag  = (soup.find("title") or {}).get_text(strip=True) if soup.find("title") else ""
+    meta_desc  = ""
+    canonical  = ""
+    h1s = [t.get_text(strip=True) for t in soup.find_all("h1")]
+    h2s = [t.get_text(strip=True) for t in soup.find_all("h2")][:8]
+
+    for meta in soup.find_all("meta"):
+        if meta.get("name", "").lower() == "description":
+            meta_desc = meta.get("content", "")
+        if meta.get("property", "").lower() == "og:description" and not meta_desc:
+            meta_desc = meta.get("content", "")
+
+    can_tag = soup.find("link", rel="canonical")
+    if can_tag:
+        canonical = can_tag.get("href", "")
+
+    imgs = soup.find_all("img")
+    imgs_without_alt = sum(1 for i in imgs if not i.get("alt", "").strip())
+    total_imgs = len(imgs)
+
+    # Schema.org markup detection
+    ld_types = []
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            ld = _json.loads(script.string or "")
+            items = ld if isinstance(ld, list) else ld.get("@graph", [ld])
+            ld_types += [item.get("@type", "") for item in items if item.get("@type")]
+        except Exception:
+            pass
+
+    word_count = len(soup.get_text(separator=" ").split())
+    internal_links = len([a for a in soup.find_all("a", href=True)
+                          if a["href"].startswith("/") or _up(url).netloc in a["href"]])
+
+    # Jina fallback for JS-rendered pages (headless Shopify/SPAs)
+    if word_count < 200:
+        try:
+            jina_r = _req.get(
+                f"https://r.jina.ai/{url}",
+                headers={"Accept": "text/markdown", "User-Agent": "RunwaySEO/1.0"},
+                timeout=35,
+            )
+            if jina_r.ok and len(jina_r.text) > 200:
+                jina_text = jina_r.text
+                # Re-parse with Jina markdown content
+                jina_soup = _BS(jina_text, "lxml")
+                jina_wc = len(jina_text.split())
+                if jina_wc > word_count:
+                    # Extract H1/H2 from Jina markdown (## headings)
+                    h1_lines = [l.lstrip("# ").strip() for l in jina_text.splitlines() if l.startswith("# ") and not l.startswith("## ")]
+                    h2_lines = [l.lstrip("# ").strip() for l in jina_text.splitlines() if l.startswith("## ")][:8]
+                    if h1_lines:
+                        h1s = h1_lines
+                    if h2_lines:
+                        h2s = h2_lines
+                    word_count = jina_wc
+        except Exception:
+            pass  # Jina timed out — use BS results as-is
+
+    signals = {
+        "title": title_tag,
+        "title_length": len(title_tag),
+        "meta_description": meta_desc,
+        "meta_desc_length": len(meta_desc),
+        "h1s": h1s,
+        "h2s": h2s,
+        "canonical": canonical,
+        "images_total": total_imgs,
+        "images_missing_alt": imgs_without_alt,
+        "schema_types": ld_types,
+        "word_count": word_count,
+        "internal_links": internal_links,
+    }
+
+    # Claude audit
+    client = _anthropic.Anthropic(api_key=_AKEY)
+    prompt = f"""Audit this page's on-page SEO signals and return a JSON report.
+
+URL: {url}
+Page signals:
+{_json.dumps(signals, indent=2)}
+
+JSON structure (respond with ONLY the JSON object, no other text):
+{{
+  "overall_score": <integer 0-100>,
+  "grade": "<A|B|C|D|F>",
+  "summary": "<2 sentence overview>",
+  "issues": [
+    {{"severity": "critical", "title": "...", "detail": "...", "fix": "..."}},
+    {{"severity": "warning", "title": "...", "detail": "...", "fix": "..."}}
+  ],
+  "strengths": ["...", "..."],
+  "quick_wins": ["specific 1-sentence fix", "..."]
+}}
+
+Scoring guide:
+- Title: ideal 50-60 chars with primary keyword (+20pts if good, -15 if missing/too short/too long)
+- Meta description: 150-160 chars compelling (+10pts)
+- H1: exactly one with keyword (+15pts, -20 if missing)
+- Schema markup: Product/FAQ/Review (+10pts each)
+- Alt text on all images (+5pts)
+- Word count: 300+ product page (+10pts)
+- Internal links: 3+ (+5pts)
+
+Be specific — reference the actual title/meta text. Give concrete one-line fixes."""
+
+    msg = client.messages.create(
+        model=_MODEL,
+        max_tokens=2048,
+        system="You are an expert SEO auditor. Always respond with valid JSON only. Never include explanatory text, markdown, or code fences. Start your response with { and end with }.",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    resp = msg.content[0].text.strip()
+    print(f"[SEO audit] raw Claude resp (first 500): {resp[:500]}", flush=True)
+    # Strip markdown fences if present
+    if resp.startswith("```"):
+        resp = _re.sub(r'^```[a-z]*\n?', '', resp).rstrip('`').strip()
+    audit = None
+    try:
+        audit = _json.loads(resp)
+    except Exception:
+        pass
+    if audit is None:
+        try:
+            m = _re.search(r'\{.*\}', resp, _re.DOTALL)
+            if m:
+                audit = _json.loads(m.group())
+        except Exception:
+            pass
+    if audit is None:
+        audit = {
+            "overall_score": 0, "grade": "?",
+            "summary": "Could not parse AI response — try again.",
+            "issues": [], "strengths": [], "quick_wins": [],
+        }
+
+    return {"url": url, "signals": signals, "audit": audit}
+
+
+@app.post("/seo/set-site")
+async def seo_set_site(request: Request):
+    """Save the active GSC site URL for a workspace."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    site_url = body.get("site_url", "")
+    if not workspace_id or not site_url:
+        raise HTTPException(status_code=400, detail="workspace_id and site_url required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE google_auth_tokens SET gsc_site_url=%s WHERE workspace_id=%s",
+                (site_url, workspace_id),
+            )
+    return {"ok": True, "site_url": site_url}
+
+
+@app.get("/seo/backlinks")
+async def seo_backlinks_list(request: Request, workspace_id: str = None):
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, source_url, source_domain, target_url, anchor_text,
+                       status, domain_authority, notes, created_at
+                FROM seo_backlinks WHERE workspace_id=%s ORDER BY created_at DESC
+            """, (workspace_id,))
+            rows = cur.fetchall()
+    return {"backlinks": [
+        {"id": str(r[0]), "source_url": r[1], "source_domain": r[2] or "",
+         "target_url": r[3] or "", "anchor_text": r[4] or "", "status": r[5] or "prospect",
+         "domain_authority": r[6], "notes": r[7] or "",
+         "created_at": r[8].isoformat() if r[8] else None}
+        for r in rows
+    ]}
+
+
+@app.post("/seo/backlinks/add")
+async def seo_backlinks_add(request: Request):
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    source_url = (body.get("source_url") or "").strip()
+    if not workspace_id or not source_url:
+        raise HTTPException(status_code=400, detail="workspace_id and source_url required")
+    if not source_url.startswith("http"):
+        source_url = "https://" + source_url
+    import re as _re2
+    m = _re2.match(r'https?://([^/]+)', source_url)
+    source_domain = m.group(1) if m else source_url
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO seo_backlinks (workspace_id, source_url, source_domain, target_url, anchor_text, status, domain_authority, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            """, (workspace_id, source_url, source_domain,
+                  body.get("target_url", ""), body.get("anchor_text", ""),
+                  body.get("status", "prospect"), body.get("domain_authority") or None,
+                  body.get("notes", "")))
+            new_id = str(cur.fetchone()[0])
+    return {"ok": True, "id": new_id}
+
+
+@app.patch("/seo/backlinks/{backlink_id}")
+async def seo_backlinks_update(backlink_id: str, request: Request):
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    allowed = ("status", "notes", "anchor_text", "domain_authority", "target_url")
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if not updates:
+        return {"ok": True}
+    set_clause = ", ".join(f"{k}=%s" for k in updates)
+    values = list(updates.values()) + [backlink_id, workspace_id]
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE seo_backlinks SET {set_clause}, updated_at=NOW() WHERE id=%s AND workspace_id=%s", values)
+    return {"ok": True}
+
+
+@app.delete("/seo/backlinks/{backlink_id}")
+async def seo_backlinks_delete(backlink_id: str, request: Request):
+    _auth(request)
+    ws = request.query_params.get("workspace_id", "")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM seo_backlinks WHERE id=%s AND workspace_id=%s", (backlink_id, ws))
+    return {"ok": True}
+
+
+@app.post("/seo/offpage-analysis")
+async def seo_offpage_analysis(request: Request):
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    import anthropic as _anthropic, json as _json, re as _re
+    from services.agent_swarm.config import ANTHROPIC_API_KEY as _AKEY, CLAUDE_MODEL as _MODEL
+    from services.agent_swarm.core.workspace import get_workspace
+    ws = get_workspace(workspace_id)
+    ws_type = (ws or {}).get("workspace_type", "d2c")
+    ws_name = (ws or {}).get("name", "")
+    products_context = ""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT name FROM products WHERE workspace_id=%s AND is_competitor=false LIMIT 5", (workspace_id,))
+                prods = [r[0] for r in cur.fetchall()]
+                products_context = ", ".join(prods)
+    except Exception:
+        pass
+    active_site = body.get("active_site", "")
+    client = _anthropic.Anthropic(api_key=_AKEY)
+    prompt = f"""You are an expert SEO strategist for {ws_type} businesses in India.
+
+Business: {ws_name}
+Type: {ws_type}
+Products: {products_context or "health/consumer products"}
+Website: {active_site or "their website"}
+
+Generate a comprehensive off-page SEO strategy. Return ONLY valid JSON:
+{{
+  "summary": "2-sentence overview of off-page SEO opportunity",
+  "strategies": [
+    {{
+      "category": "Directory Listings|Guest Posts|PR & Press|Partnerships|Broken Link Building|Social Profiles|Forum & Community|Product Reviews",
+      "priority": "high|medium|low",
+      "title": "specific strategy name",
+      "description": "exactly what to do",
+      "targets": ["specific real website 1", "specific real website 2", "specific real website 3"],
+      "effort": "1-2 hours|half day|1 week",
+      "expected_impact": "concrete SEO impact"
+    }}
+  ],
+  "quick_wins": [
+    {{"action": "specific thing to do today", "target": "specific real website", "why": "SEO benefit"}}
+  ],
+  "outreach_template": "ready-to-send email template for requesting a backlink (personalizable)"
+}}
+
+Name REAL, specific websites relevant to this niche (health devices, India market). Include at least 6 strategies and 5 quick wins."""
+
+    msg = client.messages.create(
+        model=_MODEL, max_tokens=2048,
+        system="You are an SEO strategist. Respond with valid JSON only. No markdown fences. Start with {",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    resp = msg.content[0].text.strip()
+    if resp.startswith("```"):
+        resp = _re.sub(r'^```[a-z]*\n?', '', resp).rstrip('`').strip()
+    plan = None
+    try:
+        plan = _json.loads(resp)
+    except Exception:
+        m2 = _re.search(r'\{.*\}', resp, _re.DOTALL)
+        if m2:
+            try:
+                plan = _json.loads(m2.group())
+            except Exception:
+                pass
+    if not plan:
+        raise HTTPException(status_code=500, detail="Could not generate plan")
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO seo_offpage_plans (workspace_id, plan) VALUES (%s, %s::jsonb)", (workspace_id, _json.dumps(plan)))
+    except Exception as e:
+        print(f"seo_offpage_plans save error: {e}")
+    return {"plan": plan, "workspace_id": workspace_id}
+
+
+@app.get("/seo/offpage-analysis/latest")
+async def seo_offpage_latest(request: Request, workspace_id: str = None):
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT plan, created_at FROM seo_offpage_plans WHERE workspace_id=%s ORDER BY created_at DESC LIMIT 1", (workspace_id,))
+            row = cur.fetchone()
+    if not row:
+        return {"plan": None}
+    return {"plan": row[0], "created_at": row[1].isoformat()}
+
+
+@app.post("/seo/send-to-approvals")
+async def seo_send_to_approvals(request: Request):
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    issue = body.get("issue", {})
+    url = body.get("url", "")
+    signals = body.get("signals", {})
+    if not workspace_id or not issue:
+        raise HTTPException(status_code=400, detail="workspace_id and issue required")
+    import anthropic as _anthropic
+    from services.agent_swarm.config import ANTHROPIC_API_KEY as _AKEY, CLAUDE_MODEL as _MODEL
+    client = _anthropic.Anthropic(api_key=_AKEY)
+    fix_prompt = f"""SEO issue to fix:
+URL: {url}
+Issue: {issue.get('title','')}
+Detail: {issue.get('detail','')}
+Current title: "{signals.get('title','')}"
+Current meta: "{signals.get('meta_description','')}"
+Current H1s: {signals.get('h1s',[])}
+
+Write the EXACT implementation — copy-paste ready text. No explanation, just the fix.
+===FIX===
+[exact new title tag / meta description / H1 text / schema JSON / whatever is needed]
+===END==="""
+    msg = client.messages.create(model=_MODEL, max_tokens=512, messages=[{"role": "user", "content": fix_prompt}])
+    resp = msg.content[0].text.strip()
+    fix_content = resp
+    if "===FIX===" in resp and "===END===" in resp:
+        fix_content = resp.split("===FIX===")[1].split("===END===")[0].strip()
+    action_text = f"SEO Fix — {issue.get('title','')}\n\nPage: {url}\nIssue: {issue.get('detail','')}\n\nImplement this:\n{fix_content}"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO action_log (workspace_id, action_type, description, status, triggered_by, new_value)
+                VALUES (%s, 'seo_fix', %s, 'pending', 'seo_audit', %s) RETURNING id
+            """, (workspace_id, f"SEO: {issue.get('title','')}", action_text))
+            action_id = str(cur.fetchone()[0])
+    return {"ok": True, "action_id": action_id, "fix_content": fix_content}
+
+
+# ── SEO Shopify Automation ────────────────────────────────────────────────────
+
+def _get_shopify_creds(workspace_id: str):
+    """Get Shopify shop_domain + access_token for a workspace."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT shop_domain, access_token FROM shopify_connections WHERE workspace_id=%s LIMIT 1",
+                (workspace_id,)
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="Shopify not connected for this workspace")
+    return row[0], row[1]
+
+
+@app.get("/seo/shopify/scan")
+async def seo_shopify_scan(request: Request, workspace_id: str = None):
+    """Scan all Shopify products for SEO issues: missing meta, short titles, missing alt text."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    shop_domain, access_token = _get_shopify_creds(workspace_id)
+    from services.agent_swarm.connectors.shopify import ShopifyConnector
+    products = ShopifyConnector.get_products_seo(shop_domain, access_token)
+    issues = []
+    for p in products:
+        pid = p["id"]
+        title = p.get("title", "")
+        seo_title = p.get("metafields_global_title_tag") or title
+        seo_desc = p.get("metafields_global_description_tag") or ""
+        images = p.get("images", [])
+        imgs_missing_alt = [i for i in images if not (i.get("alt") or "").strip()]
+        p_issues = []
+        if len(seo_title) < 30 or len(seo_title) > 70:
+            p_issues.append({"type": "seo_title", "severity": "warning",
+                             "detail": f"SEO title is {len(seo_title)} chars (ideal 30-70): '{seo_title}'"})
+        if len(seo_desc) < 100:
+            p_issues.append({"type": "seo_desc", "severity": "critical",
+                             "detail": f"Meta description is {len(seo_desc)} chars (ideal 140-160)"})
+        if imgs_missing_alt:
+            p_issues.append({"type": "alt_text", "severity": "warning",
+                             "detail": f"{len(imgs_missing_alt)} of {len(images)} images missing alt text",
+                             "image_ids": [i["id"] for i in imgs_missing_alt]})
+        if p_issues:
+            issues.append({
+                "product_id": pid,
+                "product_title": title,
+                "handle": p.get("handle", ""),
+                "seo_title": seo_title,
+                "seo_desc": seo_desc,
+                "issues": p_issues,
+                "images": [{"id": i["id"], "src": i.get("src",""), "alt": i.get("alt","")} for i in images[:3]],
+            })
+    return {"products_scanned": len(products), "products_with_issues": len(issues), "issues": issues}
+
+
+@app.post("/seo/shopify/push-fix")
+async def seo_shopify_push_fix(request: Request):
+    """Push an SEO fix (title/meta/alt) directly to Shopify."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    product_id = body.get("product_id")
+    fix_type = body.get("fix_type")  # seo_title | seo_desc | alt_text
+    value = body.get("value", "")
+    image_id = body.get("image_id")
+    if not workspace_id or not product_id or not fix_type:
+        raise HTTPException(status_code=400, detail="workspace_id, product_id, fix_type required")
+    shop_domain, access_token = _get_shopify_creds(workspace_id)
+    from services.agent_swarm.connectors.shopify import ShopifyConnector
+    try:
+        if fix_type == "alt_text" and image_id:
+            ShopifyConnector.update_image_alt(shop_domain, access_token, product_id, image_id, value)
+        elif fix_type in ("seo_title", "seo_desc"):
+            seo_title = value if fix_type == "seo_title" else None
+            seo_desc = value if fix_type == "seo_desc" else None
+            ShopifyConnector.update_product_seo(shop_domain, access_token, product_id, seo_title, seo_desc)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown fix_type: {fix_type}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "product_id": product_id, "fix_type": fix_type}
+
+
+@app.post("/seo/shopify/fix-alts")
+async def seo_shopify_fix_alts(request: Request):
+    """AI generates alt text for ALL images missing it, then pushes to Shopify."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    shop_domain, access_token = _get_shopify_creds(workspace_id)
+    from services.agent_swarm.connectors.shopify import ShopifyConnector
+    import anthropic as _anthropic, json as _json
+    from services.agent_swarm.config import ANTHROPIC_API_KEY as _AKEY, CLAUDE_MODEL as _MODEL
+    products = ShopifyConnector.get_products_seo(shop_domain, access_token)
+    client = _anthropic.Anthropic(api_key=_AKEY)
+    fixed = 0
+    errors = 0
+    for p in products:
+        images_missing = [i for i in p.get("images", []) if not (i.get("alt") or "").strip()]
+        if not images_missing:
+            continue
+        # Generate alt texts in one Claude call for all images of this product
+        prompt = f"""Product: {p.get('title','')}
+Description: {(p.get('body_html','') or '')[:300]}
+
+Generate concise, descriptive alt text (max 12 words each) for {len(images_missing)} product images.
+Return ONLY a JSON array of strings, one per image, in order.
+Example: ["Front view of EasyTouch glucose monitor in white", "Side view showing USB port"]"""
+        try:
+            msg = client.messages.create(model=_MODEL, max_tokens=512,
+                system="Return valid JSON array only.",
+                messages=[{"role": "user", "content": prompt}])
+            alts = _json.loads(msg.content[0].text.strip())
+            if not isinstance(alts, list):
+                alts = [alts] * len(images_missing)
+            for img, alt in zip(images_missing, alts):
+                try:
+                    ShopifyConnector.update_image_alt(shop_domain, access_token, p["id"], img["id"], str(alt))
+                    fixed += 1
+                except Exception:
+                    errors += 1
+        except Exception as e:
+            print(f"[fix-alts] product {p['id']} error: {e}")
+            errors += len(images_missing)
+    return {"ok": True, "fixed": fixed, "errors": errors}
+
+
+@app.post("/seo/shopify/generate-schema")
+async def seo_shopify_generate_schema(request: Request):
+    """Generate Product schema JSON-LD for a Shopify product."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    product_id = body.get("product_id")
+    if not workspace_id or not product_id:
+        raise HTTPException(status_code=400, detail="workspace_id and product_id required")
+    shop_domain, access_token = _get_shopify_creds(workspace_id)
+    import requests as _rq, json as _json
+    from services.agent_swarm.connectors.shopify import _normalize_shop
+    shop = _normalize_shop(shop_domain)
+    headers = {"X-Shopify-Access-Token": access_token}
+    r = _rq.get(f"https://{shop}/admin/api/2024-01/products/{product_id}.json", headers=headers, timeout=10)
+    r.raise_for_status()
+    p = r.json().get("product", {})
+    variant = (p.get("variants") or [{}])[0]
+    image = (p.get("images") or [{}])[0]
+    schema = {
+        "@context": "https://schema.org/",
+        "@type": "Product",
+        "name": p.get("title", ""),
+        "description": (p.get("body_html") or "").replace("<[^>]+>", ""),
+        "image": image.get("src", ""),
+        "sku": variant.get("sku", ""),
+        "brand": {"@type": "Brand", "name": p.get("vendor", "")},
+        "offers": {
+            "@type": "Offer",
+            "priceCurrency": "INR",
+            "price": variant.get("price", "0"),
+            "availability": "https://schema.org/InStock" if p.get("status") == "active" else "https://schema.org/OutOfStock",
+            "url": f"https://{shop_domain}/products/{p.get('handle','')}"
+        }
+    }
+    gtm_snippet = f"""<!-- GTM Custom HTML Tag — paste in Google Tag Manager -->
+<script type="application/ld+json">
+{_json.dumps(schema, indent=2)}
+</script>"""
+    return {"product_title": p.get("title"), "schema": schema, "gtm_snippet": gtm_snippet,
+            "shopify_liquid": "{% comment %}Add to product.liquid theme file{% endcomment %}\n<script type=\"application/ld+json\">{{ product | json }}</script>"}
+
+
+# ── SEO WordPress Connector ───────────────────────────────────────────────────
+
+@app.post("/seo/wordpress/connect")
+async def seo_wordpress_connect(request: Request):
+    """Test WordPress REST API connection and save credentials."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    wp_url = (body.get("wp_url") or "").strip().rstrip("/")
+    app_password = (body.get("app_password") or "").strip()
+    wp_username = (body.get("wp_username") or "").strip()
+    if not workspace_id or not wp_url or not app_password or not wp_username:
+        raise HTTPException(status_code=400, detail="workspace_id, wp_url, wp_username, app_password required")
+    if not wp_url.startswith("http"):
+        wp_url = "https://" + wp_url
+    import requests as _rq, base64 as _b64
+    credentials = _b64.b64encode(f"{wp_username}:{app_password}".encode()).decode()
+    headers = {"Authorization": f"Basic {credentials}", "Content-Type": "application/json"}
+    try:
+        test = _rq.get(f"{wp_url}/wp-json/wp/v2/users/me", headers=headers, timeout=10)
+        if test.status_code == 401:
+            raise HTTPException(status_code=401, detail="Invalid username or application password")
+        if not test.ok:
+            raise HTTPException(status_code=400, detail=f"WordPress API error: {test.status_code}")
+        user_info = test.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not connect to WordPress: {e}")
+    # Save to platform_connections
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM platform_connections WHERE workspace_id=%s AND platform='wordpress'", (workspace_id,))
+            cur.execute("""
+                INSERT INTO platform_connections (workspace_id, platform, account_id, account_name, access_token, meta)
+                VALUES (%s, 'wordpress', %s, %s, %s, %s::jsonb)
+            """, (workspace_id, wp_url, user_info.get("name", wp_username),
+                  app_password, json.dumps({"wp_url": wp_url, "wp_username": wp_username})))
+    return {"ok": True, "wp_url": wp_url, "user": user_info.get("name", wp_username)}
+
+
+@app.get("/seo/wordpress/status")
+async def seo_wordpress_status(request: Request, workspace_id: str = None):
+    """Check if WordPress is connected."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT account_id, account_name, meta FROM platform_connections
+                WHERE workspace_id=%s AND platform='wordpress' LIMIT 1
+            """, (workspace_id,))
+            row = cur.fetchone()
+    if not row:
+        return {"connected": False}
+    return {"connected": True, "wp_url": row[0], "user": row[1], "meta": row[2]}
+
+
+@app.get("/seo/wordpress/scan")
+async def seo_wordpress_scan(request: Request, workspace_id: str = None):
+    """Scan WordPress posts and pages for SEO issues."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT account_id, access_token, meta FROM platform_connections
+                WHERE workspace_id=%s AND platform='wordpress' LIMIT 1
+            """, (workspace_id,))
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="WordPress not connected")
+    wp_url, app_password, meta = row[0], row[1], row[2] or {}
+    wp_username = meta.get("wp_username", "")
+    import requests as _rq, base64 as _b64
+    credentials = _b64.b64encode(f"{wp_username}:{app_password}".encode()).decode()
+    headers = {"Authorization": f"Basic {credentials}"}
+    issues = []
+    for post_type in ["posts", "pages"]:
+        try:
+            r = _rq.get(f"{wp_url}/wp-json/wp/v2/{post_type}?per_page=20&status=publish&_fields=id,title,link,yoast_head_json,meta", headers=headers, timeout=15)
+            if not r.ok:
+                continue
+            for post in r.json():
+                pid = post["id"]
+                title = post.get("title", {}).get("rendered", "")
+                link = post.get("link", "")
+                yoast = post.get("yoast_head_json") or {}
+                seo_title = yoast.get("title") or title
+                seo_desc = yoast.get("description") or ""
+                p_issues = []
+                if len(seo_title) < 30 or len(seo_title) > 70:
+                    p_issues.append({"type": "seo_title", "severity": "warning", "detail": f"SEO title {len(seo_title)} chars (ideal 30-70)"})
+                if len(seo_desc) < 100:
+                    p_issues.append({"type": "seo_desc", "severity": "critical", "detail": f"Meta description {len(seo_desc)} chars (need 140-160)"})
+                if p_issues:
+                    issues.append({"post_id": pid, "post_type": post_type.rstrip("s"), "title": title,
+                                   "link": link, "seo_title": seo_title, "seo_desc": seo_desc, "issues": p_issues})
+        except Exception as e:
+            print(f"[wp scan] {post_type} error: {e}")
+    return {"issues": issues, "total": len(issues)}
+
+
+@app.post("/seo/wordpress/push-fix")
+async def seo_wordpress_push_fix(request: Request):
+    """Push an SEO fix (title/meta) to a WordPress post via Yoast or WP meta."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    post_id = body.get("post_id")
+    fix_type = body.get("fix_type")  # seo_title | seo_desc
+    value = body.get("value", "")
+    post_type = body.get("post_type", "post")
+    if not workspace_id or not post_id or not fix_type:
+        raise HTTPException(status_code=400, detail="workspace_id, post_id, fix_type required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT account_id, access_token, meta FROM platform_connections WHERE workspace_id=%s AND platform='wordpress' LIMIT 1", (workspace_id,))
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="WordPress not connected")
+    wp_url, app_password, meta = row[0], row[1], row[2] or {}
+    wp_username = meta.get("wp_username", "")
+    import requests as _rq, base64 as _b64
+    credentials = _b64.b64encode(f"{wp_username}:{app_password}".encode()).decode()
+    headers = {"Authorization": f"Basic {credentials}", "Content-Type": "application/json"}
+    endpoint = "pages" if post_type == "page" else "posts"
+    # Try Yoast SEO meta fields first, fall back to title
+    meta_key = "_yoast_wpseo_title" if fix_type == "seo_title" else "_yoast_wpseo_metadesc"
+    payload: dict = {"meta": {meta_key: value}}
+    if fix_type == "seo_title":
+        payload["title"] = value
+    r = _rq.post(f"{wp_url}/wp-json/wp/v2/{endpoint}/{post_id}", headers=headers, json=payload, timeout=15)
+    if not r.ok:
+        raise HTTPException(status_code=500, detail=f"WordPress update failed: {r.status_code} {r.text[:200]}")
+    return {"ok": True, "post_id": post_id, "fix_type": fix_type}
+
+
+# ── AI Contextual Chat ─────────────────────────────────────────────────────────
+
+@app.post("/chat")
+async def ai_chat(request: Request):
+    """
+    Contextual AI chat — knows all workspace data (campaigns, YouTube, budget, etc.)
+    Body: { workspace_id, message, history: [{role, content}] }
+    Costs 1 credit per message.
+    """
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    user_message  = (body.get("message") or "").strip()
+
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    if not user_message:
+        raise HTTPException(status_code=400, detail="message required")
+
+    # Deduct 1 credit
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_and_deduct_credits(conn, org_id, workspace_id, FEATURE_COSTS["ai_chat"], "ai_chat")
+
+    # ── Gather workspace context ────────────────────────────────────────────────
+    ctx_lines: list[str] = []
+    ws_name = "this workspace"
+
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # Workspace name + type
+                cur.execute(
+                    "SELECT name, workspace_type FROM workspaces WHERE id = %s",
+                    (workspace_id,),
+                )
+                ws_row = cur.fetchone()
+                ws_name = ws_row[0] if ws_row else "this workspace"
+                ws_type = ws_row[1] if ws_row else "unknown"
+                ctx_lines.append(f"Workspace: {ws_name} (type: {ws_type})")
+
+                # Connected platforms
+                cur.execute(
+                    "SELECT platform, account_name, account_id FROM platform_connections WHERE workspace_id = %s AND is_active = TRUE",
+                    (workspace_id,),
+                )
+                platforms = cur.fetchall()
+                if platforms:
+                    plat_strs = [f"{p[0]} ({p[1] or p[2]})" for p in platforms]
+                    ctx_lines.append(f"Connected platforms: {', '.join(plat_strs)}")
+
+                # Meta KPI totals — try workspace_id match first, fall back to all rows for this ws
+                # Also try last 30 days if 7 days has no data
+                for days in (7, 30):
+                    cur.execute(
+                        """
+                        SELECT SUM(spend), SUM(revenue), SUM(clicks), SUM(impressions), SUM(conversions)
+                        FROM kpi_hourly
+                        WHERE (workspace_id = %s OR workspace_id IS NULL)
+                          AND platform = 'meta'
+                          AND recorded_at >= NOW() - INTERVAL '%s days'
+                          AND entity_level = 'campaign'
+                        """ % ('%s', days),
+                        (workspace_id,),
+                    )
+                    meta = cur.fetchone()
+                    if meta and meta[0] and float(meta[0]) > 0:
+                        roas = round(float(meta[1] or 0) / float(meta[0]), 2) if float(meta[0]) > 0 else 0
+                        ctr = round(float(meta[2] or 0) / float(meta[3] or 1) * 100, 2) if meta[3] else 0
+                        ctx_lines.append(
+                            f"Meta Ads ({days}d total): Spend ₹{float(meta[0]):,.0f}, "
+                            f"Revenue ₹{float(meta[1] or 0):,.0f}, ROAS {roas}x, "
+                            f"Clicks {int(meta[2] or 0):,}, Impressions {int(meta[3] or 0):,}, "
+                            f"CTR {ctr}%, Conversions {int(meta[4] or 0):,}"
+                        )
+                        break
+
+                # Per-campaign breakdown from kpi_hourly (top 10 by spend, last 30 days)
+                cur.execute(
+                    """
+                    SELECT entity_name,
+                           SUM(spend) as total_spend,
+                           SUM(revenue) as total_revenue,
+                           SUM(clicks) as total_clicks,
+                           SUM(impressions) as total_impr,
+                           SUM(conversions) as total_conv
+                    FROM kpi_hourly
+                    WHERE (workspace_id = %s OR workspace_id IS NULL)
+                      AND platform = 'meta'
+                      AND entity_level = 'campaign'
+                      AND recorded_at >= NOW() - INTERVAL '30 days'
+                      AND entity_name IS NOT NULL
+                    GROUP BY entity_name
+                    ORDER BY total_spend DESC
+                    LIMIT 10
+                    """,
+                    (workspace_id,),
+                )
+                camp_rows = cur.fetchall()
+                if camp_rows:
+                    camp_lines = []
+                    for c in camp_rows:
+                        name, spend, rev, clicks, impr, conv = c
+                        spend_f = float(spend or 0)
+                        rev_f = float(rev or 0)
+                        roas_c = round(rev_f / spend_f, 2) if spend_f > 0 else 0
+                        ctr_c = round(float(clicks or 0) / float(impr or 1) * 100, 2) if impr else 0
+                        camp_lines.append(
+                            f"  • {name}: ₹{spend_f:,.0f} spend, ROAS {roas_c}x, "
+                            f"CTR {ctr_c}%, {int(conv or 0)} conversions"
+                        )
+                    ctx_lines.append("Meta campaigns (last 30d by spend):\n" + "\n".join(camp_lines))
+    except Exception as e:
+        print(f"[chat] Context gathering error (non-fatal): {e}")
+
+    # ── Live Meta fallback: pull directly from Meta API if kpi_hourly had no data ──
+    _has_meta_db_data = any("Meta Ads" in l for l in ctx_lines)
+    if not _has_meta_db_data:
+        try:
+            from services.agent_swarm.core.workspace import get_workspace as _gws, get_primary_connection as _gpc
+            from services.agent_swarm.connectors.meta import MetaConnector as _MC
+            import datetime as _dt2
+            _ws_obj = _gws(workspace_id)
+            _meta_conn = _gpc(_ws_obj, "meta") if _ws_obj else None
+            if _meta_conn:
+                _mc = _MC(_meta_conn, _ws_obj)
+                _until = _dt2.date.today().isoformat()
+                _since = (_dt2.date.today() - _dt2.timedelta(days=30)).isoformat()
+                _snaps = _mc.fetch_metrics(_since, _until, entity_level="campaign")
+                if _snaps:
+                    # Aggregate by campaign name
+                    _by_camp: dict = {}
+                    for _s in _snaps:
+                        _k = _s.entity_name
+                        if _k not in _by_camp:
+                            _by_camp[_k] = {"spend": 0.0, "revenue": 0.0, "clicks": 0, "impressions": 0, "conversions": 0}
+                        _by_camp[_k]["spend"] += _s.spend
+                        _by_camp[_k]["revenue"] += _s.revenue
+                        _by_camp[_k]["clicks"] += _s.clicks
+                        _by_camp[_k]["impressions"] += _s.impressions
+                        _by_camp[_k]["conversions"] += _s.conversions
+                    _total_spend = sum(v["spend"] for v in _by_camp.values())
+                    _total_rev = sum(v["revenue"] for v in _by_camp.values())
+                    _total_clicks = sum(v["clicks"] for v in _by_camp.values())
+                    _total_impr = sum(v["impressions"] for v in _by_camp.values())
+                    _total_conv = sum(v["conversions"] for v in _by_camp.values())
+                    if _total_spend > 0:
+                        _roas_t = round(_total_rev / _total_spend, 2)
+                        _ctr_t = round(_total_clicks / max(_total_impr, 1) * 100, 2)
+                        ctx_lines.append(
+                            f"Meta Ads (30d total, live from API): Spend ₹{_total_spend:,.0f}, "
+                            f"Revenue ₹{_total_rev:,.0f}, ROAS {_roas_t}x, "
+                            f"Clicks {_total_clicks:,}, Impressions {_total_impr:,}, "
+                            f"CTR {_ctr_t}%, Conversions {_total_conv:,}"
+                        )
+                    # Top 10 campaigns by spend
+                    _sorted = sorted(_by_camp.items(), key=lambda x: x[1]["spend"], reverse=True)[:10]
+                    _camp_lines = []
+                    for _name, _v in _sorted:
+                        _sp = _v["spend"]
+                        _rv = _v["revenue"]
+                        _rc = round(_rv / _sp, 2) if _sp > 0 else 0
+                        _ct = round(_v["clicks"] / max(_v["impressions"], 1) * 100, 2)
+                        _camp_lines.append(
+                            f"  • {_name}: ₹{_sp:,.0f} spend, ROAS {_rc}x, "
+                            f"CTR {_ct}%, {_v['conversions']} conversions"
+                        )
+                    if _camp_lines:
+                        ctx_lines.append("Meta campaigns (last 30d, live from API):\n" + "\n".join(_camp_lines))
+                else:
+                    # No metrics data — at least list active campaigns
+                    _active = _mc.list_campaigns("ACTIVE")
+                    if _active:
+                        _names = [c.get("name", "Unknown") for c in _active[:10]]
+                        ctx_lines.append(f"Meta active campaigns ({len(_active)} total): {', '.join(_names)}")
+                    ctx_lines.append("Meta Ads: Account connected but no spend data in last 30 days.")
+        except Exception as _e:
+            print(f"[chat] Live Meta fallback error (non-fatal): {_e}")
+
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+
+                # YouTube channel stats
+                cur.execute(
+                    """
+                    SELECT title, subscriber_count, view_count, video_count
+                    FROM youtube_channels WHERE workspace_id = %s
+                    LIMIT 1
+                    """,
+                    (workspace_id,),
+                )
+                yt_row = cur.fetchone()
+                if yt_row:
+                    ctx_lines.append(
+                        f"YouTube: '{yt_row[0]}' — {yt_row[1]:,} subscribers, {yt_row[2]:,} lifetime views, "
+                        f"{yt_row[3]} videos"
+                    )
+
+                # YouTube last 30d analytics
+                cur.execute(
+                    """
+                    SELECT SUM(views), SUM(watch_time_minutes), SUM(subscribers_gained)
+                    FROM youtube_channel_stats
+                    WHERE workspace_id = %s AND date >= NOW() - INTERVAL '30 days'
+                    """,
+                    (workspace_id,),
+                )
+                yt_stats = cur.fetchone()
+                if yt_stats and yt_stats[0]:
+                    ctx_lines.append(
+                        f"YouTube (30d): {int(yt_stats[0]):,} views, "
+                        f"{int((yt_stats[1] or 0)/60):,}h watch time, "
+                        f"+{int(yt_stats[2] or 0)} subscribers"
+                    )
+
+                # Pending approvals count
+                cur.execute(
+                    "SELECT COUNT(*) FROM action_log WHERE workspace_id = %s AND status = 'pending'",
+                    (workspace_id,),
+                )
+                pending = cur.fetchone()[0]
+                if pending:
+                    ctx_lines.append(f"Pending approvals: {pending} actions waiting")
+
+                # Latest Growth OS plan
+                cur.execute(
+                    """
+                    SELECT generated_at FROM growth_os_plans
+                    WHERE workspace_id = %s ORDER BY generated_at DESC LIMIT 1
+                    """,
+                    (workspace_id,),
+                )
+                gos = cur.fetchone()
+                if gos and gos[0]:
+                    import datetime as _dt
+                    age_h = int((_dt.datetime.utcnow() - gos[0].replace(tzinfo=None)).total_seconds() / 3600)
+                    ctx_lines.append(f"Latest Growth OS plan: generated {age_h}h ago")
+
+                # Credit balance (org_id is the FK column on workspaces)
+                cur.execute(
+                    """
+                    SELECT o.credit_balance, o.plan FROM organizations o
+                    INNER JOIN workspaces w ON w.org_id = o.id
+                    WHERE w.id = %s
+                    """,
+                    (workspace_id,),
+                )
+                billing = cur.fetchone()
+                if billing:
+                    ctx_lines.append(f"Credits remaining: {billing[0]} (plan: {billing[1]})")
+    except Exception as e:
+        print(f"[chat] Context gathering error (non-fatal): {e}")
+        # Continue with whatever context we have — don't fail the whole chat
+
+    context_block = "\n".join(ctx_lines) if ctx_lines else "No workspace data available yet."
+    system_prompt = (
+        f"You are ARIA, the AI Growth Advisor for Runway Studios — an intelligent marketing OS.\n"
+        f"You are having a contextual conversation with the team at **{ws_name}**.\n\n"
+        f"## Live Workspace Data (pulled fresh from the database right now)\n{context_block}\n\n"
+        f"## Critical Instructions\n"
+        f"- The data above is REAL, live data from the workspace's connected ad accounts. Use it directly.\n"
+        f"- NEVER say you don't have data or ask the user to share metrics — it's all in the context above.\n"
+        f"- NEVER say 'I don't have access to live data' — you do. It's in the Live Workspace Data section.\n"
+        f"- If a metric isn't in the data above, say 'I don't see [metric] in the last 30 days' — don't ask them to provide it.\n"
+        f"- Be direct, specific, and reference the actual numbers from above.\n"
+        f"- Use Indian Rupees (₹) for monetary values.\n"
+        f"- Format responses with bold for key numbers, bullet points for lists.\n"
+        f"- Keep responses concise and actionable — no filler, no generic advice."
+    )
+
+    # Load last 40 messages from DB for full context
+    messages = []
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT role, content FROM chat_messages
+                    WHERE workspace_id = %s
+                    ORDER BY created_at DESC LIMIT 40
+                    """,
+                    (workspace_id,),
+                )
+                rows = cur.fetchall()
+                for role, content in reversed(rows):
+                    messages.append({"role": role, "content": content})
+    except Exception as e:
+        print(f"[chat] Failed to load history: {e}")
+    messages.append({"role": "user", "content": user_message})
+
+    import anthropic as _ac
+    from services.agent_swarm.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+    try:
+        client = _ac.Anthropic(api_key=ANTHROPIC_API_KEY)
+        resp = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=800,
+            system=system_prompt,
+            messages=messages,
+        )
+        reply = resp.content[0].text.strip()
+    except Exception as e:
+        print(f"[chat] Claude API error: {e}")
+        raise HTTPException(status_code=500, detail=f"AI service unavailable: {str(e)[:100]}")
+
+    # Save both messages to chat history
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO chat_messages (workspace_id, role, content, credits_used) VALUES (%s, %s, %s, %s), (%s, %s, %s, %s)",
+                    (workspace_id, "user", user_message, 0,
+                     workspace_id, "assistant", reply, 1),
+                )
+    except Exception as e:
+        print(f"[chat] Failed to save history: {e}")  # non-fatal
+
+    return {"reply": reply, "credits_used": 1}
+
+
+@app.get("/chat/history")
+async def chat_history(request: Request, workspace_id: str = None):
+    """Return last 100 chat messages for a workspace."""
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT role, content, created_at
+                    FROM chat_messages
+                    WHERE workspace_id = %s
+                    ORDER BY created_at ASC
+                    LIMIT 100
+                    """,
+                    (workspace_id,),
+                )
+                rows = cur.fetchall()
+        return {"messages": [
+            {"role": r[0], "content": r[1], "created_at": r[2].isoformat() if r[2] else None}
+            for r in rows
+        ]}
+    except Exception as e:
+        print(f"[chat/history] Error: {e}")
+        return {"messages": []}
+
+
 @app.post("/admin/migrate")
 async def admin_migrate(request: Request):
     """
@@ -9553,6 +10809,20 @@ async def admin_migrate(request: Request):
         )""",
         "CREATE INDEX IF NOT EXISTS idx_shopify_workspace ON shopify_connections(workspace_id)",
         "CREATE INDEX IF NOT EXISTS idx_shopify_domain ON shopify_connections(shop_domain)",
+        # shopify_connections.shop_name — add if missing (safe ALTER)
+        "ALTER TABLE shopify_connections ADD COLUMN IF NOT EXISTS shop_name TEXT",
+        # shopify_connections: rename scope→scopes if old column name exists, else add scopes
+        """DO $$ BEGIN
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='shopify_connections' AND column_name='scope') THEN
+                ALTER TABLE shopify_connections RENAME COLUMN scope TO scopes;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='shopify_connections' AND column_name='scopes') THEN
+                ALTER TABLE shopify_connections ADD COLUMN scopes TEXT;
+            END IF;
+        END $$""",
+        # shopify_connections: add installed_at / synced_at if missing from older table schema
+        "ALTER TABLE shopify_connections ADD COLUMN IF NOT EXISTS installed_at TIMESTAMPTZ DEFAULT NOW()",
+        "ALTER TABLE shopify_connections ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ",
         # v22 — YouTube comments + like_count on Meta comment_replies
         """CREATE TABLE IF NOT EXISTS youtube_comments (
             id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -9846,6 +11116,211 @@ async def admin_migrate(request: Request):
             UNIQUE (workspace_id)
         )""",
         "CREATE INDEX IF NOT EXISTS idx_meta_oauth_sessions_ws ON meta_oauth_sessions(workspace_id)",
+
+        # ── v31 Email Marketing ──────────────────────────────────────────────
+        "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS email_plan TEXT NOT NULL DEFAULT 'none'",
+        "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS monthly_emails_sent INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS email_month_reset DATE",
+        """CREATE TABLE IF NOT EXISTS email_domains (
+            id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id     UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            domain           TEXT        NOT NULL,
+            resend_domain_id TEXT,
+            dns_records      JSONB       NOT NULL DEFAULT '[]',
+            verified         BOOLEAN     NOT NULL DEFAULT FALSE,
+            status           TEXT        NOT NULL DEFAULT 'pending',
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (workspace_id, domain)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_email_domains_ws ON email_domains(workspace_id)",
+        """CREATE TABLE IF NOT EXISTS email_lists (
+            id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id   UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            name           TEXT        NOT NULL,
+            description    TEXT,
+            source         TEXT        NOT NULL DEFAULT 'manual',
+            contact_count  INTEGER     NOT NULL DEFAULT 0,
+            created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_email_lists_ws ON email_lists(workspace_id)",
+        """CREATE TABLE IF NOT EXISTS email_contacts (
+            id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id        UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            list_id             UUID        NOT NULL REFERENCES email_lists(id) ON DELETE CASCADE,
+            email               TEXT        NOT NULL,
+            first_name          TEXT,
+            last_name           TEXT,
+            tags                JSONB       NOT NULL DEFAULT '[]',
+            custom_fields       JSONB       NOT NULL DEFAULT '{}',
+            source              TEXT        NOT NULL DEFAULT 'manual',
+            unsubscribed        BOOLEAN     NOT NULL DEFAULT FALSE,
+            unsubscribed_at     TIMESTAMPTZ,
+            unsubscribe_token   TEXT        UNIQUE NOT NULL,
+            bounced             BOOLEAN     NOT NULL DEFAULT FALSE,
+            bounce_type         TEXT,
+            created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (workspace_id, list_id, email)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_email_contacts_ws    ON email_contacts(workspace_id)",
+        "CREATE INDEX IF NOT EXISTS idx_email_contacts_list  ON email_contacts(list_id)",
+        "CREATE INDEX IF NOT EXISTS idx_email_contacts_token ON email_contacts(unsubscribe_token)",
+        """CREATE TABLE IF NOT EXISTS email_campaigns (
+            id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id      UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            list_id           UUID        REFERENCES email_lists(id) ON DELETE SET NULL,
+            domain_id         UUID        REFERENCES email_domains(id) ON DELETE SET NULL,
+            name              TEXT        NOT NULL,
+            subject           TEXT        NOT NULL,
+            from_name         TEXT        NOT NULL,
+            from_email        TEXT        NOT NULL,
+            reply_to          TEXT,
+            html_body         TEXT        NOT NULL,
+            text_body         TEXT,
+            status            TEXT        NOT NULL DEFAULT 'draft',
+            scheduled_at      TIMESTAMPTZ,
+            sent_at           TIMESTAMPTZ,
+            total_recipients  INTEGER     NOT NULL DEFAULT 0,
+            sent_count        INTEGER     NOT NULL DEFAULT 0,
+            failed_count      INTEGER     NOT NULL DEFAULT 0,
+            open_count        INTEGER     NOT NULL DEFAULT 0,
+            click_count       INTEGER     NOT NULL DEFAULT 0,
+            bounce_count      INTEGER     NOT NULL DEFAULT 0,
+            unsub_count       INTEGER     NOT NULL DEFAULT 0,
+            created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_email_campaigns_ws ON email_campaigns(workspace_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_email_campaigns_st ON email_campaigns(status)",
+        """CREATE TABLE IF NOT EXISTS email_events (
+            id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id      UUID        REFERENCES workspaces(id) ON DELETE CASCADE,
+            campaign_id       UUID        REFERENCES email_campaigns(id) ON DELETE CASCADE,
+            contact_id        UUID        REFERENCES email_contacts(id) ON DELETE SET NULL,
+            resend_message_id TEXT,
+            event_type        TEXT        NOT NULL,
+            event_data        JSONB       NOT NULL DEFAULT '{}',
+            occurred_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_email_events_campaign ON email_events(campaign_id, occurred_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_email_events_resend   ON email_events(resend_message_id)",
+        """CREATE TABLE IF NOT EXISTS email_send_log (
+            id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            campaign_id       UUID        NOT NULL REFERENCES email_campaigns(id) ON DELETE CASCADE,
+            contact_id        UUID        NOT NULL REFERENCES email_contacts(id) ON DELETE CASCADE,
+            resend_message_id TEXT,
+            status            TEXT        NOT NULL DEFAULT 'pending',
+            error             TEXT,
+            sent_at           TIMESTAMPTZ,
+            UNIQUE (campaign_id, contact_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_email_send_log_campaign ON email_send_log(campaign_id)",
+        "CREATE INDEX IF NOT EXISTS idx_email_send_log_resend   ON email_send_log(resend_message_id)",
+
+        # v32 — ARIA persistent chat history
+        """CREATE TABLE IF NOT EXISTS chat_messages (
+            id           BIGSERIAL   PRIMARY KEY,
+            workspace_id UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            role         TEXT        NOT NULL CHECK (role IN ('user', 'assistant')),
+            content      TEXT        NOT NULL,
+            credits_used INT         NOT NULL DEFAULT 0,
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_ws ON chat_messages(workspace_id, created_at ASC)",
+
+        # v33 — Products page (is_competitor, product_type, competitor_insights)
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_competitor BOOLEAN DEFAULT false",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS product_type TEXT DEFAULT 'product'",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS competitor_insights TEXT",
+
+        # v34 — SEO / Google Search Console
+        "ALTER TABLE google_auth_tokens ADD COLUMN IF NOT EXISTS gsc_site_url TEXT",
+
+        # v35 SEO tables
+        "CREATE TABLE IF NOT EXISTS seo_backlinks (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), workspace_id UUID NOT NULL, source_url TEXT NOT NULL, source_domain TEXT DEFAULT '', target_url TEXT DEFAULT '', anchor_text TEXT DEFAULT '', status TEXT DEFAULT 'prospect', domain_authority INTEGER, notes TEXT DEFAULT '', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())",
+        "CREATE INDEX IF NOT EXISTS idx_seo_backlinks_ws ON seo_backlinks(workspace_id)",
+        "CREATE TABLE IF NOT EXISTS seo_offpage_plans (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), workspace_id UUID NOT NULL, plan JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())",
+        "CREATE INDEX IF NOT EXISTS idx_seo_offpage_ws ON seo_offpage_plans(workspace_id)",
+        # v36 App Growth tables
+        """CREATE TABLE IF NOT EXISTS app_profiles (
+            id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id     UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            app_name         TEXT        NOT NULL DEFAULT '',
+            bundle_id        TEXT        DEFAULT '',
+            app_store_url    TEXT        DEFAULT '',
+            play_store_url   TEXT        DEFAULT '',
+            app_store_id     TEXT        DEFAULT '',
+            play_package     TEXT        DEFAULT '',
+            asc_key_id       TEXT        DEFAULT '',
+            asc_issuer_id    TEXT        DEFAULT '',
+            asc_private_key  TEXT        DEFAULT '',
+            play_service_account JSONB,
+            category         TEXT        DEFAULT '',
+            created_at       TIMESTAMPTZ DEFAULT NOW(),
+            updated_at       TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(workspace_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_app_profiles_ws ON app_profiles(workspace_id)",
+        """CREATE TABLE IF NOT EXISTS app_reviews (
+            id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id     UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            store            TEXT        NOT NULL CHECK (store IN ('appstore','playstore')),
+            review_id        TEXT        NOT NULL,
+            author           TEXT        DEFAULT '',
+            rating           INT         NOT NULL DEFAULT 5,
+            title            TEXT        DEFAULT '',
+            body             TEXT        NOT NULL DEFAULT '',
+            version          TEXT        DEFAULT '',
+            sentiment        TEXT        DEFAULT '',
+            category         TEXT        DEFAULT '',
+            suggested_reply  TEXT        DEFAULT '',
+            replied          BOOLEAN     NOT NULL DEFAULT FALSE,
+            replied_at       TIMESTAMPTZ,
+            review_date      TIMESTAMPTZ,
+            fetched_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(workspace_id, store, review_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_app_reviews_ws ON app_reviews(workspace_id, rating, review_date DESC)",
+        """CREATE TABLE IF NOT EXISTS app_aso_keywords (
+            id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id     UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            keyword          TEXT        NOT NULL,
+            store            TEXT        NOT NULL DEFAULT 'both',
+            appstore_rank    INT,
+            playstore_rank   INT,
+            search_score     INT,
+            notes            TEXT        DEFAULT '',
+            added_at         TIMESTAMPTZ DEFAULT NOW(),
+            checked_at       TIMESTAMPTZ,
+            UNIQUE(workspace_id, keyword)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_aso_kw_ws ON app_aso_keywords(workspace_id)",
+        """CREATE TABLE IF NOT EXISTS app_install_events (
+            id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id     UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            source           TEXT        NOT NULL DEFAULT 'organic',
+            channel          TEXT        DEFAULT '',
+            campaign_name    TEXT        DEFAULT '',
+            campaign_id      TEXT        DEFAULT '',
+            adset_name       TEXT        DEFAULT '',
+            country          TEXT        DEFAULT '',
+            platform         TEXT        DEFAULT '',
+            installs         INT         NOT NULL DEFAULT 1,
+            cost             NUMERIC(12,4) DEFAULT 0,
+            event_date       DATE        NOT NULL DEFAULT CURRENT_DATE,
+            raw_json         JSONB       DEFAULT '{}',
+            received_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_app_installs_ws ON app_install_events(workspace_id, event_date DESC)",
+        """CREATE TABLE IF NOT EXISTS app_growth_plans (
+            id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id     UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            plan_json        JSONB       NOT NULL,
+            generated_at     TIMESTAMPTZ DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_app_gp_ws ON app_growth_plans(workspace_id, generated_at DESC)",
     ]
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -9857,6 +11332,527 @@ async def admin_migrate(request: Request):
                     results.append({"sql": sql, "ok": False, "error": str(e)})
         conn.commit()
     return {"migrations": results}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# APP GROWTH MODULE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/app-growth/connect")
+async def app_growth_connect(request: Request):
+    """Save or update app profile + store credentials."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    fields = ["app_name","bundle_id","app_store_url","play_store_url",
+              "app_store_id","play_package","asc_key_id","asc_issuer_id",
+              "asc_private_key","category"]
+    vals = {f: body.get(f, "") for f in fields}
+    play_sa = body.get("play_service_account")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO app_profiles (workspace_id, app_name, bundle_id, app_store_url,
+                    play_store_url, app_store_id, play_package, asc_key_id, asc_issuer_id,
+                    asc_private_key, play_service_account, category)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+                ON CONFLICT (workspace_id) DO UPDATE SET
+                    app_name=EXCLUDED.app_name, bundle_id=EXCLUDED.bundle_id,
+                    app_store_url=EXCLUDED.app_store_url, play_store_url=EXCLUDED.play_store_url,
+                    app_store_id=EXCLUDED.app_store_id, play_package=EXCLUDED.play_package,
+                    asc_key_id=EXCLUDED.asc_key_id, asc_issuer_id=EXCLUDED.asc_issuer_id,
+                    asc_private_key=EXCLUDED.asc_private_key,
+                    play_service_account=EXCLUDED.play_service_account,
+                    category=EXCLUDED.category, updated_at=NOW()
+            """, (workspace_id, vals["app_name"], vals["bundle_id"], vals["app_store_url"],
+                  vals["play_store_url"], vals["app_store_id"], vals["play_package"],
+                  vals["asc_key_id"], vals["asc_issuer_id"], vals["asc_private_key"],
+                  json.dumps(play_sa) if play_sa else None, vals["category"]))
+    return {"ok": True}
+
+
+@app.get("/app-growth/status")
+async def app_growth_status(request: Request, workspace_id: str = None):
+    """Return app profile + connection health."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT app_name, bundle_id, app_store_url, play_store_url,
+                app_store_id, play_package, asc_key_id, asc_issuer_id, category, created_at
+                FROM app_profiles WHERE workspace_id=%s""", (workspace_id,))
+            row = cur.fetchone()
+            # counts
+            cur.execute("SELECT COUNT(*) FROM app_reviews WHERE workspace_id=%s", (workspace_id,))
+            review_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM app_aso_keywords WHERE workspace_id=%s", (workspace_id,))
+            kw_count = cur.fetchone()[0]
+            cur.execute("SELECT COALESCE(SUM(installs),0) FROM app_install_events WHERE workspace_id=%s AND event_date >= NOW()-INTERVAL '30 days'", (workspace_id,))
+            installs_30d = cur.fetchone()[0]
+    if not row:
+        return {"connected": False, "review_count": 0, "kw_count": 0, "installs_30d": 0}
+    return {
+        "connected": True,
+        "app_name": row[0], "bundle_id": row[1],
+        "app_store_url": row[2], "play_store_url": row[3],
+        "app_store_id": row[4], "play_package": row[5],
+        "has_asc": bool(row[6] and row[7]),
+        "has_play": False,
+        "category": row[8],
+        "created_at": row[9].isoformat() if row[9] else None,
+        "review_count": review_count,
+        "kw_count": kw_count,
+        "installs_30d": int(installs_30d),
+    }
+
+
+@app.get("/app-growth/reviews")
+async def app_growth_reviews(request: Request, workspace_id: str = None,
+                              store: str = "all", sentiment: str = "all",
+                              rating: int = 0, limit: int = 50):
+    """Return stored app reviews with filters."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    conditions = ["workspace_id=%s"]
+    params: list = [workspace_id]
+    if store != "all":
+        conditions.append("store=%s"); params.append(store)
+    if sentiment != "all":
+        conditions.append("sentiment=%s"); params.append(sentiment)
+    if rating > 0:
+        conditions.append("rating=%s"); params.append(rating)
+    where = " AND ".join(conditions)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT id, store, review_id, author, rating, title, body,
+                version, sentiment, category, suggested_reply, replied, review_date
+                FROM app_reviews WHERE {where} ORDER BY review_date DESC LIMIT %s""",
+                params + [limit])
+            rows = cur.fetchall()
+            # rating distribution
+            cur.execute("SELECT rating, COUNT(*) FROM app_reviews WHERE workspace_id=%s GROUP BY rating ORDER BY rating DESC", (workspace_id,))
+            dist = {str(r[0]): r[1] for r in cur.fetchall()}
+            cur.execute("SELECT ROUND(AVG(rating)::numeric,1) FROM app_reviews WHERE workspace_id=%s", (workspace_id,))
+            avg_r = cur.fetchone()[0]
+    reviews = [
+        {"id": str(r[0]), "store": r[1], "review_id": r[2], "author": r[3],
+         "rating": r[4], "title": r[5], "body": r[6], "version": r[7],
+         "sentiment": r[8], "category": r[9], "suggested_reply": r[10],
+         "replied": bool(r[11]),
+         "review_date": r[12].isoformat() if r[12] else None}
+        for r in rows
+    ]
+    return {"reviews": reviews, "rating_distribution": dist,
+            "avg_rating": float(avg_r) if avg_r else None, "total": len(reviews)}
+
+
+@app.post("/app-growth/reviews/add")
+async def app_growth_reviews_add(request: Request):
+    """Manually add a review (or batch import). Also AI-classifies it."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    reviews_in = body.get("reviews", [body])  # single or batch
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    added = 0
+    for rv in reviews_in:
+        body_text = rv.get("body", "")
+        rating = int(rv.get("rating", 5))
+        # AI classify
+        sentiment, category, suggested_reply = "neutral", "general", ""
+        try:
+            msg = anthropic_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                system='Respond ONLY with valid JSON. No explanation.',
+                messages=[{"role":"user","content":
+                    f'Review (rating {rating}/5): "{body_text[:400]}"\n'
+                    'Return: {"sentiment":"positive|negative|neutral","category":"bug_report|feature_request|praise|complaint|general","suggested_reply":"<short friendly reply under 100 words>"}'}]
+            )
+            parsed = json.loads(msg.content[0].text.strip())
+            sentiment = parsed.get("sentiment", sentiment)
+            category = parsed.get("category", category)
+            suggested_reply = parsed.get("suggested_reply", "")
+        except Exception:
+            if rating <= 2: sentiment = "negative"
+            elif rating >= 4: sentiment = "positive"
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO app_reviews (workspace_id, store, review_id, author, rating,
+                        title, body, version, sentiment, category, suggested_reply, review_date)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (workspace_id, store, review_id) DO NOTHING
+                """, (workspace_id, rv.get("store","appstore"),
+                      rv.get("review_id", str(uuid.uuid4())),
+                      rv.get("author","Anonymous"), rating,
+                      rv.get("title",""), body_text,
+                      rv.get("version",""), sentiment, category, suggested_reply,
+                      rv.get("review_date")))
+                added += cur.rowcount
+    return {"ok": True, "added": added}
+
+
+@app.patch("/app-growth/reviews/{review_id}/reply")
+async def app_growth_review_reply(review_id: str, request: Request):
+    """Mark review as replied."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE app_reviews SET replied=true, replied_at=NOW() WHERE id=%s AND workspace_id=%s",
+                        (review_id, workspace_id))
+    return {"ok": True}
+
+
+# ── ASO Keywords ──────────────────────────────────────────────────────────────
+
+@app.get("/app-growth/aso/keywords")
+async def aso_keywords_list(request: Request, workspace_id: str = None):
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT id, keyword, store, appstore_rank, playstore_rank,
+                search_score, notes, added_at, checked_at
+                FROM app_aso_keywords WHERE workspace_id=%s ORDER BY added_at DESC""", (workspace_id,))
+            rows = cur.fetchall()
+    return {"keywords": [
+        {"id": str(r[0]), "keyword": r[1], "store": r[2],
+         "appstore_rank": r[3], "playstore_rank": r[4],
+         "search_score": r[5], "notes": r[6],
+         "added_at": r[7].isoformat() if r[7] else None,
+         "checked_at": r[8].isoformat() if r[8] else None}
+        for r in rows
+    ]}
+
+
+@app.post("/app-growth/aso/keywords/add")
+async def aso_keywords_add(request: Request):
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    keyword = (body.get("keyword") or "").strip()
+    if not workspace_id or not keyword:
+        raise HTTPException(status_code=400, detail="workspace_id and keyword required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO app_aso_keywords (workspace_id, keyword, store, notes)
+                VALUES (%s,%s,%s,%s) ON CONFLICT (workspace_id, keyword) DO NOTHING""",
+                (workspace_id, keyword, body.get("store","both"), body.get("notes","")))
+    return {"ok": True}
+
+
+@app.delete("/app-growth/aso/keywords/{kw_id}")
+async def aso_keywords_delete(kw_id: str, request: Request):
+    _auth(request)
+    ws = request.query_params.get("workspace_id","")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM app_aso_keywords WHERE id=%s AND workspace_id=%s", (kw_id, ws))
+    return {"ok": True}
+
+
+@app.post("/app-growth/aso/analyze")
+async def aso_analyze(request: Request):
+    """Claude scores and rewrites ASO metadata."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    app_name = body.get("app_name", "")
+    subtitle = body.get("subtitle", "")
+    description = body.get("description", "")
+    keywords_field = body.get("keywords_field", "")
+    category = body.get("category", "")
+    store = body.get("store", "appstore")
+
+    prompt = f"""You are an expert App Store Optimization (ASO) consultant.
+
+App: {app_name}
+Store: {store}
+Category: {category}
+Current Subtitle/Short Description: {subtitle}
+Current Description (first 500 chars): {description[:500]}
+Current Keywords Field: {keywords_field}
+
+Analyze and return JSON:
+{{
+  "score": <0-100 overall ASO score>,
+  "issues": [
+    {{"field": "title|subtitle|description|keywords", "severity": "high|medium|low",
+      "issue": "...", "fix": "..."}}
+  ],
+  "optimized_subtitle": "<improved subtitle max 30 chars>",
+  "optimized_keywords": "<comma-separated keywords max 100 chars total, no spaces after commas>",
+  "optimized_description_opening": "<first 3 sentences of description — most important for conversion>",
+  "top_keywords_to_target": ["kw1","kw2","kw3","kw4","kw5"],
+  "competitor_gap": "<what keywords competitors likely rank for that you're missing>"
+}}"""
+
+    try:
+        msg = anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1200,
+            system='Respond ONLY with valid JSON.',
+            messages=[{"role":"user","content":prompt}]
+        )
+        result = json.loads(msg.content[0].text.strip())
+    except Exception as e:
+        result = {"score": 0, "issues": [], "error": str(e)}
+    return result
+
+
+# ── Install Attribution ───────────────────────────────────────────────────────
+
+@app.post("/app-growth/attribution/webhook")
+async def app_growth_attribution_webhook(request: Request):
+    """
+    AppsFlyer / Adjust / Branch webhook receiver.
+    No auth — receives postbacks. Workspace resolved via query param or body.
+    """
+    workspace_id = request.query_params.get("workspace_id", "")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not workspace_id:
+        workspace_id = body.get("workspace_id", "")
+    if not workspace_id:
+        return {"ok": False, "error": "workspace_id required as query param"}
+
+    # Normalise fields from AppsFlyer / Adjust / Branch formats
+    source = body.get("media_source") or body.get("network") or body.get("channel") or "organic"
+    campaign = body.get("campaign") or body.get("campaign_name") or ""
+    campaign_id = body.get("campaign_id") or ""
+    adset = body.get("adset") or body.get("adgroup") or ""
+    country = body.get("country_code") or body.get("country") or ""
+    platform = body.get("platform") or body.get("os") or ""
+    cost = float(body.get("cost") or body.get("cost_usd") or 0)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO app_install_events
+                (workspace_id, source, channel, campaign_name, campaign_id,
+                 adset_name, country, platform, installs, cost, raw_json)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s::jsonb)""",
+                (workspace_id, source, source, campaign, campaign_id,
+                 adset, country, platform, cost, json.dumps(body)))
+    return {"ok": True}
+
+
+@app.get("/app-growth/attribution/funnel")
+async def app_growth_attribution_funnel(request: Request, workspace_id: str = None, days: int = 30):
+    """Return install funnel: by source, by campaign, by country, by platform."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # by source
+            cur.execute("""SELECT source, SUM(installs) as installs, SUM(cost) as spend
+                FROM app_install_events WHERE workspace_id=%s AND event_date >= NOW()-%s::INTERVAL
+                GROUP BY source ORDER BY installs DESC""",
+                (workspace_id, f"{days} days"))
+            by_source = [{"source": r[0], "installs": int(r[1]), "spend": float(r[2] or 0),
+                          "cpi": round(float(r[2] or 0)/max(int(r[1]),1),2)} for r in cur.fetchall()]
+
+            # by campaign
+            cur.execute("""SELECT campaign_name, source, SUM(installs) as installs, SUM(cost) as spend
+                FROM app_install_events WHERE workspace_id=%s AND event_date >= NOW()-%s::INTERVAL
+                AND campaign_name != '' GROUP BY campaign_name, source ORDER BY installs DESC LIMIT 20""",
+                (workspace_id, f"{days} days"))
+            by_campaign = [{"campaign": r[0], "source": r[1], "installs": int(r[2]),
+                            "spend": float(r[3] or 0),
+                            "cpi": round(float(r[3] or 0)/max(int(r[2]),1),2)} for r in cur.fetchall()]
+
+            # by country
+            cur.execute("""SELECT country, SUM(installs) FROM app_install_events
+                WHERE workspace_id=%s AND event_date >= NOW()-%s::INTERVAL AND country != ''
+                GROUP BY country ORDER BY SUM(installs) DESC LIMIT 15""",
+                (workspace_id, f"{days} days"))
+            by_country = [{"country": r[0], "installs": int(r[1])} for r in cur.fetchall()]
+
+            # by platform
+            cur.execute("""SELECT platform, SUM(installs) FROM app_install_events
+                WHERE workspace_id=%s AND event_date >= NOW()-%s::INTERVAL AND platform != ''
+                GROUP BY platform ORDER BY SUM(installs) DESC""",
+                (workspace_id, f"{days} days"))
+            by_platform = [{"platform": r[0], "installs": int(r[1])} for r in cur.fetchall()]
+
+            # daily trend
+            cur.execute("""SELECT event_date, SUM(installs) FROM app_install_events
+                WHERE workspace_id=%s AND event_date >= NOW()-%s::INTERVAL
+                GROUP BY event_date ORDER BY event_date""",
+                (workspace_id, f"{days} days"))
+            daily = [{"date": r[0].isoformat(), "installs": int(r[1])} for r in cur.fetchall()]
+
+            # totals
+            cur.execute("""SELECT COALESCE(SUM(installs),0), COALESCE(SUM(cost),0)
+                FROM app_install_events WHERE workspace_id=%s AND event_date >= NOW()-%s::INTERVAL""",
+                (workspace_id, f"{days} days"))
+            totals = cur.fetchone()
+
+    total_installs = int(totals[0])
+    total_spend = float(totals[1])
+    return {
+        "total_installs": total_installs,
+        "total_spend": total_spend,
+        "cpi": round(total_spend / max(total_installs, 1), 2),
+        "by_source": by_source,
+        "by_campaign": by_campaign,
+        "by_country": by_country,
+        "by_platform": by_platform,
+        "daily": daily,
+        "days": days,
+    }
+
+
+# ── App Growth Plan (AI) ──────────────────────────────────────────────────────
+
+@app.post("/app-growth/growth-plan")
+async def app_growth_plan_generate(request: Request):
+    """Generate AI cross-channel app growth strategy."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    # Gather signals
+    signals: dict = {}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # app profile
+            cur.execute("SELECT app_name, category, app_store_url, play_store_url FROM app_profiles WHERE workspace_id=%s", (workspace_id,))
+            ap = cur.fetchone()
+            signals["app_name"] = ap[0] if ap else "Unknown App"
+            signals["category"] = ap[1] if ap else ""
+
+            # reviews
+            cur.execute("SELECT ROUND(AVG(rating)::numeric,1), COUNT(*) FROM app_reviews WHERE workspace_id=%s", (workspace_id,))
+            rv = cur.fetchone()
+            signals["avg_rating"] = float(rv[0]) if rv and rv[0] else None
+            signals["review_count"] = int(rv[1]) if rv else 0
+
+            cur.execute("SELECT sentiment, COUNT(*) FROM app_reviews WHERE workspace_id=%s GROUP BY sentiment", (workspace_id,))
+            signals["sentiment_breakdown"] = {r[0]: r[1] for r in cur.fetchall()}
+
+            # top review complaints
+            cur.execute("SELECT body FROM app_reviews WHERE workspace_id=%s AND sentiment='negative' ORDER BY review_date DESC LIMIT 5", (workspace_id,))
+            signals["top_complaints"] = [r[0][:100] for r in cur.fetchall()]
+
+            # installs last 30d
+            cur.execute("SELECT source, SUM(installs), SUM(cost) FROM app_install_events WHERE workspace_id=%s AND event_date>=NOW()-INTERVAL '30 days' GROUP BY source ORDER BY SUM(installs) DESC", (workspace_id,))
+            signals["install_sources"] = [{"source":r[0],"installs":int(r[1]),"spend":float(r[2] or 0)} for r in cur.fetchall()]
+
+            # ASO keywords
+            cur.execute("SELECT keyword, appstore_rank, playstore_rank FROM app_aso_keywords WHERE workspace_id=%s LIMIT 20", (workspace_id,))
+            signals["aso_keywords"] = [{"kw":r[0],"asc":r[1],"gp":r[2]} for r in cur.fetchall()]
+
+            # Meta ad spend (app install campaigns)
+            try:
+                cur.execute("SELECT COALESCE(SUM(spend),0) FROM kpi_hourly WHERE workspace_id=%s AND recorded_at>=NOW()-INTERVAL '30 days'", (workspace_id,))
+                signals["meta_spend_30d"] = float(cur.fetchone()[0])
+            except Exception:
+                signals["meta_spend_30d"] = 0
+
+            # YouTube videos
+            try:
+                cur.execute("SELECT COUNT(*) FROM youtube_videos WHERE workspace_id=%s", (workspace_id,))
+                signals["yt_video_count"] = int(cur.fetchone()[0])
+            except Exception:
+                signals["yt_video_count"] = 0
+
+            # Email list size
+            try:
+                cur.execute("SELECT COUNT(*) FROM email_contacts WHERE workspace_id=%s AND unsubscribed=false", (workspace_id,))
+                signals["email_list_size"] = int(cur.fetchone()[0])
+            except Exception:
+                signals["email_list_size"] = 0
+
+    prompt = f"""You are an expert mobile app growth strategist. Generate a comprehensive 30-day cross-channel growth plan.
+
+APP: {signals['app_name']} | Category: {signals['category']}
+
+CURRENT METRICS:
+- Avg Rating: {signals.get('avg_rating','N/A')} ({signals.get('review_count',0)} reviews)
+- Sentiment: {signals.get('sentiment_breakdown',{})}
+- Top complaints: {signals.get('top_complaints',[])}
+- Installs last 30d by source: {signals.get('install_sources',[])}
+- Meta ad spend 30d: ₹{signals.get('meta_spend_30d',0):,.0f}
+- YouTube videos: {signals.get('yt_video_count',0)}
+- Email list: {signals.get('email_list_size',0)} subscribers
+- ASO keywords tracked: {len(signals.get('aso_keywords',[]))}
+
+Return JSON:
+{{
+  "headline": "<one-line growth opportunity summary>",
+  "priority_score": <1-10>,
+  "actions": [
+    {{
+      "id": 1,
+      "priority": "high|medium|low",
+      "channel": "meta|google|youtube|email|aso|reviews|organic",
+      "title": "<action title>",
+      "description": "<what to do and why>",
+      "expected_impact": "<e.g. +15% installs>",
+      "effort": "low|medium|high",
+      "timeframe": "<e.g. This week>"
+    }}
+  ],
+  "aso_quick_wins": ["<win1>","<win2>","<win3>"],
+  "review_action": "<what to do about reviews this week>",
+  "channel_recommendations": {{
+    "meta": "<recommendation>",
+    "google_uac": "<recommendation>",
+    "youtube": "<recommendation>",
+    "email": "<recommendation>"
+  }},
+  "30_day_goal": "<measurable target e.g. reach 10,000 installs>"
+}}
+
+Generate 8-12 actions covering all channels."""
+
+    try:
+        msg = anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2500,
+            system='Respond ONLY with valid JSON.',
+            messages=[{"role":"user","content":prompt}]
+        )
+        plan = json.loads(msg.content[0].text.strip())
+    except Exception as e:
+        plan = {"headline": "Unable to generate plan", "actions": [], "error": str(e)}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO app_growth_plans (workspace_id, plan_json) VALUES (%s,%s::jsonb)",
+                        (workspace_id, json.dumps(plan)))
+    return plan
+
+
+@app.get("/app-growth/growth-plan/latest")
+async def app_growth_plan_latest(request: Request, workspace_id: str = None):
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT plan_json, generated_at FROM app_growth_plans WHERE workspace_id=%s ORDER BY generated_at DESC LIMIT 1", (workspace_id,))
+            row = cur.fetchone()
+    if not row:
+        return {"plan": None}
+    plan = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+    return {"plan": plan, "generated_at": row[1].isoformat() if row[1] else None}
 
 
 # ── AI Daily Brief (Growth Engine — dashboard action items) ──────────────────
@@ -10956,7 +12952,7 @@ async def yt_ci_rhythm(request: Request, workspace_id: str = None):
         "channels": [
             {
                 "channel_id":       r[0],
-                "title":            r[1] or r[0],
+                "channel_title":    r[1] or r[0],
                 "cadence_pattern":  r[2],
                 "median_gap_days":  float(r[3] or 0),
                 "breakout_rate":    float(r[4] or 0),
@@ -10984,10 +12980,13 @@ async def yt_ci_lifecycle(request: Request, workspace_id: str = None):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT topic_name, shelf_life, half_life_weeks, avg_velocity, cluster_size, channel_id
-                FROM yt_topic_clusters
-                WHERE workspace_id = %s AND shelf_life IS NOT NULL
-                ORDER BY avg_velocity DESC
+                SELECT tc.topic_name, tc.shelf_life, tc.half_life_weeks, tc.avg_velocity,
+                       tc.cluster_size, tc.channel_id, cc.channel_title
+                FROM yt_topic_clusters tc
+                INNER JOIN yt_competitor_channels cc
+                    ON cc.workspace_id = tc.workspace_id AND cc.channel_id = tc.channel_id
+                WHERE tc.workspace_id = %s AND tc.shelf_life IS NOT NULL
+                ORDER BY tc.avg_velocity DESC
                 """,
                 (workspace_id,),
             )
@@ -11001,6 +13000,7 @@ async def yt_ci_lifecycle(request: Request, workspace_id: str = None):
             "avg_velocity":     float(r[3] or 0),
             "cluster_size":     r[4],
             "channel_id":       r[5],
+            "channel_title":    r[6] or r[5],
         }
 
     evergreen = [_to_dict(r) for r in rows if r[1] == "evergreen"]
@@ -11044,7 +13044,7 @@ async def yt_ci_channels(request: Request, workspace_id: str = None):
         "channels": [
             {
                 "channel_id":       r[0],
-                "title":            r[1] or r[0],
+                "channel_title":    r[1] or r[0],
                 "subscriber_count": r[2],
                 "median_velocity":  float(r[3] or 0),
                 "p75_velocity":     float(r[4] or 0),
@@ -11306,6 +13306,31 @@ async def update_workspace_type(request: Request):
         conn.commit()
 
     return {"ok": True, "workspace_type": workspace_type}
+
+
+@app.get("/workspace/get")
+async def workspace_get_info(request: Request, workspace_id: str = None):
+    """Return basic workspace info including workspace_type."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    from services.agent_swarm.db import get_conn
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, name, workspace_type, onboarding_complete, store_url FROM workspaces WHERE id = %s",
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return {
+        "id":                  str(row[0]),
+        "name":                row[1],
+        "workspace_type":      row[2] or "d2c",
+        "onboarding_complete": row[3],
+        "store_url":           row[4],
+    }
 
 
 @app.patch("/workspace/complete-onboarding")
@@ -12016,6 +14041,52 @@ async def admin_set_plan(request: Request):
     return {"ok": True, "org_id": org_id, "plan": plan, "credits_granted": credits_granted}
 
 
+@app.post("/admin/set-email-plan")
+async def admin_set_email_plan(request: Request):
+    """Set an org's email_plan. Body: {org_id, email_plan}. Plans: none/starter/pro/scale."""
+    _admin_auth(request)
+    body = await request.json()
+    org_id = body.get("org_id", "")
+    email_plan = body.get("email_plan", "starter")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="org_id required")
+    from services.agent_swarm.config import EMAIL_PLAN_LIMITS
+    if email_plan not in EMAIL_PLAN_LIMITS:
+        raise HTTPException(status_code=400, detail=f"email_plan must be one of {list(EMAIL_PLAN_LIMITS.keys())}")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE organizations SET email_plan=%s WHERE id=%s RETURNING id", (email_plan, org_id))
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Org not found")
+    return {"ok": True, "org_id": org_id, "email_plan": email_plan,
+            "monthly_limit": EMAIL_PLAN_LIMITS[email_plan]}
+
+
+@app.post("/admin/reset-onboarding")
+async def admin_reset_onboarding(request: Request):
+    """Reset onboarding_complete=false for a workspace (for testing).
+    Body: {workspace_id}
+    Protected by X-Admin-Token header.
+    """
+    _admin_auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE workspaces SET onboarding_complete = FALSE WHERE id = %s RETURNING id, name",
+                (workspace_id,)
+            )
+            row = cur.fetchone()
+        conn.commit()
+    if not row:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return {"ok": True, "workspace_id": str(row[0]), "name": row[1]}
+
+
 @app.post("/admin/claim-org")
 async def admin_claim_org(request: Request):
     """Link a Clerk user ID to an existing org (for legacy migration).
@@ -12140,3 +14211,2082 @@ async def workspace_create(request: Request):
         "credit_balance": new_balance,
         "plan": "free",
     }
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# EMAIL MARKETING MODULE
+# ════════════════════════════════════════════════════════════════════════════
+
+import hashlib as _hashlib
+import time as _time
+
+
+def _resend():
+    from services.agent_swarm.connectors.resend import ResendConnector
+    from services.agent_swarm.config import RESEND_API_KEY
+    if not RESEND_API_KEY:
+        raise HTTPException(status_code=503, detail="RESEND_API_KEY not configured")
+    return ResendConnector(RESEND_API_KEY)
+
+
+def _unsub_token(contact_id: str) -> str:
+    from services.agent_swarm.config import EMAIL_UNSUB_SALT
+    return _hashlib.sha256(f"{contact_id}{EMAIL_UNSUB_SALT}".encode()).hexdigest()
+
+
+def _check_email_quota(conn, org_id: str, workspace_id: str, count: int):
+    from services.agent_swarm.config import EMAIL_PLAN_LIMITS
+    import datetime
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT email_plan, monthly_emails_sent, email_month_reset, plan FROM organizations WHERE id=%s FOR UPDATE",
+            (org_id,)
+        )
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Org not found")
+    email_plan, used, reset_date, billing_plan = row[0], row[1], row[2], row[3]
+    # Orgs on paid billing plans (growth/agency/pro) get starter email access if not explicitly set
+    if (not email_plan or email_plan == "none") and billing_plan in ("growth", "agency", "pro", "scale"):
+        email_plan = "starter"
+        with conn.cursor() as cur2:
+            cur2.execute("UPDATE organizations SET email_plan='starter' WHERE id=%s", (org_id,))
+    plan = email_plan or "none"
+    limit = EMAIL_PLAN_LIMITS.get(plan, 0)
+    if limit == 0:
+        raise HTTPException(status_code=402, detail={"error": "no_email_plan", "message": "Upgrade to an email plan to send campaigns."})
+    import datetime as _dt
+    now_month = _dt.date.today().replace(day=1)
+    if reset_date is None or reset_date < now_month:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE organizations SET monthly_emails_sent=0, email_month_reset=%s WHERE id=%s",
+                (now_month, org_id)
+            )
+        used = 0
+    if used + count > limit:
+        raise HTTPException(status_code=402, detail={
+            "error": "email_quota_exceeded",
+            "limit": limit, "used": used, "requested": count,
+            "message": f"Monthly email limit reached ({used}/{limit}). Upgrade your email plan."
+        })
+
+
+# ── Domain management ────────────────────────────────────────────────────────
+
+@app.post("/email/domain/add")
+async def email_domain_add(request: Request):
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    domain = body.get("domain", "").strip().lower().replace("https://", "").replace("http://", "").rstrip("/")
+    if not workspace_id or not domain:
+        raise HTTPException(status_code=400, detail="workspace_id and domain required")
+    try:
+        with get_conn() as conn:
+            rc = _resend()
+            data = rc.create_domain(domain)
+            resend_id = data.get("id", "")
+            dns_records = data.get("records", [])
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO email_domains (workspace_id, domain, resend_domain_id, dns_records, status)
+                       VALUES (%s, %s, %s, %s, 'pending')
+                       ON CONFLICT (workspace_id, domain) DO UPDATE
+                         SET resend_domain_id=EXCLUDED.resend_domain_id,
+                             dns_records=EXCLUDED.dns_records,
+                             status='pending', verified=FALSE, updated_at=NOW()
+                       RETURNING id""",
+                    (workspace_id, domain, resend_id, json.dumps(dns_records))
+                )
+                row = cur.fetchone()
+            return {"id": str(row[0]), "domain": domain, "dns_records": dns_records, "status": "pending"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/email/domain/status")
+async def email_domain_status(request: Request, workspace_id: str = None):
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, domain, resend_domain_id, dns_records, verified, status, created_at FROM email_domains WHERE workspace_id=%s ORDER BY created_at",
+                (workspace_id,)
+            )
+            rows = cur.fetchall()
+        domains = []
+        rc = _resend() if rows else None
+        for r in rows:
+            dom_id, dom, resend_id, dns_recs, verified, status, created_at = r
+            if not verified and resend_id and rc:
+                try:
+                    rd = rc.verify_domain(resend_id)  # triggers Resend DNS check then reads status
+                    new_status = rd.get("status", status)
+                    new_verified = new_status == "verified"
+                    if new_status != status or new_verified != verified:
+                        with conn.cursor() as cur2:
+                            cur2.execute(
+                                "UPDATE email_domains SET status=%s, verified=%s, updated_at=NOW() WHERE id=%s",
+                                (new_status, new_verified, dom_id)
+                            )
+                        status, verified = new_status, new_verified
+                except Exception:
+                    pass
+            domains.append({
+                "id": str(dom_id), "domain": dom,
+                "verified": verified, "status": status,
+                "dns_records": dns_recs if isinstance(dns_recs, list) else [],
+                "created_at": created_at.isoformat() if created_at else None,
+            })
+        return {"domains": domains}
+
+
+@app.post("/email/domain/verify")
+async def email_domain_verify(request: Request):
+    _auth(request)
+    body = await request.json()
+    domain_id = body.get("domain_id", "")
+    workspace_id = body.get("workspace_id", "")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT resend_domain_id FROM email_domains WHERE id=%s AND workspace_id=%s", (domain_id, workspace_id))
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Domain not found")
+        rc = _resend()
+        # Trigger Resend to re-check DNS, then read updated status
+        rd = rc.verify_domain(row[0])
+        status = rd.get("status", "pending")
+        verified = status == "verified"
+        with conn.cursor() as cur:
+            cur.execute("UPDATE email_domains SET status=%s, verified=%s, updated_at=NOW() WHERE id=%s", (status, verified, domain_id))
+        return {"ok": True, "verified": verified, "status": status}
+
+
+@app.post("/email/domain/check-dns")
+async def email_domain_check_dns(request: Request):
+    """
+    For each expected DNS record (from Resend), do a live DNS lookup via
+    Google DNS-over-HTTPS and report match/mismatch per record.
+    """
+    _auth(request)
+    body = await request.json()
+    domain_id = body.get("domain_id", "")
+    workspace_id = body.get("workspace_id", "")
+    if not domain_id or not workspace_id:
+        raise HTTPException(status_code=400, detail="domain_id and workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT resend_domain_id FROM email_domains WHERE id=%s AND workspace_id=%s",
+                (domain_id, workspace_id)
+            )
+            row = cur.fetchone()
+    if not row or not row[0]:
+        raise HTTPException(status_code=404, detail="Domain not found")
+
+    rc = _resend()
+    rd = rc.get_domain(row[0])
+    expected_records = rd.get("records", [])
+
+    def _dns_lookup(name: str, rtype: str) -> list:
+        try:
+            import httpx as _httpx
+            r = _httpx.get(
+                "https://dns.google/resolve",
+                params={"name": name, "type": rtype},
+                timeout=5,
+            )
+            answers = r.json().get("Answer", [])
+            # Strip trailing dots, lowercase for comparison
+            return [a.get("data", "").rstrip(".").lower() for a in answers]
+        except Exception:
+            return []
+
+    results = []
+    for rec in expected_records:
+        rtype  = rec.get("type", "TXT").upper()
+        name   = rec.get("name", "")
+        domain_name = rd.get("name", "")
+        # Resend returns relative names (without the domain). Build FQDN.
+        if name and domain_name and not name.endswith(domain_name):
+            fqdn = f"{name}.{domain_name}"
+        else:
+            fqdn = name
+        expected_val = rec.get("value", "").strip().rstrip(".")
+
+        found_vals = _dns_lookup(fqdn, rtype)
+        # Normalize expected for comparison
+        expected_norm = expected_val.lower()
+        if rtype == "TXT":
+            # DNS returns quoted strings sometimes, strip quotes
+            found_vals = [v.strip('"') for v in found_vals]
+        matched = any(expected_norm in v.lower() or v.lower() in expected_norm for v in found_vals)
+
+        results.append({
+            "record": rec.get("record", rtype),
+            "type": rtype,
+            "name": name,
+            "fqdn": fqdn,
+            "expected": expected_val,
+            "found": found_vals,
+            "match": matched,
+            "status": rec.get("status", "pending"),
+        })
+
+    all_match = all(r["match"] for r in results)
+    return {"records": results, "all_match": all_match, "domain": rd.get("name")}
+
+
+@app.get("/email/domain/debug")
+async def email_domain_debug(request: Request, workspace_id: str = None):
+    """Debug endpoint — shows raw DB record + Resend API status for each domain."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    results = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, domain, resend_domain_id, verified, status FROM email_domains WHERE workspace_id=%s",
+                (workspace_id,)
+            )
+            rows = cur.fetchall()
+    rc = _resend()
+    for row in rows:
+        dom_id, dom, resend_id, verified, status = row
+        resend_data = None
+        resend_error = None
+        verify_trigger = None
+        if resend_id:
+            try:
+                # 1. Try triggering verify
+                vr = rc.session.post(f"{rc.BASE}/domains/{resend_id}/verify", timeout=15)
+                verify_trigger = {"status_code": vr.status_code, "body": vr.text[:500]}
+            except Exception as ex:
+                verify_trigger = {"error": str(ex)}
+            try:
+                # 2. Read current domain status
+                resend_data = rc.get_domain(resend_id)
+            except Exception as ex:
+                resend_error = str(ex)
+        results.append({
+            "domain": dom,
+            "db_id": str(dom_id),
+            "resend_domain_id": resend_id,
+            "db_verified": verified,
+            "db_status": status,
+            "resend_verify_trigger": verify_trigger,
+            "resend_current": resend_data,
+            "resend_error": resend_error,
+        })
+    return {"domains": results}
+
+
+@app.delete("/email/domain/remove")
+async def email_domain_remove(request: Request):
+    _auth(request)
+    body = await request.json()
+    domain_id = body.get("domain_id", "")
+    workspace_id = body.get("workspace_id", "")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT resend_domain_id FROM email_domains WHERE id=%s AND workspace_id=%s", (domain_id, workspace_id))
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Domain not found")
+        try:
+            _resend().delete_domain(row[0])
+        except Exception:
+            pass
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM email_domains WHERE id=%s AND workspace_id=%s", (domain_id, workspace_id))
+        return {"ok": True}
+
+
+# ── Contact lists ────────────────────────────────────────────────────────────
+
+@app.post("/email/lists/create")
+async def email_list_create(request: Request):
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    name = body.get("name", "").strip()
+    description = body.get("description", "")
+    if not workspace_id or not name:
+        raise HTTPException(status_code=400, detail="workspace_id and name required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO email_lists (workspace_id, name, description) VALUES (%s,%s,%s) RETURNING id, created_at",
+                (workspace_id, name, description)
+            )
+            row = cur.fetchone()
+        return {"id": str(row[0]), "name": name, "description": description, "contact_count": 0, "created_at": row[1].isoformat()}
+
+
+@app.get("/email/lists")
+async def email_lists_get(request: Request, workspace_id: str = None):
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, name, description, source, contact_count, created_at FROM email_lists WHERE workspace_id=%s ORDER BY created_at DESC",
+                (workspace_id,)
+            )
+            rows = cur.fetchall()
+        return {"lists": [{"id": str(r[0]), "name": r[1], "description": r[2], "source": r[3], "contact_count": r[4], "created_at": r[5].isoformat()} for r in rows]}
+
+
+@app.delete("/email/lists/{list_id}")
+async def email_list_delete(request: Request, list_id: str):
+    _auth(request)
+    workspace_id = request.query_params.get("workspace_id", "")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM email_lists WHERE id=%s AND workspace_id=%s", (list_id, workspace_id))
+        return {"ok": True}
+
+
+@app.post("/email/lists/import-csv")
+async def email_list_import_csv(request: Request):
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    list_id = body.get("list_id", "")
+    rows = body.get("rows", [])
+    if not workspace_id or not list_id or not rows:
+        raise HTTPException(status_code=400, detail="workspace_id, list_id, rows required")
+
+    imported = duplicates = 0
+    errors = []
+    import uuid as _uuid
+    with get_conn() as conn:
+        for row in rows:
+            email = (row.get("email") or "").strip().lower()
+            if not email or "@" not in email:
+                errors.append({"email": email, "reason": "invalid email"})
+                continue
+            first_name = row.get("first_name") or row.get("First Name") or row.get("firstname") or ""
+            last_name  = row.get("last_name")  or row.get("Last Name")  or row.get("lastname")  or ""
+            known = {"email", "first_name", "last_name", "firstname", "lastname", "First Name", "Last Name"}
+            custom = {k: v for k, v in row.items() if k not in known and v}
+            contact_id = str(_uuid.uuid4())
+            token = _unsub_token(contact_id)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO email_contacts
+                           (id, workspace_id, list_id, email, first_name, last_name, custom_fields, source, unsubscribe_token)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,'csv',%s)
+                           ON CONFLICT (workspace_id, list_id, email) DO UPDATE
+                             SET first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
+                                 custom_fields=EXCLUDED.custom_fields, updated_at=NOW()
+                           RETURNING (xmax=0)""",
+                        (contact_id, workspace_id, list_id, email, first_name, last_name, json.dumps(custom), token)
+                    )
+                    is_new = cur.fetchone()[0]
+                if is_new:
+                    imported += 1
+                else:
+                    duplicates += 1
+            except Exception as e:
+                errors.append({"email": email, "reason": str(e)})
+                conn.rollback()
+                continue
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE email_lists SET contact_count=(SELECT COUNT(*) FROM email_contacts WHERE list_id=%s AND NOT unsubscribed), updated_at=NOW() WHERE id=%s",
+                (list_id, list_id)
+            )
+        return {"imported": imported, "duplicates": duplicates, "errors": errors}
+
+
+@app.get("/email/contacts")
+async def email_contacts_get(request: Request, workspace_id: str = None, list_id: str = None, page: int = 1, limit: int = 50):
+    _auth(request)
+    if not workspace_id or not list_id:
+        raise HTTPException(status_code=400, detail="workspace_id and list_id required")
+    offset = (page - 1) * limit
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM email_contacts WHERE workspace_id=%s AND list_id=%s", (workspace_id, list_id))
+            total = cur.fetchone()[0]
+            cur.execute(
+                "SELECT id, email, first_name, last_name, unsubscribed, bounced, source, created_at FROM email_contacts WHERE workspace_id=%s AND list_id=%s ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                (workspace_id, list_id, limit, offset)
+            )
+            rows = cur.fetchall()
+    contacts = [{"id": str(r[0]), "email": r[1], "first_name": r[2], "last_name": r[3], "unsubscribed": r[4], "bounced": r[5], "source": r[6], "created_at": r[7].isoformat()} for r in rows]
+    return {"contacts": contacts, "total": total, "page": page, "limit": limit}
+
+
+# ── AI Email Composer ────────────────────────────────────────────────────────
+
+@app.post("/email/scrape-product")
+async def email_scrape_product(request: Request):
+    """
+    Scrape any product URL and return structured data.
+    Tries in order: JSON-LD Product schema → Open Graph tags → meta/h1 fallbacks.
+    Returns {name, description, price, currency, images[]}
+    """
+    _auth(request)
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    workspace_id = body.get("workspace_id", "")
+    if not url:
+        raise HTTPException(status_code=400, detail="url required")
+    if not url.startswith("http"):
+        url = "https://" + url
+
+    import re as _re
+    import requests as _requests
+    from bs4 import BeautifulSoup as _BS
+    from urllib.parse import urlparse as _urlparse
+
+    # 0. Look up in our own products catalog first (most reliable)
+    if workspace_id:
+        try:
+            url_handle = url.rstrip("/").split("/")[-1].split("?")[0].lower()
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """SELECT name, description, price_inr, images, key_features, unique_selling_prop
+                           FROM products
+                           WHERE workspace_id=%s AND (
+                               product_url ILIKE %s OR
+                               LOWER(source_product_id) LIKE %s OR
+                               LOWER(name) LIKE %s
+                           ) AND active=true
+                           ORDER BY created_at DESC LIMIT 1""",
+                        (workspace_id, f"%{url_handle}%", f"%{url_handle}%", f"%{url_handle.replace('-', ' ')}%")
+                    )
+                    prod_row = cur.fetchone()
+            if prod_row:
+                p_name, p_desc, p_price, p_images, p_features, p_usp = prod_row
+                imgs = [i.get("url") for i in (p_images or []) if i.get("url")]
+                # Build rich description from features + USP
+                desc_parts = []
+                if p_desc: desc_parts.append(p_desc)
+                if p_usp: desc_parts.append(f"USP: {p_usp}")
+                if p_features: desc_parts.append("Key features: " + ", ".join(p_features))
+                return {
+                    "name": p_name or "",
+                    "description": " ".join(desc_parts),
+                    "price": f"₹{int(p_price):,}" if p_price else "",
+                    "currency": "INR",
+                    "images": imgs[:6],
+                }
+        except Exception:
+            pass
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    parsed_url = _urlparse(url)
+    store_domain = parsed_url.netloc.lower().replace("www.", "")  # e.g. agatsaone.com
+
+    # 1. Try Shopify Admin API if we have a stored token for this domain
+    shopify_data = None
+    if "/products/" in url:
+        handle = parsed_url.path.rstrip("/").split("/products/")[-1].split("?")[0]
+        # Check for stored Shopify connection matching this domain
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT access_token, shop_domain FROM shopify_connections WHERE shop_domain ILIKE %s OR shop_domain ILIKE %s LIMIT 1",
+                        (f"%{store_domain}%", f"%{store_domain.split('.')[0]}%")
+                    )
+                    sc_row = cur.fetchone()
+            if sc_row:
+                admin_token, shop_domain_stored = sc_row
+                api_url = f"https://{shop_domain_stored}/admin/api/2024-01/products.json?handle={handle}&fields=title,body_html,variants,images"
+                r = _requests.get(api_url, headers={"X-Shopify-Access-Token": admin_token}, timeout=10)
+                if r.ok:
+                    prods = r.json().get("products", [])
+                    if prods:
+                        pj = prods[0]
+                        imgs = [img.get("src", "") for img in pj.get("images", []) if img.get("src")]
+                        variants = pj.get("variants", [{}])
+                        price = variants[0].get("price", "") if variants else ""
+                        shopify_data = {
+                            "name": pj.get("title", ""),
+                            "description": _BS(pj.get("body_html") or "", "lxml").get_text(separator=" ", strip=True),
+                            "price": f"₹{price}" if price else "",
+                            "currency": "INR",
+                            "images": imgs[:6],
+                        }
+        except Exception:
+            pass
+
+    # 1b. Fallback: try public Shopify product.json (works for non-headless stores)
+    if not shopify_data and "/products/" in url:
+        try:
+            json_url = _re.sub(r'\?.*$', '', url.rstrip('/')) + ".json"
+            r = _requests.get(json_url, headers=headers, timeout=10)
+            if r.ok and r.headers.get("content-type", "").startswith("application/json"):
+                pj = r.json().get("product", {})
+                if pj and pj.get("title"):
+                    imgs = [img.get("src", "") for img in pj.get("images", []) if img.get("src")]
+                    variants = pj.get("variants", [{}])
+                    price = variants[0].get("price", "") if variants else ""
+                    shopify_data = {
+                        "name": pj.get("title", ""),
+                        "description": _BS(pj.get("body_html") or "", "lxml").get_text(separator=" ", strip=True),
+                        "price": price,
+                        "currency": "INR",
+                        "images": imgs[:6],
+                    }
+        except Exception:
+            pass
+
+    if shopify_data:
+        return shopify_data
+
+    # 2. Fetch the HTML page
+    try:
+        r = _requests.get(url, headers=headers, timeout=12, allow_redirects=True)
+        r.raise_for_status()
+        html = r.text
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not fetch URL: {e}")
+
+    soup = _BS(html, "lxml")
+
+    # 3. Try JSON-LD Product schema
+    name = description = price = currency = ""
+    images = []
+
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            ld = json.loads(script.string or "")
+            # handle @graph arrays
+            items = ld if isinstance(ld, list) else ld.get("@graph", [ld])
+            for item in items:
+                if item.get("@type") in ("Product", "product"):
+                    name = name or item.get("name", "")
+                    description = description or item.get("description", "")
+                    # images
+                    img_field = item.get("image", [])
+                    if isinstance(img_field, str):
+                        images.append(img_field)
+                    elif isinstance(img_field, list):
+                        images += [i if isinstance(i, str) else i.get("url", "") for i in img_field]
+                    elif isinstance(img_field, dict):
+                        images.append(img_field.get("url", ""))
+                    # price
+                    offers = item.get("offers", {})
+                    if isinstance(offers, list):
+                        offers = offers[0] if offers else {}
+                    price = price or str(offers.get("price", ""))
+                    currency = currency or offers.get("priceCurrency", "INR")
+        except Exception:
+            pass
+
+    # 4. Open Graph fallbacks
+    def og(prop):
+        tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
+        return (tag.get("content") or "").strip() if tag else ""
+
+    name = name or og("og:title") or (soup.find("h1") or {}).get_text(strip=True)
+    description = description or og("og:description") or og("description")
+    if not images:
+        og_img = og("og:image")
+        skip_og = ("icon", "logo", "favicon", "badge", "1x1", "pixel")
+        if og_img and not any(t in og_img.lower() for t in skip_og):
+            images.append(og_img)
+
+    # 5. Collect additional product images from page (look for product-image classes)
+    if len(images) < 4:
+        for img in soup.find_all("img"):
+            src = img.get("src") or img.get("data-src") or ""
+            if not src:
+                continue
+            # Make absolute
+            if src.startswith("//"):
+                src = "https:" + src
+            elif src.startswith("/"):
+                    src = f"{parsed_url.scheme}://{parsed_url.netloc}{src}"
+            # Filter: skip tiny icons/logos, keep product-looking images
+            skip_terms = ("icon", "logo", "badge", "flag", "pixel", "tracking", "1x1", "spinner", "loader", "avatar", "favicon")
+            if any(t in src.lower() for t in skip_terms):
+                continue
+            w = img.get("width") or img.get("data-width") or ""
+            if w and int(_re.sub(r'\D', '', str(w)) or 0) < 100:
+                continue
+            if src not in images:
+                images.append(src)
+            if len(images) >= 6:
+                break
+
+    # 6. Jina AI fallback — for JS-rendered / headless stores
+    if not name or not images:
+        try:
+            import requests as _jreq
+            jina_url = f"https://r.jina.ai/{url}"
+            jr = _jreq.get(jina_url, headers={"Accept": "application/json", "X-No-Cache": "true"}, timeout=20)
+            if jr.ok:
+                jd = jr.json()
+                jina_data = jd.get("data", {})
+                if not name:
+                    name = jina_data.get("title", "")
+                if not description:
+                    description = (jina_data.get("content") or "")[:800]
+                if not images:
+                    jina_imgs = jina_data.get("images", {})
+                    skip_terms = ("icon", "logo", "badge", "favicon", "pixel", "tracking", "1x1")
+                    for img_url in list(jina_imgs.keys()):
+                        if not any(t in img_url.lower() for t in skip_terms):
+                            images.append(img_url)
+                        if len(images) >= 6:
+                            break
+        except Exception:
+            pass
+
+    return {
+        "name": (name or "").strip(),
+        "description": (description or "").strip(),
+        "price": (price or "").strip(),
+        "currency": currency or "INR",
+        "images": [i for i in images if i][:6],
+    }
+
+
+@app.post("/email/campaign/compose-ai")
+async def email_compose_ai(request: Request):
+    _auth(request)
+    body = await request.json()
+    workspace_id    = body.get("workspace_id", "")
+    product_name    = body.get("product_name", "")
+    product_description = body.get("product_description", "")
+    product_price   = body.get("product_price", "")
+    product_url     = body.get("product_url", "")
+    campaign_context = body.get("campaign_context", "")   # "Holi sale, 20% off, Mar 20-25"
+    goal            = body.get("goal", "drive_purchase")
+    tone            = body.get("tone", "friendly")
+    from_name       = body.get("from_name", "")
+    cta_text        = body.get("cta_text", "Shop Now")
+    product_images  = body.get("product_images", [])      # list of image URLs
+
+    if not workspace_id or not product_name:
+        raise HTTPException(status_code=400, detail="workspace_id and product_name required")
+
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_and_deduct_credits(conn, org_id, workspace_id, 3, "email_compose")
+
+    import datetime as _dt
+    current_year = _dt.date.today().year
+
+    # ── Goal & Tone descriptions ──────────────────────────────────────────────
+    goal_map = {
+        "drive_purchase":  "Convert readers into buyers — focus on desire, benefits, and urgency",
+        "product_launch":  "Announce a new product — build excitement, highlight what's new, create FOMO",
+        "re_engage":       "Win back inactive subscribers — acknowledge the gap, offer a reason to return",
+        "cart_recovery":   "Recover abandoned carts — remind, reassure (trust/returns), nudge to complete",
+        "announce_offer":  "Announce a sale or limited-time offer — clear discount, deadline, CTA",
+        "newsletter":      "Provide value and updates — informative tone, soft sell, keep them engaged",
+    }
+    tone_map = {
+        "friendly":     "Warm, conversational, like a helpful friend. Contractions OK. Emoji sparingly.",
+        "professional": "Polished, credible, business-like. No slang. Precise language.",
+        "urgent":       "Time-sensitive, action-driven. Short sentences. Strong verbs. Deadline-forward.",
+        "playful":      "Fun, punchy, maybe a bit cheeky. Light humor where appropriate.",
+        "luxurious":    "Premium, aspirational, sensory. Evocative adjectives. Confidence, not pushy.",
+    }
+
+    # ── Images section for prompt ─────────────────────────────────────────────
+    if product_images:
+        hero_image = product_images[0]
+        extra_images = product_images[1:3]
+        img_instructions = f"""PRODUCT IMAGES PROVIDED — YOU MUST USE THEM:
+- Hero image (place at top, full-width): {hero_image}
+- Additional images (embed inline): {', '.join(extra_images) if extra_images else 'none'}
+
+In the HTML, place the hero image immediately after the header bar as a full-width block:
+<img src="{hero_image}" alt="{product_name}" style="width:100%;max-width:600px;height:auto;display:block;" />
+Embed additional images between content sections where they add visual context."""
+    else:
+        img_instructions = """NO PRODUCT IMAGES PROVIDED.
+Instead of leaving a blank space, design a visually rich hero block using a branded gradient background
+(e.g. background: linear-gradient(135deg, #4F46E5, #7C3AED)) with the product name as large white headline text.
+This makes the email look beautiful even without photos."""
+
+    price_line = f"Price: {product_price}" if product_price else ""
+    url_line   = f"Product URL: {product_url}" if product_url else ""
+
+    prompt = f"""You are a world-class email marketing copywriter specialising in Indian D2C and health/wellness brands.
+Your emails consistently achieve 40%+ open rates and 8%+ click-through rates.
+Think step-by-step before writing. Read every input carefully.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PRODUCT INFORMATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Name: {product_name}
+{price_line}
+{url_line}
+Description:
+{product_description or "(none provided — infer benefits from the product name and context)"}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CAMPAIGN PURPOSE & CONTEXT  ← READ THIS CAREFULLY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{campaign_context or "(No specific context provided — write a general promotional email for this product)"}
+
+This context defines the REASON the email is being sent. If there is a sale, event, deadline, or specific
+audience segment mentioned here, it must be prominently reflected in the subject line, headline, and body copy.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EMAIL PARAMETERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Goal: {goal_map.get(goal, goal)}
+Tone: {tone_map.get(tone, tone)}
+Sender / Brand name: {from_name or "the brand"}
+CTA button text: "{cta_text}"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMAGES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{img_instructions}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+YOUR DELIVERABLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. SUBJECT LINE
+   - Maximum 52 characters (gets cut off on mobile beyond this)
+   - Must be curiosity-driven OR benefit-driven OR urgency-driven based on the goal
+   - If campaign context mentions a specific offer, date, or event — reference it
+   - Avoid spam trigger words: free, winner, congratulations, !!!, ALL CAPS
+   - A/B test mindset: write the single best option
+
+2. PREHEADER TEXT
+   - 80-90 characters
+   - Complements (does NOT repeat) the subject line — creates a "1-2 punch" effect
+   - Previewed by email clients below the subject in the inbox
+
+3. HTML EMAIL — Complete, standalone, production-ready HTML
+   STRUCTURE (follow exactly):
+   a) Outer wrapper: <table width="100%" bgcolor="#f4f4f7">
+   b) Inner container: <table width="600" style="max-width:600px;margin:0 auto;background:#ffffff">
+   c) Header bar: brand name in a colored strip (#4F46E5 or brand-appropriate)
+   d) Hero section: product image OR branded gradient block (per instructions above)
+   e) Headline: compelling H1-style text (NOT just the product name — speak to the customer's pain/desire)
+   f) Body copy: 2-3 short paragraphs following this copywriting arc:
+      → Para 1: Identify the reader's problem or desire (empathy hook)
+      → Para 2: Introduce the product as the solution with 2-3 specific benefits
+      → Para 3: If there's a specific offer/context, highlight it with urgency
+   g) Bullet points: 3 key product benefits with checkmark (✓) or bullet
+   h) CTA button: large, centered, styled — background #4F46E5, white text, border-radius 8px, padding 16px 32px
+      Link href="#" (user will replace with actual URL)
+   i) If price provided, show it prominently near the CTA
+   j) Social proof line (if applicable): e.g. "Trusted by 50,000+ customers"
+   k) Footer: "{from_name}" | © {current_year} | <a href="{{{{UNSUBSCRIBE_URL}}}}">Unsubscribe</a>
+
+   TECHNICAL RULES (non-negotiable for email client compatibility):
+   - ALL CSS must be INLINE — no <style> blocks (Gmail, Outlook strip them)
+   - Use <table> layouts for structure, not <div> with flexbox (Outlook doesn't support flexbox)
+   - Images: always include width, height="auto", display:block, max-width:100%
+   - Font stack: Arial, Helvetica, sans-serif (no Google Fonts — blocked by many email clients)
+   - Line-height: 1.6 on body text for readability
+   - Include {{{{UNSUBSCRIBE_URL}}}} exactly once in the footer
+
+4. PLAIN TEXT VERSION
+   Clean plain text. Include all key content. End with unsubscribe line: Unsubscribe: {{{{UNSUBSCRIBE_URL}}}}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Use EXACTLY these delimiters — do not use JSON or markdown fences.
+The HTML section is large so we avoid JSON encoding issues.
+
+===SUBJECT===
+(subject line here)
+===PREHEADER===
+(preheader text here)
+===HTML===
+(full HTML email here)
+===TEXT===
+(plain text version here)
+===END==="""
+
+    import anthropic as _anthropic
+    from services.agent_swarm.config import ANTHROPIC_API_KEY as _AKEY, CLAUDE_MODEL as _MODEL
+    client = _anthropic.Anthropic(api_key=_AKEY)
+    msg = client.messages.create(
+        model=_MODEL, max_tokens=8192,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    raw = msg.content[0].text.strip()
+
+    def _extract(raw_text: str, key: str, next_key: str) -> str:
+        start_tag = f"==={key}==="
+        end_tag   = f"==={next_key}==="
+        s = raw_text.find(start_tag)
+        e = raw_text.find(end_tag)
+        if s == -1:
+            return ""
+        content = raw_text[s + len(start_tag): e if e != -1 else None]
+        return content.strip()
+
+    subject  = _extract(raw, "SUBJECT",  "PREHEADER")
+    preheader = _extract(raw, "PREHEADER", "HTML")
+    html_body = _extract(raw, "HTML",     "TEXT")
+    text_body = _extract(raw, "TEXT",     "END")
+
+    if not html_body:
+        # Fallback: Claude may have used JSON despite instructions — try parsing
+        try:
+            import re as _re
+            clean = raw
+            if clean.startswith("```"):
+                clean = _re.sub(r'^```[a-z]*\n?', '', clean).rstrip('`').strip()
+            parsed = json.loads(clean)
+            subject   = parsed.get("subject", subject)
+            preheader = parsed.get("preheader", preheader)
+            html_body = parsed.get("html_body", "")
+            text_body = parsed.get("text_body", "")
+        except Exception:
+            pass
+
+    if not html_body:
+        raise HTTPException(status_code=500, detail="AI failed to generate email content — please try again")
+
+    return {
+        "subject":   subject,
+        "preheader": preheader,
+        "html_body": html_body,
+        "text_body": text_body,
+    }
+
+
+# ── Campaign CRUD ────────────────────────────────────────────────────────────
+
+@app.post("/email/campaign/create")
+async def email_campaign_create(request: Request):
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    list_id      = body.get("list_id", "")
+    domain_id    = body.get("domain_id", "")
+    name         = body.get("name", "").strip()
+    subject      = body.get("subject", "").strip()
+    from_name    = body.get("from_name", "").strip()
+    from_email   = body.get("from_email", "").strip()
+    reply_to     = body.get("reply_to", "")
+    html_body    = body.get("html_body", "")
+    text_body    = body.get("text_body", "")
+    scheduled_at = body.get("scheduled_at")
+
+    if not all([workspace_id, list_id, domain_id, name, subject, from_name, from_email, html_body]):
+        raise HTTPException(status_code=400, detail="Missing required fields")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT verified FROM email_domains WHERE id=%s AND workspace_id=%s", (domain_id, workspace_id))
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Domain not found")
+        if not row[0]:
+            raise HTTPException(status_code=400, detail="Domain not yet verified.")
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM email_contacts WHERE list_id=%s AND NOT unsubscribed AND NOT bounced", (list_id,))
+            total = cur.fetchone()[0]
+
+        status = "scheduled" if scheduled_at else "draft"
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO email_campaigns
+                   (workspace_id, list_id, domain_id, name, subject, from_name, from_email, reply_to, html_body, text_body, status, scheduled_at, total_recipients)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id, created_at""",
+                (workspace_id, list_id, domain_id, name, subject, from_name, from_email,
+                 reply_to or None, html_body, text_body or None, status, scheduled_at or None, total)
+            )
+            row = cur.fetchone()
+        return {"id": str(row[0]), "name": name, "status": status, "total_recipients": total, "created_at": row[1].isoformat()}
+
+
+@app.get("/email/campaigns")
+async def email_campaigns_list(request: Request, workspace_id: str = None, limit: int = 20, offset: int = 0):
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, name, subject, from_email, status, total_recipients, sent_count,
+                          open_count, click_count, bounce_count, unsub_count, created_at, sent_at, scheduled_at
+                   FROM email_campaigns WHERE workspace_id=%s ORDER BY created_at DESC LIMIT %s OFFSET %s""",
+                (workspace_id, limit, offset)
+            )
+            rows = cur.fetchall()
+    campaigns = []
+    for r in rows:
+        sent = r[6] or 0
+        campaigns.append({
+            "id": str(r[0]), "name": r[1], "subject": r[2], "from_email": r[3],
+            "status": r[4], "total_recipients": r[5], "sent_count": sent,
+            "open_count": r[7], "click_count": r[8], "bounce_count": r[9], "unsub_count": r[10],
+            "open_rate":  round(r[7] / sent * 100, 1) if sent else 0,
+            "click_rate": round(r[8] / sent * 100, 1) if sent else 0,
+            "created_at": r[11].isoformat() if r[11] else None,
+            "sent_at":    r[12].isoformat() if r[12] else None,
+            "scheduled_at": r[13].isoformat() if r[13] else None,
+        })
+    return {"campaigns": campaigns}
+
+
+@app.get("/email/campaign/{campaign_id}/stats")
+async def email_campaign_stats(request: Request, campaign_id: str, workspace_id: str = None):
+    _auth(request)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, name, subject, from_email, status, total_recipients, sent_count,
+                          open_count, click_count, bounce_count, unsub_count, sent_at
+                   FROM email_campaigns WHERE id=%s AND workspace_id=%s""",
+                (campaign_id, workspace_id)
+            )
+            c = cur.fetchone()
+        if not c:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        sent = c[6] or 0
+        summary = {
+            "sent": sent, "opened": c[7], "clicked": c[8], "bounced": c[9], "unsubscribed": c[10],
+            "open_rate":   round(c[7] / sent * 100, 1) if sent else 0,
+            "click_rate":  round(c[8] / sent * 100, 1) if sent else 0,
+            "bounce_rate": round(c[9] / sent * 100, 1) if sent else 0,
+        }
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT date_trunc('hour', occurred_at),
+                          SUM(CASE WHEN event_type='email.opened' THEN 1 ELSE 0 END),
+                          SUM(CASE WHEN event_type='email.clicked' THEN 1 ELSE 0 END)
+                   FROM email_events WHERE campaign_id=%s GROUP BY 1 ORDER BY 1""",
+                (campaign_id,)
+            )
+            timeline = [{"hour": r[0].isoformat(), "opens": int(r[1]), "clicks": int(r[2])} for r in cur.fetchall()]
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT event_data->>'click_url', COUNT(*) FROM email_events
+                   WHERE campaign_id=%s AND event_type='email.clicked' AND event_data->>'click_url' IS NOT NULL
+                   GROUP BY 1 ORDER BY 2 DESC LIMIT 10""",
+                (campaign_id,)
+            )
+            top_links = [{"url": r[0], "click_count": int(r[1])} for r in cur.fetchall()]
+        return {
+            "campaign": {"id": str(c[0]), "name": c[1], "subject": c[2], "from_email": c[3],
+                         "status": c[4], "total_recipients": c[5], "sent_count": sent,
+                         "sent_at": c[11].isoformat() if c[11] else None},
+            "summary": summary, "timeline": timeline, "top_links": top_links,
+        }
+
+
+@app.delete("/email/campaign/{campaign_id}")
+async def email_campaign_delete(request: Request, campaign_id: str):
+    _auth(request)
+    workspace_id = request.query_params.get("workspace_id", "")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM email_campaigns WHERE id=%s AND workspace_id=%s", (campaign_id, workspace_id))
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Not found")
+        if row[0] not in ("draft", "failed"):
+            raise HTTPException(status_code=400, detail="Only draft or failed campaigns can be deleted")
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM email_campaigns WHERE id=%s", (campaign_id,))
+        return {"ok": True}
+
+
+# ── Campaign send (background) ────────────────────────────────────────────────
+
+async def _send_campaign_bg(campaign_id: str, workspace_id: str, org_id: str):
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT list_id, subject, from_name, from_email, reply_to, html_body, text_body FROM email_campaigns WHERE id=%s",
+                    (campaign_id,)
+                )
+                c = cur.fetchone()
+            if not c:
+                return
+            list_id, subject, from_name, from_email, reply_to, html_body, text_body = c
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, email, first_name, unsubscribe_token FROM email_contacts WHERE list_id=%s AND NOT unsubscribed AND NOT bounced",
+                    (list_id,)
+                )
+                contacts = cur.fetchall()
+
+            total = len(contacts)
+            with conn.cursor() as cur:
+                cur.execute("UPDATE email_campaigns SET status='sending', total_recipients=%s, updated_at=NOW() WHERE id=%s", (total, campaign_id))
+            conn.commit()
+
+            from_field = f"{from_name} <{from_email}>"
+            rc = _resend()
+            unsub_base = "https://app.runwaystudios.co/unsubscribe"
+            sent_count = failed_count = 0
+
+            for i, (contact_id, email, first_name, unsub_token) in enumerate(contacts):
+                contact_html = html_body.replace("{{UNSUBSCRIBE_URL}}", f"{unsub_base}?token={unsub_token}")
+                contact_txt  = (text_body or "").replace("{{UNSUBSCRIBE_URL}}", f"{unsub_base}?token={unsub_token}")
+                try:
+                    msg_id = rc.send_email(
+                        to=email, from_=from_field, subject=subject,
+                        html=contact_html, text=contact_txt or None,
+                        reply_to=reply_to or None,
+                    )
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """INSERT INTO email_send_log (campaign_id, contact_id, resend_message_id, status, sent_at)
+                               VALUES (%s,%s,%s,'sent',NOW())
+                               ON CONFLICT (campaign_id, contact_id) DO UPDATE
+                                 SET resend_message_id=EXCLUDED.resend_message_id, status='sent', sent_at=NOW()""",
+                            (campaign_id, str(contact_id), msg_id)
+                        )
+                    sent_count += 1
+                except Exception as e:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """INSERT INTO email_send_log (campaign_id, contact_id, status, error)
+                               VALUES (%s,%s,'failed',%s)
+                               ON CONFLICT (campaign_id, contact_id) DO UPDATE SET status='failed', error=EXCLUDED.error""",
+                            (campaign_id, str(contact_id), str(e))
+                        )
+                    failed_count += 1
+
+                if (i + 1) % 50 == 0:
+                    conn.commit()
+                    _time.sleep(0.1)
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE email_campaigns SET status='sent', sent_count=%s, failed_count=%s, sent_at=NOW(), updated_at=NOW() WHERE id=%s",
+                    (sent_count, failed_count, campaign_id)
+                )
+                cur.execute(
+                    "UPDATE organizations SET monthly_emails_sent=monthly_emails_sent+%s WHERE id=%s",
+                    (sent_count, org_id)
+                )
+    except Exception as e:
+        print(f"_send_campaign_bg error: {e}")
+        try:
+            with get_conn() as conn2:
+                with conn2.cursor() as cur:
+                    cur.execute("UPDATE email_campaigns SET status='failed', updated_at=NOW() WHERE id=%s", (campaign_id,))
+        except Exception:
+            pass
+
+
+@app.post("/email/campaign/send")
+async def email_campaign_send(request: Request, background_tasks: BackgroundTasks):
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    campaign_id  = body.get("campaign_id", "")
+    if not workspace_id or not campaign_id:
+        raise HTTPException(status_code=400, detail="workspace_id and campaign_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status, list_id FROM email_campaigns WHERE id=%s AND workspace_id=%s", (campaign_id, workspace_id))
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        if row[0] not in ("draft", "scheduled"):
+            raise HTTPException(status_code=400, detail=f"Campaign is already {row[0]}")
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM email_contacts WHERE list_id=%s AND NOT unsubscribed AND NOT bounced", (row[1],))
+            count = cur.fetchone()[0]
+        _check_email_quota(conn, org_id, workspace_id, count)
+
+    background_tasks.add_task(_send_campaign_bg, campaign_id, workspace_id, org_id)
+    return {"ok": True, "campaign_id": campaign_id, "status": "sending", "recipients": count}
+
+
+# ── Email quota ────────────────────────────────────────────────────────────────
+
+@app.get("/email/quota")
+async def email_quota_get(request: Request, workspace_id: str = None):
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    from services.agent_swarm.config import EMAIL_PLAN_LIMITS
+    import datetime as _dt
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        with conn.cursor() as cur:
+            cur.execute("SELECT email_plan, monthly_emails_sent, email_month_reset FROM organizations WHERE id=%s", (org_id,))
+            row = cur.fetchone()
+    plan, used, reset_date = row
+    limit = EMAIL_PLAN_LIMITS.get(plan, 0)
+    now_month = _dt.date.today().replace(day=1)
+    if reset_date is None or reset_date < now_month:
+        used = 0
+    next_reset = (_dt.date.today().replace(day=1) + _dt.timedelta(days=32)).replace(day=1)
+    return {
+        "email_plan": plan, "monthly_limit": limit,
+        "monthly_used": used, "monthly_remaining": max(0, limit - used),
+        "reset_date": next_reset.isoformat(), "can_send": limit > 0 and used < limit,
+    }
+
+
+# ── Email image upload ────────────────────────────────────────────────────────
+
+@app.post("/email/upload-image")
+async def email_upload_image(request: Request):
+    """
+    Upload an image for use in email campaigns.
+    Accepts multipart/form-data with field 'file'.
+    Returns { url: "https://..." }
+    """
+    _auth(request)
+    import uuid as _uuid, base64 as _b64
+    from google.cloud import storage as _gcs
+    from fastapi import UploadFile
+    import shutil
+
+    form = await request.form()
+    file_field = form.get("file")
+    if not file_field:
+        raise HTTPException(status_code=400, detail="file field required")
+
+    filename = getattr(file_field, "filename", "image.jpg")
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpg"
+    if ext not in ("jpg", "jpeg", "png", "gif", "webp"):
+        raise HTTPException(status_code=400, detail="Unsupported image type")
+
+    content_type_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}
+    content_type = content_type_map.get(ext, "image/jpeg")
+
+    try:
+        img_data = await file_field.read()
+        gcs_path = f"email-images/{_uuid.uuid4().hex}.{ext}"
+        bucket_name = "wa-agency-raw-wa-ai-agency"
+        _gcs_client = _gcs.Client()
+        bucket = _gcs_client.bucket(bucket_name)
+        blob = bucket.blob(gcs_path)
+        blob.upload_from_string(img_data, content_type=content_type)
+        blob.make_public()
+        return {"url": blob.public_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+
+# ── Resend webhook ────────────────────────────────────────────────────────────
+
+@app.post("/email/webhook")
+async def email_webhook(request: Request):
+    from services.agent_swarm.config import RESEND_WEBHOOK_SECRET
+    from services.agent_swarm.connectors.resend import ResendConnector
+    body = await request.body()
+    if RESEND_WEBHOOK_SECRET:
+        if not ResendConnector.verify_webhook(
+            body,
+            request.headers.get("svix-id", ""),
+            request.headers.get("svix-timestamp", ""),
+            request.headers.get("svix-signature", ""),
+            RESEND_WEBHOOK_SECRET,
+        ):
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    event = json.loads(body)
+    event_type = event.get("type", "")
+    data = event.get("data", {})
+    msg_id = data.get("email_id") or data.get("message_id") or ""
+
+    try:
+        with get_conn() as conn:
+            campaign_id = contact_id = workspace_id = None
+            if msg_id:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """SELECT sl.campaign_id, sl.contact_id, ec.workspace_id
+                           FROM email_send_log sl JOIN email_campaigns ec ON ec.id=sl.campaign_id
+                           WHERE sl.resend_message_id=%s LIMIT 1""",
+                        (msg_id,)
+                    )
+                    row = cur.fetchone()
+                if row:
+                    campaign_id, contact_id, workspace_id = str(row[0]), str(row[1]), str(row[2])
+
+            if campaign_id:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO email_events (workspace_id, campaign_id, contact_id, resend_message_id, event_type, event_data) VALUES (%s,%s,%s,%s,%s,%s)",
+                        (workspace_id, campaign_id, contact_id, msg_id, event_type, json.dumps(data))
+                    )
+                col = None
+                if event_type == "email.opened":
+                    col = "open_count"
+                elif event_type == "email.clicked":
+                    col = "click_count"
+                elif event_type == "email.bounced":
+                    col = "bounce_count"
+                    if contact_id:
+                        with conn.cursor() as cur:
+                            cur.execute("UPDATE email_contacts SET bounced=TRUE, bounce_type='hard' WHERE id=%s", (contact_id,))
+                elif event_type in ("email.unsubscribed", "email.complained"):
+                    col = "unsub_count"
+                    if contact_id:
+                        with conn.cursor() as cur:
+                            cur.execute("UPDATE email_contacts SET unsubscribed=TRUE, unsubscribed_at=NOW() WHERE id=%s", (contact_id,))
+                if col:
+                    with conn.cursor() as cur:
+                        cur.execute(f"UPDATE email_campaigns SET {col}={col}+1 WHERE id=%s", (campaign_id,))
+    except Exception as e:
+        print(f"email_webhook error: {e}")
+    return {"ok": True}
+
+
+# ── Public unsubscribe (NO auth) ──────────────────────────────────────────────
+
+@app.post("/unsubscribe")
+async def public_unsubscribe(request: Request):
+    body = await request.json()
+    token = body.get("token", "").strip()
+    if not token:
+        return {"ok": True}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE email_contacts SET unsubscribed=TRUE, unsubscribed_at=NOW() WHERE unsubscribe_token=%s AND NOT unsubscribed RETURNING email",
+                (token,)
+            )
+            row = cur.fetchone()
+    if row:
+        email = row[0]
+        masked = email[0] + "***@" + email.split("@")[1]
+        return {"ok": True, "email": masked}
+    return {"ok": True}
+
+
+# ── Public: Support Ticket ────────────────────────────────────────────────────
+
+SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", "info@runwaystudios.co")
+RESEND_FROM_SUPPORT = os.getenv("RESEND_FROM_SUPPORT", "onboarding@resend.dev")
+
+@app.post("/public/submit-ticket")
+async def public_submit_ticket(request: Request):
+    """No-auth endpoint — accepts support ticket from marketing website."""
+    body = await request.json()
+    name     = (body.get("name") or "").strip()
+    email    = (body.get("email") or "").strip()
+    company  = (body.get("company") or "").strip()
+    category = (body.get("category") or "General").strip()
+    priority = (body.get("priority") or "Normal").strip()
+    message  = (body.get("message") or "").strip()
+
+    if not name or not email or not message:
+        raise HTTPException(status_code=400, detail="name, email and message are required")
+
+    RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+    if not RESEND_API_KEY:
+        # Fallback: store in DB and return success
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO support_tickets (name, email, company, category, priority, message, created_at) VALUES (%s,%s,%s,%s,%s,%s,NOW()) ON CONFLICT DO NOTHING",
+                    (name, email, company, category, priority, message)
+                )
+        return {"ok": True}
+
+    from services.agent_swarm.connectors.resend import ResendConnector
+    rc = ResendConnector(RESEND_API_KEY)
+    html = f"""
+<h2 style="color:#7c3aed">New Support Ticket — Runway Studios</h2>
+<table style="border-collapse:collapse;width:100%;font-family:sans-serif;font-size:14px">
+  <tr><td style="padding:8px;font-weight:600;color:#6b7280;width:120px">Name</td><td style="padding:8px">{name}</td></tr>
+  <tr style="background:#f9fafb"><td style="padding:8px;font-weight:600;color:#6b7280">Email</td><td style="padding:8px"><a href="mailto:{email}">{email}</a></td></tr>
+  <tr><td style="padding:8px;font-weight:600;color:#6b7280">Company</td><td style="padding:8px">{company or '—'}</td></tr>
+  <tr style="background:#f9fafb"><td style="padding:8px;font-weight:600;color:#6b7280">Category</td><td style="padding:8px">{category}</td></tr>
+  <tr><td style="padding:8px;font-weight:600;color:#6b7280">Priority</td><td style="padding:8px">{priority}</td></tr>
+  <tr style="background:#f9fafb"><td style="padding:8px;font-weight:600;color:#6b7280">Message</td><td style="padding:8px;white-space:pre-wrap">{message}</td></tr>
+</table>
+<p style="margin-top:16px;font-size:12px;color:#9ca3af">Sent from runwaystudios.co support form</p>
+"""
+    try:
+        rc.send_email(
+            to=SUPPORT_EMAIL,
+            from_=RESEND_FROM_SUPPORT,
+            subject=f"[{priority}] [{category}] Support ticket from {name}",
+            html=html,
+            reply_to=email,
+        )
+    except Exception as ex:
+        # Log but don't fail — user still gets success feedback
+        import traceback; traceback.print_exc()
+
+    # Also store in DB if table exists
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS support_tickets (
+                        id SERIAL PRIMARY KEY,
+                        name TEXT, email TEXT, company TEXT,
+                        category TEXT, priority TEXT, message TEXT,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                    """,
+                )
+                cur.execute(
+                    "INSERT INTO support_tickets (name,email,company,category,priority,message) VALUES (%s,%s,%s,%s,%s,%s)",
+                    (name, email, company, category, priority, message)
+                )
+    except Exception:
+        pass
+
+    return {"ok": True}
+
+
+# ── Email: Auto-DNS setup ─────────────────────────────────────────────────────
+
+def _root_domain(domain: str) -> str:
+    """Extract registrable root domain from a subdomain. e.g. mail.foo.com → foo.com"""
+    parts = domain.strip().split(".")
+    # Handle common second-level TLDs like co.in, co.uk
+    if len(parts) >= 3 and parts[-2] in ("co", "com", "net", "org", "gov", "edu") and len(parts[-1]) == 2:
+        return ".".join(parts[-3:])
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+    return domain
+
+
+def _apply_godaddy_records(api_key: str, api_secret: str, domain: str, records: list) -> list:
+    """Push DNS records to GoDaddy via their REST API. Returns list of {name, type, ok, error}."""
+    root = _root_domain(domain)
+    headers = {
+        "Authorization": f"sso-key {api_key}:{api_secret}",
+        "Content-Type": "application/json",
+    }
+    results = []
+    for rec in records:
+        rec_type = rec.get("type", "").upper()
+        rec_name = rec.get("name", "")
+        rec_value = rec.get("value", "")
+        rec_ttl = int(rec.get("ttl") or 3600)
+        priority = rec.get("priority")
+
+        # Strip root domain from name if present (GoDaddy wants relative name)
+        if rec_name.endswith(f".{root}"):
+            rec_name = rec_name[: -(len(root) + 1)]
+        elif rec_name == root:
+            rec_name = "@"
+
+        body = [{"data": rec_value, "ttl": rec_ttl}]
+        if priority is not None:
+            body[0]["priority"] = int(priority)
+
+        url = f"https://api.godaddy.com/v1/domains/{root}/records/{rec_type}/{rec_name}"
+        try:
+            r = httpx.put(url, json=body, headers=headers, timeout=15)
+            if r.ok:
+                results.append({"name": rec_name, "type": rec_type, "ok": True})
+            else:
+                results.append({"name": rec_name, "type": rec_type, "ok": False,
+                                 "error": r.text[:200]})
+        except Exception as e:
+            results.append({"name": rec_name, "type": rec_type, "ok": False, "error": str(e)})
+    return results
+
+
+def _apply_cloudflare_records(api_token: str, domain: str, records: list) -> list:
+    """Push DNS records to Cloudflare via their REST API."""
+    root = _root_domain(domain)
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "Content-Type": "application/json",
+    }
+    # Find zone ID for root domain
+    try:
+        z = httpx.get(
+            f"https://api.cloudflare.com/client/v4/zones?name={root}&status=active",
+            headers=headers, timeout=15
+        )
+        z.raise_for_status()
+        zones = z.json().get("result", [])
+        if not zones:
+            return [{"ok": False, "error": f"Zone '{root}' not found in Cloudflare account. Check your API token has Zone:Edit permission."}]
+        zone_id = zones[0]["id"]
+    except Exception as e:
+        return [{"ok": False, "error": f"Cloudflare zone lookup failed: {e}"}]
+
+    # Fetch existing records to avoid duplicates
+    try:
+        ex = httpx.get(
+            f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?per_page=200",
+            headers=headers, timeout=15
+        )
+        existing = {(r["type"], r["name"]): r["id"] for r in ex.json().get("result", [])}
+    except Exception:
+        existing = {}
+
+    results = []
+    for rec in records:
+        rec_type = rec.get("type", "").upper()
+        rec_name = rec.get("name", "")
+        rec_value = rec.get("value", "")
+        rec_ttl = int(rec.get("ttl") or 3600)
+        priority = rec.get("priority")
+
+        # Cloudflare wants FQDN name
+        if rec_name == "@" or rec_name == root:
+            fqdn = root
+        elif rec_name.endswith(f".{root}"):
+            fqdn = rec_name
+        else:
+            fqdn = f"{rec_name}.{root}"
+
+        payload = {
+            "type": rec_type,
+            "name": fqdn,
+            "content": rec_value,
+            "ttl": rec_ttl,
+            "proxied": False,
+        }
+        if priority is not None:
+            payload["priority"] = int(priority)
+
+        existing_id = existing.get((rec_type, fqdn))
+        try:
+            if existing_id:
+                r = httpx.put(
+                    f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{existing_id}",
+                    json=payload, headers=headers, timeout=15
+                )
+            else:
+                r = httpx.post(
+                    f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records",
+                    json=payload, headers=headers, timeout=15
+                )
+            data = r.json()
+            if r.ok and data.get("success"):
+                results.append({"name": fqdn, "type": rec_type, "ok": True})
+            else:
+                errors = data.get("errors", [])
+                msg = errors[0].get("message", r.text[:200]) if errors else r.text[:200]
+                results.append({"name": fqdn, "type": rec_type, "ok": False, "error": msg})
+        except Exception as e:
+            results.append({"name": fqdn, "type": rec_type, "ok": False, "error": str(e)})
+    return results
+
+
+@app.post("/email/domain/auto-dns")
+async def email_domain_auto_dns(request: Request):
+    """
+    Automatically push DNS records to GoDaddy or Cloudflare.
+    body: {workspace_id, domain_id, provider: 'godaddy'|'cloudflare',
+           api_key?, api_secret?,   # GoDaddy
+           api_token?               # Cloudflare
+          }
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    domain_id = body.get("domain_id", "")
+    provider = body.get("provider", "").lower()
+
+    if not all([workspace_id, domain_id, provider]):
+        raise HTTPException(status_code=400, detail="workspace_id, domain_id, provider required")
+    if provider not in ("godaddy", "cloudflare"):
+        raise HTTPException(status_code=400, detail="provider must be 'godaddy' or 'cloudflare'")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT domain, dns_records FROM email_domains WHERE id=%s AND workspace_id=%s",
+                (domain_id, workspace_id)
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Domain not found")
+
+    domain, dns_records = row
+    if not dns_records:
+        raise HTTPException(status_code=400, detail="No DNS records found — add the domain first")
+
+    records = dns_records if isinstance(dns_records, list) else []
+
+    with get_conn() as conn2:
+        _ensure_dns_provider_table(conn2)
+        saved_creds = _get_dns_creds(conn2, workspace_id, provider) or {}
+
+    if provider == "godaddy":
+        api_key    = body.get("api_key",    "").strip() or saved_creds.get("api_key",    "")
+        api_secret = body.get("api_secret", "").strip() or saved_creds.get("api_secret", "")
+        if not api_key or not api_secret:
+            raise HTTPException(status_code=400, detail="GoDaddy credentials not found. Connect GoDaddy in the DNS Providers settings first.")
+        results = _apply_godaddy_records(api_key, api_secret, domain, records)
+    else:
+        api_token = body.get("api_token", "").strip() or saved_creds.get("api_token", "")
+        if not api_token:
+            raise HTTPException(status_code=400, detail="Cloudflare credentials not found. Connect Cloudflare in the DNS Providers settings first.")
+        results = _apply_cloudflare_records(api_token, domain, records)
+
+    all_ok = all(r.get("ok") for r in results)
+    return {"ok": all_ok, "results": results, "provider": provider, "domain": domain}
+
+
+# ── DNS provider credential store ─────────────────────────────────────────────
+# Allows workspaces to connect GoDaddy/Cloudflare once; credentials stored in
+# workspace_dns_providers table and reused automatically on every domain add.
+
+_DNS_PROVIDER_MIGRATION = """
+CREATE TABLE IF NOT EXISTS workspace_dns_providers (
+    workspace_id  UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    provider      TEXT        NOT NULL CHECK (provider IN ('godaddy','cloudflare')),
+    credentials   JSONB       NOT NULL DEFAULT '{}',
+    connected_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (workspace_id, provider)
+)
+"""
+
+
+def _ensure_dns_provider_table(conn):
+    with conn.cursor() as cur:
+        cur.execute(_DNS_PROVIDER_MIGRATION)
+    conn.commit()
+
+
+def _get_dns_creds(conn, workspace_id: str, provider: str) -> dict | None:
+    """Load saved credentials for a provider, or None if not connected."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT credentials FROM workspace_dns_providers WHERE workspace_id=%s AND provider=%s",
+                (workspace_id, provider)
+            )
+            row = cur.fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+@app.post("/email/dns-provider/connect")
+async def dns_provider_connect(request: Request):
+    """
+    Save DNS provider credentials for a workspace.
+    body: {workspace_id, provider: 'godaddy'|'cloudflare',
+           api_key?, api_secret?,   # GoDaddy
+           api_token?               # Cloudflare
+          }
+    Validates credentials before saving by attempting a lightweight API call.
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    provider = body.get("provider", "").lower()
+
+    if not workspace_id or provider not in ("godaddy", "cloudflare"):
+        raise HTTPException(status_code=400, detail="workspace_id and provider ('godaddy'|'cloudflare') required")
+
+    # Build credentials dict
+    if provider == "godaddy":
+        api_key    = body.get("api_key", "").strip()
+        api_secret = body.get("api_secret", "").strip()
+        if not api_key or not api_secret:
+            raise HTTPException(status_code=400, detail="api_key and api_secret required for GoDaddy")
+        # Validate: call /v1/domains to check credentials
+        try:
+            r = httpx.get(
+                "https://api.godaddy.com/v1/domains?limit=1",
+                headers={"Authorization": f"sso-key {api_key}:{api_secret}"},
+                timeout=10,
+            )
+            if r.status_code == 401:
+                raise HTTPException(status_code=400, detail="GoDaddy credentials are invalid. Check your API key and secret.")
+            if r.status_code == 403:
+                raise HTTPException(status_code=400, detail="GoDaddy has restricted their DNS API to reseller/partner accounts only — regular retail accounts always get 403, even with valid domains and keys. Workaround: add your domain to Cloudflare (free), point your GoDaddy nameservers to Cloudflare, then connect Cloudflare here instead.")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not reach GoDaddy API: {e}")
+        creds = {"api_key": api_key, "api_secret": api_secret}
+
+    else:  # cloudflare
+        api_token = body.get("api_token", "").strip()
+        if not api_token:
+            raise HTTPException(status_code=400, detail="api_token required for Cloudflare")
+        # Validate: call /user/tokens/verify
+        try:
+            r = httpx.get(
+                "https://api.cloudflare.com/client/v4/user/tokens/verify",
+                headers={"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"},
+                timeout=10,
+            )
+            data = r.json()
+            if not data.get("success"):
+                msgs = [e.get("message", "") for e in data.get("errors", [])]
+                raise HTTPException(status_code=400, detail=f"Cloudflare token invalid: {'; '.join(msgs) or 'check your token'}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not reach Cloudflare API: {e}")
+        creds = {"api_token": api_token}
+
+    with get_conn() as conn:
+        _ensure_dns_provider_table(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO workspace_dns_providers (workspace_id, provider, credentials, connected_at, updated_at)
+                   VALUES (%s, %s, %s, NOW(), NOW())
+                   ON CONFLICT (workspace_id, provider) DO UPDATE
+                     SET credentials=EXCLUDED.credentials, updated_at=NOW()""",
+                (workspace_id, provider, json.dumps(creds))
+            )
+
+    return {"ok": True, "provider": provider, "connected": True}
+
+
+@app.get("/email/dns-provider/status")
+async def dns_provider_status(request: Request, workspace_id: str = None):
+    """Returns which providers are connected (no credentials exposed)."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        _ensure_dns_provider_table(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT provider, connected_at FROM workspace_dns_providers WHERE workspace_id=%s",
+                (workspace_id,)
+            )
+            rows = cur.fetchall()
+    return {"providers": [{"provider": r[0], "connected_at": r[1].isoformat()} for r in rows]}
+
+
+@app.delete("/email/dns-provider/{provider}")
+async def dns_provider_disconnect(request: Request, provider: str):
+    """Remove saved credentials for a provider."""
+    _auth(request)
+    workspace_id = request.query_params.get("workspace_id", "")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        _ensure_dns_provider_table(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM workspace_dns_providers WHERE workspace_id=%s AND provider=%s",
+                (workspace_id, provider)
+            )
+    return {"ok": True}
+
+
+# ── Product Intelligence ──────────────────────────────────────────────────────
+
+def _extract_with_claude(url: str, page_title: str, page_content: str, raw_images: list) -> dict:
+    """Run Claude extraction on fetched page content."""
+    import json as _json
+    import re as _re
+    import anthropic as _anthropic
+    from services.agent_swarm.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+
+    client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    prompt = f"""Extract structured product information from this webpage.
+
+URL: {url}
+Page Title: {page_title}
+Page Content (first 3000 chars):
+{page_content[:3000]}
+
+Available Images: {_json.dumps(raw_images[:8])}
+
+Return ONLY a JSON object with these exact fields:
+{{
+  "name": "product name",
+  "description": "2-3 sentence product description focusing on benefits",
+  "price": null_or_number,
+  "mrp": null_or_number,
+  "category": "product category",
+  "brand": "brand name",
+  "key_features": ["feature 1", "feature 2", "feature 3"],
+  "unique_selling_prop": "main unique selling point in one sentence",
+  "target_audience": "who this is for",
+  "images": ["url1", "url2"]
+}}
+
+Rules:
+- Return ONLY the JSON, no other text or markdown
+- If this is a YouTube channel: set category="youtube_channel"
+- Prices as plain numbers only (no currency symbols)
+- Pick the best 4 product images from Available Images (skip icons/logos)
+- Be concise and accurate"""
+
+    msg = client.messages.create(model=CLAUDE_MODEL, max_tokens=1024,
+                                  messages=[{"role": "user", "content": prompt}])
+    resp_text = msg.content[0].text.strip()
+    if resp_text.startswith("```"):
+        resp_text = _re.sub(r'^```[a-z]*\n?', '', resp_text).rstrip('`').strip()
+    try:
+        extracted = _json.loads(resp_text)
+    except Exception:
+        m = _re.search(r'\{.*\}', resp_text, _re.DOTALL)
+        extracted = _json.loads(m.group()) if m else {}
+
+    images_from_claude = extracted.get("images") or raw_images[:4]
+    return {
+        "name": extracted.get("name") or page_title or "Unknown",
+        "description": extracted.get("description") or "",
+        "price": extracted.get("price"),
+        "mrp": extracted.get("mrp"),
+        "category": extracted.get("category") or "",
+        "brand": extracted.get("brand") or "",
+        "key_features": extracted.get("key_features") or [],
+        "unique_selling_prop": extracted.get("unique_selling_prop") or "",
+        "target_audience": extracted.get("target_audience") or "",
+        "images": images_from_claude[:6],
+    }
+
+
+def _jina_fetch_and_extract(url: str) -> dict:
+    """
+    Multi-layer product scraper:
+    1. BeautifulSoup (fast, server-rendered pages) → Claude
+    2. Shopify public .json API (Shopify stores)
+    3. Jina AI Reader (JS-rendered/headless stores, slower)
+    """
+    import requests as _req
+    import json as _json
+    import re as _re
+    from bs4 import BeautifulSoup as _BS
+    from urllib.parse import urlparse as _urlparse
+
+    skip_img = ("icon", "logo", "badge", "favicon", "pixel", "tracking", "1x1", "spinner", "avatar")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    parsed = _urlparse(url)
+
+    # ── Layer 1: Shopify public .json API ───────────────────────────────────
+    if "/products/" in url:
+        try:
+            json_url = _re.sub(r'\?.*$', '', url.rstrip('/')) + ".json"
+            rj = _req.get(json_url, headers=headers, timeout=8)
+            if rj.ok and "application/json" in rj.headers.get("content-type", ""):
+                pj = rj.json().get("product", {})
+                if pj and pj.get("title"):
+                    imgs = [i.get("src", "") for i in pj.get("images", [])
+                            if i.get("src") and not any(t in i.get("src","").lower() for t in skip_img)]
+                    variants = pj.get("variants", [{}])
+                    price_raw = variants[0].get("price", "") if variants else ""
+                    compare_raw = variants[0].get("compare_at_price", "") if variants else ""
+                    body_text = _BS(pj.get("body_html") or "", "lxml").get_text(separator=" ", strip=True)
+                    # Build feature list from tags
+                    features = [t for t in pj.get("tags", []) if len(t) < 60][:5]
+                    return {
+                        "name": pj.get("title", ""),
+                        "description": body_text[:500],
+                        "price": float(price_raw) if price_raw else None,
+                        "mrp": float(compare_raw) if compare_raw else None,
+                        "category": pj.get("product_type", ""),
+                        "brand": pj.get("vendor", ""),
+                        "key_features": features,
+                        "unique_selling_prop": "",
+                        "target_audience": "",
+                        "images": imgs[:6],
+                    }
+        except Exception:
+            pass
+
+    # ── Layer 2: BeautifulSoup HTML scraping ────────────────────────────────
+    page_title = ""
+    page_content = ""
+    raw_images = []
+    bs_ok = False
+    try:
+        r = _req.get(url, headers=headers, timeout=10, allow_redirects=True)
+        if r.ok and "text/html" in r.headers.get("content-type", ""):
+            soup = _BS(r.text, "lxml")
+            page_title = soup.find("title") and soup.find("title").get_text(strip=True) or ""
+
+            # JSON-LD extraction
+            name_ld = desc_ld = ""
+            for script in soup.find_all("script", type="application/ld+json"):
+                try:
+                    ld = _json.loads(script.string or "")
+                    items = ld if isinstance(ld, list) else ld.get("@graph", [ld])
+                    for item in items:
+                        if item.get("@type") in ("Product", "product"):
+                            name_ld = name_ld or item.get("name", "")
+                            desc_ld = desc_ld or item.get("description", "")
+                            img_f = item.get("image", [])
+                            if isinstance(img_f, str): raw_images.append(img_f)
+                            elif isinstance(img_f, list):
+                                raw_images += [i if isinstance(i, str) else i.get("url","") for i in img_f]
+                except Exception:
+                    pass
+
+            # OG fallbacks
+            def og(p):
+                t = soup.find("meta", property=p) or soup.find("meta", attrs={"name": p})
+                return (t.get("content") or "").strip() if t else ""
+
+            page_title = name_ld or og("og:title") or page_title
+            og_desc = og("og:description") or og("description")
+            page_content = desc_ld or og_desc or ""
+
+            if not raw_images:
+                og_img = og("og:image")
+                if og_img and not any(t in og_img.lower() for t in skip_img):
+                    raw_images.append(og_img)
+
+            # Collect additional img tags
+            for img in soup.find_all("img"):
+                src = img.get("src") or img.get("data-src") or ""
+                if not src: continue
+                if src.startswith("//"): src = "https:" + src
+                elif src.startswith("/"): src = f"{parsed.scheme}://{parsed.netloc}{src}"
+                if any(t in src.lower() for t in skip_img): continue
+                w = img.get("width") or ""
+                if w and int(_re.sub(r'\D','',str(w)) or 0) < 80: continue
+                if src not in raw_images: raw_images.append(src)
+                if len(raw_images) >= 8: break
+
+            # Check if we got useful content (not a JS shell)
+            main_text = soup.get_text(separator=" ", strip=True)
+            page_content = page_content or main_text[:1000]
+            bs_ok = len(page_content) > 200 and bool(page_title)
+    except Exception:
+        pass
+
+    if bs_ok:
+        # Good HTML content — send to Claude
+        filtered_imgs = [i for i in raw_images if i and not any(t in i.lower() for t in skip_img)]
+        return _extract_with_claude(url, page_title, page_content, filtered_imgs[:8])
+
+    # ── Layer 3: Jina AI Reader (JS-rendered / headless stores) ────────────
+    try:
+        jina_url = f"https://r.jina.ai/{url}"
+        jr = _req.get(jina_url,
+                      headers={"Accept": "application/json", "X-No-Cache": "true"},
+                      timeout=35)
+        if not jr.ok:
+            raise ValueError(f"Could not read page (Jina status {jr.status_code})")
+        jd = jr.json()
+        jdata = jd.get("data", {})
+        j_title = jdata.get("title", "") or page_title
+        j_content = (jdata.get("content") or page_content or "")
+        j_images_raw = jdata.get("images", {})
+        j_images = [u for u in list(j_images_raw.keys())[:12]
+                    if not any(t in u.lower() for t in skip_img)]
+        if not j_title and not j_content:
+            raise ValueError("Could not extract content from URL")
+        return _extract_with_claude(url, j_title, j_content, j_images or raw_images)
+    except ValueError:
+        raise
+    except Exception as e:
+        # Timeout or network error
+        if page_title:
+            # We have SOME data from BS — extract what we can
+            return _extract_with_claude(url, page_title, page_content, raw_images[:8])
+        raise ValueError(f"Could not read page. The URL may be slow or JS-only. Try again shortly.")
+
+
+@app.post("/products/fetch-url")
+async def products_fetch_url(request: Request):
+    """Fetch any product URL via Jina + Claude, upsert to products table."""
+    _auth(request)
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    workspace_id = body.get("workspace_id", "")
+    is_competitor = bool(body.get("is_competitor", False))
+    if not url or not workspace_id:
+        raise HTTPException(status_code=400, detail="url and workspace_id required")
+    if not url.startswith("http"):
+        url = "https://" + url
+
+    import json as _json
+    try:
+        ext = _jina_fetch_and_extract(url)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not fetch: {e}")
+
+    name = ext["name"]
+    description = ext["description"]
+    price = ext["price"]
+    mrp = ext["mrp"]
+    category = ext["category"]
+    brand = ext["brand"]
+    key_features = ext["key_features"]
+    usp = ext["unique_selling_prop"]
+    target_aud = ext["target_audience"]
+    images_list = ext["images"]
+    product_type = "youtube_channel" if category == "youtube_channel" else "product"
+    images_json = [{"url": u, "alt": name, "position": i + 1} for i, u in enumerate(images_list)]
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM products WHERE workspace_id=%s AND product_url=%s LIMIT 1",
+                        (workspace_id, url))
+            existing = cur.fetchone()
+            if existing:
+                product_id = str(existing[0])
+                cur.execute(
+                    """UPDATE products SET
+                        name=%s, description=%s, price_inr=%s, mrp_inr=%s,
+                        images=%s::jsonb, category=%s, brand=%s, key_features=%s::jsonb,
+                        unique_selling_prop=%s, target_audience=%s,
+                        is_competitor=%s, product_type=%s, last_synced_at=NOW(), updated_at=NOW()
+                       WHERE id=%s""",
+                    (name, description, float(price) if price else None,
+                     float(mrp) if mrp else None,
+                     _json.dumps(images_json), category, brand,
+                     _json.dumps(key_features), usp, target_aud,
+                     is_competitor, product_type, product_id)
+                )
+            else:
+                cur.execute(
+                    """INSERT INTO products
+                        (workspace_id, name, description, price_inr, mrp_inr, product_url,
+                         images, category, brand, key_features, unique_selling_prop,
+                         target_audience, source_platform, is_competitor, product_type, last_synced_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s,%s,'url',%s,%s,NOW())
+                       RETURNING id""",
+                    (workspace_id, name, description,
+                     float(price) if price else None,
+                     float(mrp) if mrp else None,
+                     url, _json.dumps(images_json),
+                     category, brand, _json.dumps(key_features),
+                     usp, target_aud, is_competitor, product_type)
+                )
+                product_id = str(cur.fetchone()[0])
+    return {
+        "id": product_id, "name": name, "description": description,
+        "price_inr": float(price) if price else None,
+        "images": images_list[:4], "key_features": key_features,
+        "unique_selling_prop": usp, "is_competitor": is_competitor,
+        "product_type": product_type, "product_url": url,
+    }
+
+
+@app.get("/products")
+async def products_list_endpoint(request: Request, workspace_id: str = None):
+    """List all products for a workspace (new product intelligence catalog)."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    import json as _json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, name, description, price_inr, mrp_inr, product_url,
+                          images, category, brand, key_features, unique_selling_prop,
+                          target_audience, source_platform, is_competitor, product_type,
+                          last_synced_at, created_at, active
+                   FROM products
+                   WHERE workspace_id=%s AND active=true
+                   ORDER BY is_competitor ASC, created_at DESC""",
+                (workspace_id,)
+            )
+            rows = cur.fetchall()
+    products = []
+    for r in rows:
+        (pid, pname, pdesc, pprice, pmrp, purl, pimages, pcat, pbrand, pfeats, pusp,
+         ptarg, psrc, pcomp, ptype, psynced, pcreated, pactive) = r
+        imgs_raw = pimages if isinstance(pimages, list) else (_json.loads(pimages) if pimages else [])
+        feats_raw = pfeats if isinstance(pfeats, list) else (_json.loads(pfeats) if pfeats else [])
+        products.append({
+            "id": str(pid), "name": pname, "description": pdesc,
+            "price_inr": float(pprice) if pprice else None,
+            "mrp_inr": float(pmrp) if pmrp else None,
+            "product_url": purl, "images": imgs_raw,
+            "category": pcat, "brand": pbrand,
+            "key_features": feats_raw, "unique_selling_prop": pusp,
+            "target_audience": ptarg, "source_platform": psrc,
+            "is_competitor": bool(pcomp), "product_type": ptype or "product",
+            "last_synced_at": psynced.isoformat() if psynced else None,
+            "created_at": pcreated.isoformat() if pcreated else None,
+            "active": bool(pactive),
+        })
+    return {"products": products, "count": len(products)}
+
+
+@app.delete("/products/{product_id}")
+async def products_delete(request: Request, product_id: str):
+    """Soft-delete a product."""
+    _auth(request)
+    workspace_id = request.query_params.get("workspace_id", "")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE products SET active=false, updated_at=NOW() WHERE id=%s AND workspace_id=%s",
+                (product_id, workspace_id)
+            )
+    return {"ok": True}
+
+
+@app.post("/products/{product_id}/resync")
+async def products_resync(request: Request, product_id: str):
+    """Re-scrape product URL with Jina + Claude and update."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    import json as _json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT product_url, is_competitor FROM products WHERE id=%s AND workspace_id=%s",
+                        (product_id, workspace_id))
+            row = cur.fetchone()
+    if not row or not row[0]:
+        raise HTTPException(status_code=404, detail="Product not found or has no URL")
+
+    url, is_competitor = row[0], bool(row[1])
+    try:
+        ext = _jina_fetch_and_extract(url)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    images_json = [{"url": u, "alt": ext["name"], "position": i + 1}
+                   for i, u in enumerate(ext["images"])]
+    product_type = "youtube_channel" if ext["category"] == "youtube_channel" else "product"
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE products SET
+                    name=%s, description=%s, price_inr=%s, mrp_inr=%s,
+                    images=%s::jsonb, category=%s, brand=%s, key_features=%s::jsonb,
+                    unique_selling_prop=%s, target_audience=%s,
+                    product_type=%s, last_synced_at=NOW(), updated_at=NOW()
+                   WHERE id=%s AND workspace_id=%s""",
+                (ext["name"], ext["description"],
+                 float(ext["price"]) if ext["price"] else None,
+                 float(ext["mrp"]) if ext["mrp"] else None,
+                 _json.dumps(images_json), ext["category"], ext["brand"],
+                 _json.dumps(ext["key_features"]),
+                 ext["unique_selling_prop"], ext["target_audience"],
+                 product_type, product_id, workspace_id)
+            )
+    return {"ok": True, "name": ext["name"]}

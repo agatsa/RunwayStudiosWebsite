@@ -56,6 +56,17 @@ export function statusColor(status: string): string {
   return 'text-gray-500'
 }
 
+/**
+ * Parse **bold** markdown in AI-generated text into React elements.
+ * Usage: {renderBold(text)} inside JSX.
+ */
+export function renderBold(text: string): (string | { bold: string; key: number })[] {
+  const parts = text.split(/\*\*(.+?)\*\*/g)
+  return parts.map((part, i) =>
+    i % 2 === 1 ? { bold: part, key: i } : part
+  )
+}
+
 export function fillDateRange(
   daily: import('./types').DailyKpiRow[],
   days: number,

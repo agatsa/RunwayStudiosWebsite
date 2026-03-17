@@ -9,7 +9,7 @@ import GoogleAdsDevices from '@/components/google-ads/GoogleAdsDevices'
 import GoogleAdsTimeHeatmap from '@/components/google-ads/GoogleAdsTimeHeatmap'
 import GoogleAdsAssets from '@/components/google-ads/GoogleAdsAssets'
 import GoogleAdsAuction from '@/components/google-ads/GoogleAdsAuction'
-import { BarChart2 } from 'lucide-react'
+import { BarChart2, Clock, UploadCloud } from 'lucide-react'
 
 interface PageProps {
   searchParams: { ws?: string }
@@ -98,9 +98,21 @@ export default async function GoogleAdsPage({ searchParams }: PageProps) {
   if (!data || !data.has_data) {
     return (
       <div className="space-y-4">
+        {/* Coming soon banner */}
+        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+          <Clock className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-amber-800">Live Google Ads sync — Coming Soon</p>
+            <p className="text-xs text-amber-700 mt-0.5">
+              Live campaign sync is coming soon. <strong>Upload CSV reports below</strong> — Campaign, Keywords, Search Terms, and Auction Insights all work now.
+            </p>
+          </div>
+          <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-amber-700 shrink-0">Coming Soon</span>
+        </div>
+
         <div>
           <h1 className="text-xl font-bold text-gray-900">Google Ads Intelligence</h1>
-          <p className="text-sm text-gray-500">AI-powered analysis of your Google Ads performance</p>
+          <p className="text-sm text-gray-500">Upload reports below · Live sync coming soon</p>
         </div>
 
         {/* Report Manager always shown — primary upload UX */}
@@ -124,6 +136,18 @@ export default async function GoogleAdsPage({ searchParams }: PageProps) {
 
   return (
     <div className="space-y-6">
+      {/* Coming soon banner */}
+      <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+        <Clock className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-amber-800">Live Google Ads sync — Coming Soon</p>
+          <p className="text-xs text-amber-700 mt-0.5">
+            Live campaign sync is coming soon. <strong>Manual CSV upload below works now</strong> — export reports from Google Ads Manager and upload for full analysis.
+          </p>
+        </div>
+        <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-amber-700 shrink-0">Coming Soon</span>
+      </div>
+
       {/* Header */}
       <div className="flex items-center gap-3">
         <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-600">

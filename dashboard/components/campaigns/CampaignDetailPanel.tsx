@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { X, Lightbulb, Loader2 } from 'lucide-react'
 import { BarChart } from '@tremor/react'
+import BoldText from '@/components/ui/BoldText'
 import { formatINR, formatNumber, formatROAS, formatPercent } from '@/lib/utils'
 import type { MetaCampaign, GoogleCampaign } from '@/lib/types'
 import CampaignBreakdown from './CampaignBreakdown'
@@ -303,7 +304,7 @@ export default function CampaignDetailPanel({ campaign, workspaceId, onClose }: 
                     <span className="mt-0.5 shrink-0 text-xs font-bold text-yellow-600">
                       {i + 1}
                     </span>
-                    {s}
+                    <BoldText text={s} />
                   </li>
                 ))}
               </ul>

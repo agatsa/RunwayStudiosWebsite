@@ -20,7 +20,9 @@ function validateHmac(params: URLSearchParams): boolean {
 }
 
 export async function GET(req: NextRequest) {
-  const { searchParams, origin } = new URL(req.url)
+  const { searchParams } = new URL(req.url)
+  // Use configured public URL — Cloud Run internal origin (0.0.0.0:3000) must not be used for redirects
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://app.runwaystudios.co'
   const code  = searchParams.get('code')  ?? ''
   const shop  = searchParams.get('shop')  ?? ''
   const state = searchParams.get('state') ?? ''
@@ -31,20 +33,20 @@ export async function GET(req: NextRequest) {
     const decoded = JSON.parse(Buffer.from(state, 'base64url').toString('utf-8'))
     workspaceId = decoded.ws ?? ''
   } catch {
-    return NextResponse.redirect(`${origin}/settings?shopify_error=invalid_state`)
+    return NextResponse.redirect(`${appUrl}/settings?shopify_error=invalid_state`)
   }
 
   if (!workspaceId) {
-    return NextResponse.redirect(`${origin}/settings?shopify_error=invalid_state`)
+    return NextResponse.redirect(`${appUrl}/settings?shopify_error=invalid_state`)
   }
 
   // --- Validate HMAC ---
   if (SHOPIFY_API_SECRET && !validateHmac(searchParams)) {
-    return NextResponse.redirect(`${origin}/settings?ws=${workspaceId}&shopify_error=hmac_failed`)
+    return NextResponse.redirect(`${appUrl}/settings?ws=${workspaceId}&shopify_error=hmac_failed`)
   }
 
   if (!code || !shop) {
-    return NextResponse.redirect(`${origin}/settings?ws=${workspaceId}&shopify_error=missing_params`)
+    return NextResponse.redirect(`${appUrl}/settings?ws=${workspaceId}&shopify_error=missing_params`)
   }
 
   // --- Exchange code for access token ---
@@ -68,7 +70,7 @@ export async function GET(req: NextRequest) {
     scope       = tokenData.scope ?? ''
   } catch (e) {
     console.error('Shopify token exchange error:', e)
-    return NextResponse.redirect(`${origin}/settings?ws=${workspaceId}&shopify_error=token_exchange_failed`)
+    return NextResponse.redirect(`${appUrl}/settings?ws=${workspaceId}&shopify_error=token_exchange_failed`)
   }
 
   // --- Save to backend (sync products + register webhooks) ---
@@ -88,8 +90,8 @@ export async function GET(req: NextRequest) {
     }
   } catch (e) {
     console.error('Shopify save-connection error:', e)
-    return NextResponse.redirect(`${origin}/settings?ws=${workspaceId}&shopify_error=save_failed`)
+    return NextResponse.redirect(`${appUrl}/settings?ws=${workspaceId}&shopify_error=save_failed`)
   }
 
-  return NextResponse.redirect(`${origin}/settings?ws=${workspaceId}&shopify_connected=1`)
+  return NextResponse.redirect(`${appUrl}/settings?ws=${workspaceId}&shopify_connected=1`)
 }

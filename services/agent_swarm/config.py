@@ -101,3 +101,16 @@ RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
 
 # ── Admin (dashboard super-admin) ──────────────────────────
 ADMIN_EMAILS = os.getenv("ADMIN_EMAILS", "")  # comma-separated email list
+
+# ── Email Marketing (Resend) ────────────────────────────────
+RESEND_API_KEY        = os.getenv("RESEND_API_KEY", "")
+RESEND_WEBHOOK_SECRET = os.getenv("RESEND_WEBHOOK_SECRET", "")
+EMAIL_UNSUB_SALT      = os.getenv("EMAIL_UNSUB_SALT", "runway_unsub_2026")
+
+EMAIL_PLAN_LIMITS = {
+    "none":    0,
+    "starter": 25_000,
+    "pro":     100_000,
+    "scale":   300_000,
+}
+FEATURE_COSTS_EMAIL = {"email_compose": 3}
