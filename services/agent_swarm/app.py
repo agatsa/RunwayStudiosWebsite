@@ -11321,6 +11321,28 @@ async def admin_migrate(request: Request):
             generated_at     TIMESTAMPTZ DEFAULT NOW()
         )""",
         "CREATE INDEX IF NOT EXISTS idx_app_gp_ws ON app_growth_plans(workspace_id, generated_at DESC)",
+        # v37 ASO rank history
+        """CREATE TABLE IF NOT EXISTS app_aso_rank_history (
+            id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id     UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            keyword_id       UUID        NOT NULL REFERENCES app_aso_keywords(id) ON DELETE CASCADE,
+            keyword          TEXT        NOT NULL,
+            store            TEXT        NOT NULL CHECK (store IN ('appstore','playstore')),
+            rank             INT,
+            checked_at       TIMESTAMPTZ DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_rank_hist_kw ON app_aso_rank_history(keyword_id, checked_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_rank_hist_ws ON app_aso_rank_history(workspace_id, checked_at DESC)",
+        # v37b sync log
+        """CREATE TABLE IF NOT EXISTS app_sync_log (
+            id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id     UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            store            TEXT        NOT NULL,
+            synced_at        TIMESTAMPTZ DEFAULT NOW(),
+            reviews_added    INT         DEFAULT 0,
+            error            TEXT        DEFAULT ''
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_sync_log_ws ON app_sync_log(workspace_id, synced_at DESC)",
     ]
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -11382,7 +11404,7 @@ async def app_growth_status(request: Request, workspace_id: str = None):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""SELECT app_name, bundle_id, app_store_url, play_store_url,
-                app_store_id, play_package, asc_key_id, asc_issuer_id, category, created_at
+                app_store_id, play_package, asc_key_id, asc_issuer_id, category, play_service_account, created_at
                 FROM app_profiles WHERE workspace_id=%s""", (workspace_id,))
             row = cur.fetchone()
             # counts
@@ -11400,9 +11422,9 @@ async def app_growth_status(request: Request, workspace_id: str = None):
         "app_store_url": row[2], "play_store_url": row[3],
         "app_store_id": row[4], "play_package": row[5],
         "has_asc": bool(row[6] and row[7]),
-        "has_play": False,
+        "has_play": bool(row[9]),  # play_service_account JSON present
         "category": row[8],
-        "created_at": row[9].isoformat() if row[9] else None,
+        "created_at": row[10].isoformat() if row[10] else None,
         "review_count": review_count,
         "kw_count": kw_count,
         "installs_30d": int(installs_30d),
@@ -11853,6 +11875,362 @@ async def app_growth_plan_latest(request: Request, workspace_id: str = None):
         return {"plan": None}
     plan = row[0] if isinstance(row[0], dict) else json.loads(row[0])
     return {"plan": plan, "generated_at": row[1].isoformat() if row[1] else None}
+
+
+# ── Sync Reviews from App Store Connect + Google Play ─────────────────────────
+
+def _sync_reviews_background(workspace_id: str):
+    """Pull reviews from ASC + Play Store and store them with AI classification."""
+    from services.agent_swarm.connectors.app_store_connect import AppStoreConnectAPI, AppStoreConnectError
+    from services.agent_swarm.connectors.google_play import GooglePlayAPI, GooglePlayError
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT app_store_id, play_package, asc_key_id, asc_issuer_id,
+                asc_private_key, play_service_account FROM app_profiles WHERE workspace_id=%s""",
+                (workspace_id,))
+            row = cur.fetchone()
+
+    if not row:
+        return
+
+    app_store_id, play_package, asc_key_id, asc_issuer_id, asc_private_key, play_sa = row
+
+    def _classify_and_save(reviews_in: list, store: str):
+        added = 0
+        for rv in reviews_in:
+            body_text = rv.get("body", "")
+            rating = int(rv.get("rating", 5))
+            sentiment, category, suggested_reply = "neutral", "general", ""
+            try:
+                msg = anthropic_client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=300,
+                    system='Respond ONLY with valid JSON.',
+                    messages=[{"role": "user", "content":
+                        f'Review (rating {rating}/5): "{body_text[:400]}"\n'
+                        'Return: {"sentiment":"positive|negative|neutral","category":"bug_report|feature_request|praise|complaint|general","suggested_reply":"<short friendly reply under 100 words>"}'}]
+                )
+                parsed = json.loads(msg.content[0].text.strip())
+                sentiment = parsed.get("sentiment", sentiment)
+                category = parsed.get("category", category)
+                suggested_reply = parsed.get("suggested_reply", "")
+            except Exception:
+                if rating <= 2:
+                    sentiment = "negative"
+                elif rating >= 4:
+                    sentiment = "positive"
+
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO app_reviews (workspace_id, store, review_id, author, rating,
+                            title, body, version, sentiment, category, suggested_reply, review_date)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (workspace_id, store, review_id) DO NOTHING
+                    """, (workspace_id, store,
+                          rv.get("review_id", str(uuid.uuid4())),
+                          rv.get("author", "Anonymous"), rating,
+                          rv.get("title", ""), body_text,
+                          rv.get("version", ""), sentiment, category, suggested_reply,
+                          rv.get("review_date")))
+                    added += cur.rowcount
+        return added
+
+    # App Store Connect
+    if asc_key_id and asc_issuer_id and asc_private_key and app_store_id:
+        try:
+            api = AppStoreConnectAPI(asc_key_id, asc_issuer_id, asc_private_key)
+            reviews = api.fetch_reviews(app_store_id, limit=200)
+            added = _classify_and_save(reviews, "appstore")
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("INSERT INTO app_sync_log (workspace_id, store, reviews_added) VALUES (%s,'appstore',%s)",
+                                (workspace_id, added))
+        except Exception as e:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("INSERT INTO app_sync_log (workspace_id, store, reviews_added, error) VALUES (%s,'appstore',0,%s)",
+                                (workspace_id, str(e)[:500]))
+
+    # Google Play
+    if play_sa and play_package:
+        try:
+            sa_dict = play_sa if isinstance(play_sa, dict) else json.loads(play_sa)
+            api = GooglePlayAPI(sa_dict)
+            reviews = api.fetch_reviews(play_package, max_results=100)
+            added = _classify_and_save(reviews, "playstore")
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("INSERT INTO app_sync_log (workspace_id, store, reviews_added) VALUES (%s,'playstore',%s)",
+                                (workspace_id, added))
+        except Exception as e:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("INSERT INTO app_sync_log (workspace_id, store, reviews_added, error) VALUES (%s,'playstore',0,%s)",
+                                (workspace_id, str(e)[:500]))
+
+
+@app.post("/app-growth/sync-reviews")
+async def app_growth_sync_reviews(request: Request, background_tasks: BackgroundTasks):
+    """Trigger background pull of reviews from App Store Connect + Google Play."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    background_tasks.add_task(_sync_reviews_background, workspace_id)
+    return {"ok": True, "message": "Sync started in background — refresh in ~30 seconds"}
+
+
+@app.get("/app-growth/sync-status")
+async def app_growth_sync_status(request: Request, workspace_id: str = None):
+    """Return last sync log entries."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT store, synced_at, reviews_added, error
+                FROM app_sync_log WHERE workspace_id=%s ORDER BY synced_at DESC LIMIT 10""",
+                (workspace_id,))
+            rows = cur.fetchall()
+    return {"syncs": [
+        {"store": r[0], "synced_at": r[1].isoformat() if r[1] else None,
+         "reviews_added": r[2], "error": r[3]}
+        for r in rows
+    ]}
+
+
+# ── ASO Rank Checking ─────────────────────────────────────────────────────────
+
+def _check_appstore_rank(keyword: str, app_store_id: str, country: str = "in") -> int | None:
+    """Check App Store keyword rank using iTunes Search API (free, no auth)."""
+    try:
+        r = requests.get(
+            "https://itunes.apple.com/search",
+            params={"term": keyword, "entity": "software", "country": country,
+                    "limit": 200, "lang": "en_us"},
+            timeout=15,
+        )
+        data = r.json()
+        for i, app in enumerate(data.get("results", [])):
+            if str(app.get("trackId", "")) == str(app_store_id):
+                return i + 1  # 1-indexed
+        return None  # not in top 200
+    except Exception:
+        return None
+
+
+def _check_playstore_rank(keyword: str, package_name: str) -> int | None:
+    """
+    Check Play Store keyword rank by scraping search results.
+    Looks for package name in search result page JS data.
+    """
+    import re
+    try:
+        r = requests.get(
+            "https://play.google.com/store/search",
+            params={"q": keyword, "c": "apps", "hl": "en", "gl": "IN"},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                     "Accept-Language": "en-US,en;q=0.9"},
+            timeout=15,
+        )
+        # Extract package names from JS data — they appear as "/store/apps/details?id=com.xxx"
+        matches = re.findall(r'details\?id=([a-zA-Z0-9._]+)', r.text)
+        seen: list = []
+        for m in matches:
+            if m not in seen:
+                seen.append(m)
+        if package_name in seen:
+            return seen.index(package_name) + 1
+        return None
+    except Exception:
+        return None
+
+
+def _check_ranks_background(workspace_id: str):
+    """Check ranks for all tracked keywords and save to rank history."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT app_store_id, play_package FROM app_profiles WHERE workspace_id=%s",
+                        (workspace_id,))
+            profile = cur.fetchone()
+            cur.execute("SELECT id, keyword, store FROM app_aso_keywords WHERE workspace_id=%s",
+                        (workspace_id,))
+            keywords = cur.fetchall()
+
+    if not profile or not keywords:
+        return
+
+    app_store_id = profile[0] or ""
+    play_package = profile[1] or ""
+
+    for kw_id, keyword, store in keywords:
+        asc_rank = None
+        gp_rank = None
+
+        if store in ("appstore", "both") and app_store_id:
+            asc_rank = _check_appstore_rank(keyword, app_store_id)
+
+        if store in ("playstore", "both") and play_package:
+            gp_rank = _check_playstore_rank(keyword, play_package)
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # Update main keyword row
+                if store in ("appstore", "both") and app_store_id:
+                    cur.execute("""UPDATE app_aso_keywords SET appstore_rank=%s, checked_at=NOW()
+                        WHERE id=%s""", (asc_rank, kw_id))
+                    cur.execute("""INSERT INTO app_aso_rank_history
+                        (workspace_id, keyword_id, keyword, store, rank) VALUES (%s,%s,%s,'appstore',%s)""",
+                        (workspace_id, kw_id, keyword, asc_rank))
+                if store in ("playstore", "both") and play_package:
+                    cur.execute("""UPDATE app_aso_keywords SET playstore_rank=%s, checked_at=NOW()
+                        WHERE id=%s""", (gp_rank, kw_id))
+                    cur.execute("""INSERT INTO app_aso_rank_history
+                        (workspace_id, keyword_id, keyword, store, rank) VALUES (%s,%s,%s,'playstore',%s)""",
+                        (workspace_id, kw_id, keyword, gp_rank))
+                if store == "both" and not app_store_id and not play_package:
+                    cur.execute("UPDATE app_aso_keywords SET checked_at=NOW() WHERE id=%s", (kw_id,))
+
+
+@app.post("/app-growth/aso/check-ranks")
+async def aso_check_ranks(request: Request, background_tasks: BackgroundTasks):
+    """Trigger background rank check for all tracked keywords."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    background_tasks.add_task(_check_ranks_background, workspace_id)
+    return {"ok": True, "message": "Rank check started — refresh keywords in ~60 seconds"}
+
+
+@app.get("/app-growth/aso/rank-history")
+async def aso_rank_history(request: Request, workspace_id: str = None, keyword_id: str = None):
+    """Return rank history. If keyword_id provided returns history for that keyword only."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if keyword_id:
+                cur.execute("""SELECT keyword, store, rank, checked_at
+                    FROM app_aso_rank_history
+                    WHERE workspace_id=%s AND keyword_id=%s
+                    ORDER BY checked_at DESC LIMIT 30""",
+                    (workspace_id, keyword_id))
+            else:
+                # Return latest entry per keyword per store
+                cur.execute("""SELECT DISTINCT ON (keyword_id, store) keyword, store, rank, checked_at
+                    FROM app_aso_rank_history
+                    WHERE workspace_id=%s
+                    ORDER BY keyword_id, store, checked_at DESC""",
+                    (workspace_id,))
+            rows = cur.fetchall()
+    return {"history": [
+        {"keyword": r[0], "store": r[1], "rank": r[2],
+         "checked_at": r[3].isoformat() if r[3] else None}
+        for r in rows
+    ]}
+
+
+@app.get("/app-growth/aso/rank-trend")
+async def aso_rank_trend(request: Request, workspace_id: str = None):
+    """Return rank delta (current vs previous check) for all keywords."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Get last 2 checks per keyword per store
+            cur.execute("""
+                SELECT keyword_id, keyword, store,
+                    ARRAY_AGG(rank ORDER BY checked_at DESC) AS ranks
+                FROM app_aso_rank_history
+                WHERE workspace_id=%s
+                GROUP BY keyword_id, keyword, store
+            """, (workspace_id,))
+            rows = cur.fetchall()
+
+    trends = []
+    for kw_id, keyword, store, ranks in rows:
+        current = ranks[0] if ranks else None
+        previous = ranks[1] if len(ranks) > 1 else None
+        delta = None
+        if current is not None and previous is not None:
+            delta = previous - current  # positive = improved (rank went down numerically)
+        trends.append({
+            "keyword_id": str(kw_id),
+            "keyword": keyword,
+            "store": store,
+            "current_rank": current,
+            "previous_rank": previous,
+            "delta": delta,  # +N = improved, -N = dropped
+        })
+    return {"trends": trends}
+
+
+# ── Live Reply to Store Review ─────────────────────────────────────────────────
+
+@app.patch("/app-growth/reviews/{review_id}/reply-live")
+async def app_growth_review_reply_live(review_id: str, request: Request):
+    """
+    Post an actual reply to the App Store or Play Store, then mark as replied in DB.
+    Body: { workspace_id, reply_text, store, store_review_id }
+    """
+    _auth(request)
+    from services.agent_swarm.connectors.app_store_connect import AppStoreConnectAPI, AppStoreConnectError
+    from services.agent_swarm.connectors.google_play import GooglePlayAPI, GooglePlayError
+
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    reply_text = body.get("reply_text", "").strip()
+    store = body.get("store", "")
+    store_review_id = body.get("store_review_id", "")  # the original store's review ID
+
+    if not workspace_id or not reply_text:
+        raise HTTPException(status_code=400, detail="workspace_id and reply_text required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT app_store_id, play_package, asc_key_id, asc_issuer_id,
+                asc_private_key, play_service_account FROM app_profiles WHERE workspace_id=%s""",
+                (workspace_id,))
+            profile = cur.fetchone()
+
+    live_posted = False
+    error_msg = ""
+
+    if profile:
+        app_store_id, play_package, asc_key_id, asc_issuer_id, asc_private_key, play_sa = profile
+
+        if store == "appstore" and asc_key_id and asc_issuer_id and asc_private_key and store_review_id:
+            try:
+                api = AppStoreConnectAPI(asc_key_id, asc_issuer_id, asc_private_key)
+                api.post_reply(store_review_id, reply_text)
+                live_posted = True
+            except AppStoreConnectError as e:
+                error_msg = str(e)
+
+        elif store == "playstore" and play_sa and play_package and store_review_id:
+            try:
+                sa_dict = play_sa if isinstance(play_sa, dict) else json.loads(play_sa)
+                api = GooglePlayAPI(sa_dict)
+                api.reply_to_review(play_package, store_review_id, reply_text)
+                live_posted = True
+            except GooglePlayError as e:
+                error_msg = str(e)
+
+    # Always mark as replied in DB
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""UPDATE app_reviews SET replied=true, replied_at=NOW(), suggested_reply=%s
+                WHERE id=%s AND workspace_id=%s""",
+                (reply_text, review_id, workspace_id))
+
+    return {"ok": True, "live_posted": live_posted, "error": error_msg}
 
 
 # ── AI Daily Brief (Growth Engine — dashboard action items) ──────────────────
