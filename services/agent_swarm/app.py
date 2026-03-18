@@ -11039,6 +11039,8 @@ async def admin_migrate(request: Request):
             sources_used  JSONB
         )""",
         "CREATE INDEX IF NOT EXISTS idx_gos_ws ON growth_os_plans(workspace_id, generated_at DESC)",
+        "ALTER TABLE growth_os_plans ADD COLUMN IF NOT EXISTS directive TEXT DEFAULT ''",
+        "ALTER TABLE growth_os_plans ADD COLUMN IF NOT EXISTS strategy_mode TEXT DEFAULT ''",
         # v27 — Meta Ad Library competitor ads
         """CREATE TABLE IF NOT EXISTS meta_competitor_ads (
             id                   UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -13886,6 +13888,9 @@ async def growth_os_generate(request: Request, background_tasks: BackgroundTasks
     if not workspace_id:
         raise HTTPException(status_code=400, detail="workspace_id required")
 
+    directive = (body.get("directive") or "").strip()
+    strategy_mode = (body.get("strategy_mode") or "").strip()
+
     # Deduct credits before generating AI plan
     with get_conn() as conn:
         org_id = _get_org_id_for_workspace(conn, workspace_id)
@@ -13901,7 +13906,7 @@ async def growth_os_generate(request: Request, background_tasks: BackgroundTasks
         from services.agent_swarm.core.growth_os import generate_action_plan as _gen_plan
         try:
             with _gc() as conn:
-                _gen_plan(workspace_id, conn)
+                _gen_plan(workspace_id, conn, directive=directive or None, strategy_mode=strategy_mode or None)
         except Exception as e:
             print(f"[growth_os] background generate error: {e}")
 
@@ -13926,7 +13931,8 @@ async def growth_os_latest(request: Request, workspace_id: str = None):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, generated_at, plan_json, sources_used
+                SELECT id, generated_at, plan_json, sources_used,
+                       COALESCE(directive, ''), COALESCE(strategy_mode, '')
                 FROM growth_os_plans
                 WHERE workspace_id = %s
                 ORDER BY generated_at DESC
@@ -13937,7 +13943,8 @@ async def growth_os_latest(request: Request, workspace_id: str = None):
             row = cur.fetchone()
 
     if not row:
-        return {"plan_id": None, "generated_at": None, "actions": [], "sources_used": {}}
+        return {"plan_id": None, "generated_at": None, "actions": [], "sources_used": {},
+                "directive": "", "strategy_mode": ""}
 
     plan_json = row[2] if isinstance(row[2], dict) else _json.loads(row[2] or "{}")
     sources_used = row[3] if isinstance(row[3], dict) else _json.loads(row[3] or "{}")
@@ -13947,6 +13954,8 @@ async def growth_os_latest(request: Request, workspace_id: str = None):
         "generated_at": row[1].isoformat() if row[1] else None,
         "actions": plan_json.get("actions", []),
         "sources_used": sources_used,
+        "directive": row[4],
+        "strategy_mode": row[5],
     }
 
 

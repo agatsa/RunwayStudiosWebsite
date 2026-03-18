@@ -393,6 +393,8 @@ Rules:
 6. Use the EXACT platform values: "youtube", "meta", "google", "all".
 7. Use the EXACT action_type values: "new_creative", "create_campaign",
    "keyword_addition", "review".
+8. If a STRATEGIC DIRECTIVE is provided, ALL actions must serve that directive.
+   Weight your action selection, channels, and priorities accordingly.
 
 Schema (one object in the array):
 {
@@ -410,8 +412,28 @@ Schema (one object in the array):
 """
 
 
-def _build_prompt(intel: dict) -> str:
-    lines = ["Here is the cross-platform intelligence for this brand:\n"]
+def _build_prompt(intel: dict, directive: str = None, strategy_mode: str = None) -> str:
+    lines = []
+
+    # ── Strategic Directive block (user-defined focus) ──────────────────────────
+    if directive and directive.strip():
+        mode_label = {
+            "scale": "🚀 SCALE MODE",
+            "efficiency": "⚡ EFFICIENCY MODE",
+            "launch": "🆕 PRODUCT LAUNCH MODE",
+            "seasonal": "📅 SEASONAL PUSH MODE",
+            "custom": "🎯 CUSTOM DIRECTIVE",
+        }.get(strategy_mode or "", "🎯 STRATEGIC DIRECTIVE")
+
+        lines.append(f"=== {mode_label} — HIGHEST PRIORITY ===")
+        lines.append(directive.strip())
+        lines.append(
+            "\nCRITICAL: Every action you generate MUST directly serve this directive. "
+            "Heavily weight channels, action types, and priorities toward fulfilling this goal. "
+            "Ignore data signals that conflict with this directive.\n"
+        )
+
+    lines.append("Here is the cross-platform intelligence for this brand:\n")
 
     # YT topics
     if intel.get("yt_topic_clusters"):
@@ -523,21 +545,31 @@ def _build_prompt(intel: dict) -> str:
             lines.append(f"=== Winning Messages ===")
             lines.append(", ".join(ci["winning_terms"][:10]))
 
-    lines.append(
+    closing = (
         "\nNow generate 12-15 cross-platform growth actions as a JSON array. "
         "Prioritise high-confidence, high-data-backed actions. "
         "Balance YouTube content (new_creative/review), Meta campaigns "
         "(create_campaign), and Google keywords (keyword_addition). "
         "Make each action specific and immediately actionable."
     )
+    if directive and directive.strip():
+        closing += (
+            f" Remember: the Strategic Directive is '{directive.strip()[:100]}' — "
+            "ensure every action contributes to this goal."
+        )
+    lines.append(closing)
 
     return "\n".join(lines)
 
 
 # ── Plan generation ────────────────────────────────────────────────────────────
 
-def generate_action_plan(workspace_id: str, conn) -> dict:
-    """Gather intelligence, call Claude, upsert plan into DB, return plan dict."""
+def generate_action_plan(workspace_id: str, conn, directive: str = None, strategy_mode: str = None) -> dict:
+    """Gather intelligence, call Claude, upsert plan into DB, return plan dict.
+
+    directive:      Optional free-text strategic focus from the user.
+    strategy_mode:  One of scale|efficiency|launch|seasonal|custom (used for UI labelling).
+    """
 
     intel = gather_intelligence(workspace_id, conn)
 
@@ -572,7 +604,7 @@ def generate_action_plan(workspace_id: str, conn) -> dict:
             }
         ]
     else:
-        prompt = _build_prompt(intel)
+        prompt = _build_prompt(intel, directive=directive, strategy_mode=strategy_mode)
 
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         try:
@@ -609,10 +641,16 @@ def generate_action_plan(workspace_id: str, conn) -> dict:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO growth_os_plans (id, workspace_id, plan_json, sources_used)
-                VALUES (%s::uuid, %s::uuid, %s::jsonb, %s::jsonb)
+                INSERT INTO growth_os_plans
+                    (id, workspace_id, plan_json, sources_used, directive, strategy_mode)
+                VALUES (%s::uuid, %s::uuid, %s::jsonb, %s::jsonb, %s, %s)
                 """,
-                (plan_id, workspace_id, json.dumps(plan_json), json.dumps(sources_used)),
+                (
+                    plan_id, workspace_id,
+                    json.dumps(plan_json), json.dumps(sources_used),
+                    (directive or "").strip(),
+                    strategy_mode or "",
+                ),
             )
         conn.commit()
     except Exception as e:
@@ -627,6 +665,8 @@ def generate_action_plan(workspace_id: str, conn) -> dict:
         "generated_at": generated_at,
         "actions": actions,
         "sources_used": sources_used,
+        "directive": (directive or "").strip(),
+        "strategy_mode": strategy_mode or "",
     }
 
 

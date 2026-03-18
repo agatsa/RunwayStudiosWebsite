@@ -1,7 +1,11 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { RefreshCw, Send, CheckCircle2, AlertTriangle, Sparkles, Youtube, Megaphone, BarChart2, Globe } from 'lucide-react'
+import {
+  RefreshCw, Send, CheckCircle2, AlertTriangle, Sparkles,
+  Youtube, Megaphone, BarChart2, Globe, Target, Zap, Rocket,
+  TrendingUp, Calendar, Pencil, X, ChevronRight,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import BoldText from '@/components/ui/BoldText'
 
@@ -25,12 +29,64 @@ interface GrowthOSPlan {
   generated_at: string | null
   actions: GrowthAction[]
   sources_used: Record<string, boolean>
+  directive?: string
+  strategy_mode?: string
 }
 
 interface Props {
   workspaceId: string
   initialPlan?: GrowthOSPlan | null
 }
+
+// ── Strategy modes ─────────────────────────────────────────────────────────────
+
+const STRATEGY_MODES = [
+  {
+    id: 'scale',
+    label: 'Scale',
+    icon: Rocket,
+    color: 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100',
+    selectedColor: 'border-blue-500 bg-blue-600 text-white',
+    description: 'Maximise installs, reach, and revenue. Aggressive spend.',
+    defaultDirective: 'Focus on maximising growth at scale — increase ad spend, expand reach to new audiences, launch new campaigns across all channels, and double down on whatever is currently working. Prioritise volume over efficiency.',
+  },
+  {
+    id: 'efficiency',
+    label: 'Efficiency',
+    icon: Zap,
+    color: 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100',
+    selectedColor: 'border-amber-500 bg-amber-600 text-white',
+    description: 'Reduce CPA/CAC, cut waste, optimise ROAS.',
+    defaultDirective: 'Focus on improving efficiency — reduce cost per acquisition, cut underperforming ad sets, improve ROAS across Meta and Google, and optimise bids. Every action should reduce waste or improve unit economics.',
+  },
+  {
+    id: 'launch',
+    label: 'Product Launch',
+    icon: TrendingUp,
+    color: 'border-green-200 bg-green-50 text-green-700 hover:bg-green-100',
+    selectedColor: 'border-green-500 bg-green-600 text-white',
+    description: 'Drive awareness + demand for a new product or feature.',
+    defaultDirective: 'We are launching a new product. Focus all actions on building awareness, generating early demand, and capturing high-intent buyers. Prioritise top-of-funnel content, launch campaigns, and keyword capturing for the new product.',
+  },
+  {
+    id: 'seasonal',
+    label: 'Seasonal Push',
+    icon: Calendar,
+    color: 'border-pink-200 bg-pink-50 text-pink-700 hover:bg-pink-100',
+    selectedColor: 'border-pink-500 bg-pink-600 text-white',
+    description: 'Capitalise on an upcoming event, season, or sale.',
+    defaultDirective: 'We have an upcoming seasonal event or sale. Focus all actions on capitalising on this window — create seasonal creatives, build urgency campaigns, push high-velocity content before the event, and prepare remarketing audiences.',
+  },
+  {
+    id: 'custom',
+    label: 'Custom',
+    icon: Pencil,
+    color: 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100',
+    selectedColor: 'border-purple-500 bg-purple-600 text-white',
+    description: 'Write your own strategic directive.',
+    defaultDirective: '',
+  },
+]
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -46,12 +102,6 @@ const PLATFORM_COLORS: Record<string, string> = {
   meta: 'bg-blue-100 text-blue-700',
   google: 'bg-green-100 text-green-700',
   all: 'bg-purple-100 text-purple-700',
-}
-
-const IMPACT_COLORS: Record<string, string> = {
-  high: 'text-red-600 bg-red-50 border-red-200',
-  medium: 'text-amber-600 bg-amber-50 border-amber-200',
-  low: 'text-slate-500 bg-slate-50 border-slate-200',
 }
 
 const IMPACT_DOTS: Record<string, string> = {
@@ -82,6 +132,22 @@ const SOURCE_LABELS: Record<string, string> = {
   all: 'All Sources',
 }
 
+const MODE_ICONS: Record<string, React.ElementType> = {
+  scale: Rocket,
+  efficiency: Zap,
+  launch: TrendingUp,
+  seasonal: Calendar,
+  custom: Pencil,
+}
+
+const MODE_COLORS: Record<string, string> = {
+  scale: 'bg-blue-100 text-blue-700',
+  efficiency: 'bg-amber-100 text-amber-700',
+  launch: 'bg-green-100 text-green-700',
+  seasonal: 'bg-pink-100 text-pink-700',
+  custom: 'bg-purple-100 text-purple-700',
+}
+
 function timeAgo(isoStr: string | null): string {
   if (!isoStr) return 'never'
   const ms = Date.now() - new Date(isoStr).getTime()
@@ -91,6 +157,137 @@ function timeAgo(isoStr: string | null): string {
   const hrs = Math.floor(mins / 60)
   if (hrs < 24) return `${hrs}h ago`
   return `${Math.floor(hrs / 24)}d ago`
+}
+
+// ── Strategy Directive Modal ───────────────────────────────────────────────────
+
+function StrategyDirectiveModal({
+  currentDirective,
+  currentMode,
+  onConfirm,
+  onCancel,
+}: {
+  currentDirective: string
+  currentMode: string
+  onConfirm: (directive: string, mode: string) => void
+  onCancel: () => void
+}) {
+  const [selectedMode, setSelectedMode] = useState(currentMode || '')
+  const [directive, setDirective] = useState(currentDirective || '')
+
+  const handleModeSelect = (mode: typeof STRATEGY_MODES[number]) => {
+    setSelectedMode(mode.id)
+    // Pre-fill directive from mode default, but only if user hasn't typed something custom
+    if (mode.id !== 'custom') {
+      setDirective(mode.defaultDirective)
+    } else if (!directive) {
+      setDirective('')
+    }
+  }
+
+  const canConfirm = true // directive is optional — can generate without one
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+          <div className="flex items-center gap-2">
+            <Target className="h-5 w-5 text-amber-500" />
+            <h2 className="text-base font-bold text-gray-900">Set Strategic Directive</h2>
+          </div>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-5">
+          <p className="text-sm text-gray-600">
+            Tell the AI what you want the growth strategy to focus on.
+            Claude will shape all 12–15 actions to serve your directive — weighting channels,
+            priorities, and action types accordingly.
+          </p>
+
+          {/* Mode cards */}
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-3">
+              Choose a strategy mode
+            </p>
+            <div className="grid grid-cols-5 gap-2">
+              {STRATEGY_MODES.map(mode => {
+                const Icon = mode.icon
+                const isSelected = selectedMode === mode.id
+                return (
+                  <button
+                    key={mode.id}
+                    onClick={() => handleModeSelect(mode)}
+                    className={cn(
+                      'flex flex-col items-center gap-2 rounded-xl border-2 p-3 text-center transition-all',
+                      isSelected ? mode.selectedColor : mode.color,
+                    )}
+                  >
+                    <Icon className="h-5 w-5" />
+                    <span className="text-xs font-semibold leading-tight">{mode.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+            {selectedMode && (
+              <p className="mt-2 text-xs text-gray-500 text-center">
+                {STRATEGY_MODES.find(m => m.id === selectedMode)?.description}
+              </p>
+            )}
+          </div>
+
+          {/* Directive text area */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+                Strategic directive
+                <span className="ml-1 normal-case font-normal text-gray-400">(optional — edit or write your own)</span>
+              </p>
+              {directive && (
+                <button onClick={() => setDirective('')} className="text-xs text-gray-400 hover:text-gray-600">
+                  Clear
+                </button>
+              )}
+            </div>
+            <textarea
+              value={directive}
+              onChange={e => setDirective(e.target.value)}
+              rows={4}
+              placeholder="e.g. Focus on reducing CPA below ₹200 for SanketLife ECG targeting cardiologists in metro cities. Prioritise Google UAC and YouTube over Meta which has been underperforming this month..."
+              className="w-full rounded-xl border border-gray-200 px-4 py-3 text-sm text-gray-700 outline-none focus:border-amber-400 resize-none placeholder:text-gray-300"
+            />
+            <p className="mt-1 text-right text-[10px] text-gray-400">{directive.length} chars</p>
+          </div>
+
+          {/* No directive note */}
+          {!directive.trim() && (
+            <div className="rounded-lg bg-gray-50 border border-gray-100 px-4 py-3 text-xs text-gray-500">
+              No directive set — AI will generate a balanced strategy based on all available data signals.
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-gray-100 px-6 py-4 flex items-center justify-between gap-4">
+          <button onClick={onCancel}
+            className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50">
+            Cancel
+          </button>
+          <button
+            onClick={() => onConfirm(directive.trim(), selectedMode)}
+            className="inline-flex items-center gap-2 rounded-xl bg-amber-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-amber-400 transition-colors"
+          >
+            <Sparkles className="h-4 w-4" />
+            Generate Strategy
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // ── Source Badges ──────────────────────────────────────────────────────────────
@@ -146,7 +343,6 @@ function ActionCard({
     <div className="rounded-xl border bg-white p-4 shadow-sm hover:shadow-md transition-shadow">
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
-          {/* Platform + action type badges */}
           <div className="flex items-center gap-2 mb-2 flex-wrap">
             <span className={cn('inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide', PLATFORM_COLORS[action.platform])}>
               <PlatformIcon className="h-3 w-3" />
@@ -157,30 +353,25 @@ function ActionCard({
             </span>
           </div>
 
-          {/* Title */}
           <h3 className="text-sm font-semibold text-gray-900 leading-tight mb-1.5">
             <BoldText text={action.title} />
           </h3>
 
-          {/* Rationale */}
           <p className="text-xs text-gray-600 leading-relaxed mb-2">
             <BoldText text={action.rationale} />
           </p>
 
-          {/* Source detail */}
           {action.source_detail && (
             <p className="text-[11px] text-gray-400 mb-3">
               📍 {SOURCE_LABELS[action.source] ?? action.source} — {action.source_detail}
             </p>
           )}
 
-          {/* Effort */}
           <p className="text-[11px] text-gray-500">
             Effort: <span className="font-medium text-gray-700">{EFFORT_LABELS[action.effort] ?? action.effort}</span>
           </p>
         </div>
 
-        {/* Send button */}
         <div className="shrink-0">
           {sent ? (
             <span className="inline-flex items-center gap-1.5 rounded-lg bg-green-50 px-3 py-2 text-xs font-semibold text-green-700 border border-green-200">
@@ -205,10 +396,7 @@ function ActionCard({
 // ── Impact Section ─────────────────────────────────────────────────────────────
 
 function ImpactSection({
-  impact,
-  actions,
-  sentIds,
-  onSend,
+  impact, actions, sentIds, onSend,
 }: {
   impact: 'high' | 'medium' | 'low'
   actions: GrowthAction[]
@@ -216,17 +404,13 @@ function ImpactSection({
   onSend: (action: GrowthAction) => void
 }) {
   if (actions.length === 0) return null
-
   const labels = { high: 'HIGH IMPACT', medium: 'MEDIUM IMPACT', low: 'LOW IMPACT' }
-  const dotColor = IMPACT_DOTS[impact]
 
   return (
     <div>
       <div className="flex items-center gap-2 mb-3">
-        <span className={cn('h-2 w-2 rounded-full shrink-0', dotColor)} />
-        <span className="text-[11px] font-bold uppercase tracking-widest text-gray-500">
-          {labels[impact]}
-        </span>
+        <span className={cn('h-2 w-2 rounded-full shrink-0', IMPACT_DOTS[impact])} />
+        <span className="text-[11px] font-bold uppercase tracking-widest text-gray-500">{labels[impact]}</span>
         <div className="flex-1 h-px bg-gray-100" />
         <span className="text-[11px] text-gray-400">{actions.length} action{actions.length !== 1 ? 's' : ''}</span>
       </div>
@@ -247,6 +431,7 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
   const [sending, setSending] = useState(false)
   const [sentIds, setSentIds] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
+  const [showDirectiveModal, setShowDirectiveModal] = useState(false)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
 
   const fetchLatest = useCallback(async () => {
@@ -261,7 +446,6 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
     }
   }, [workspaceId])
 
-  // Initial load if no initialPlan
   useEffect(() => {
     if (!initialPlan || !initialPlan.plan_id) {
       fetchLatest()
@@ -269,10 +453,7 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
   }, [initialPlan, fetchLatest])
 
   const stopPolling = () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
   }
 
   const startPolling = (prevGeneratedAt: string | null) => {
@@ -288,7 +469,14 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
 
   useEffect(() => () => stopPolling(), [])
 
-  const handleRegenerate = async () => {
+  // Open the directive modal when user clicks generate/regenerate
+  const handleRegenerateClick = () => {
+    setShowDirectiveModal(true)
+  }
+
+  // Called when user confirms from modal
+  const handleDirectiveConfirm = async (directive: string, strategyMode: string) => {
+    setShowDirectiveModal(false)
     setGenerating(true)
     setError(null)
     const prevAt = plan?.generated_at ?? null
@@ -296,7 +484,11 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
       const res = await fetch('/api/growth-os/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace_id: workspaceId }),
+        body: JSON.stringify({
+          workspace_id: workspaceId,
+          directive: directive || undefined,
+          strategy_mode: strategyMode || undefined,
+        }),
       })
       if (res.status === 402) {
         const d = await res.json().catch(() => ({}))
@@ -305,7 +497,7 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
         return
       }
       startPolling(prevAt)
-    } catch (e) {
+    } catch {
       setError('Failed to start generation. Please try again.')
       setGenerating(false)
     }
@@ -350,7 +542,6 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
     }
   }
 
-  // Grouped actions
   const highActions = plan?.actions.filter(a => a.impact === 'high') ?? []
   const mediumActions = plan?.actions.filter(a => a.impact === 'medium') ?? []
   const lowActions = plan?.actions.filter(a => a.impact === 'low') ?? []
@@ -358,8 +549,21 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
   const unsentHigh = highActions.filter(a => !sentIds.has(a.id))
   const hasAnySent = sentIds.size > 0
 
+  const activeMode = STRATEGY_MODES.find(m => m.id === (plan?.strategy_mode || ''))
+  const ActiveModeIcon = activeMode ? activeMode.icon : null
+
   return (
     <div className="space-y-6">
+
+      {/* ── Strategy Directive Modal ──────────────────────────────────────────── */}
+      {showDirectiveModal && (
+        <StrategyDirectiveModal
+          currentDirective={plan?.directive ?? ''}
+          currentMode={plan?.strategy_mode ?? ''}
+          onConfirm={handleDirectiveConfirm}
+          onCancel={() => setShowDirectiveModal(false)}
+        />
+      )}
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -379,15 +583,65 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
           )}
         </div>
         <button
-          onClick={handleRegenerate}
+          onClick={handleRegenerateClick}
           disabled={generating}
           className="inline-flex items-center gap-2 rounded-xl bg-amber-500 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-400 disabled:opacity-60 transition-colors"
         >
           <RefreshCw className={cn('h-4 w-4', generating && 'animate-spin')} />
-          {generating ? 'Generating…' : 'Regenerate'}
-          {!generating && <span className="ml-1 rounded-full bg-amber-400 px-2 py-0.5 text-[10px] font-semibold">10 credits</span>}
+          {generating ? 'Generating…' : plan?.plan_id ? 'Regenerate' : 'Generate'}
+          {!generating && <span className="ml-1 rounded-full bg-amber-400 px-2 py-0.5 text-[10px] font-semibold">10 cr</span>}
         </button>
       </div>
+
+      {/* ── Active Directive Banner ─────────────────────────────────────────── */}
+      {plan?.directive && (
+        <div className={cn(
+          'rounded-xl border px-4 py-3 flex items-start gap-3',
+          plan.strategy_mode ? (MODE_COLORS[plan.strategy_mode] ? 'bg-amber-50 border-amber-200' : 'bg-gray-50 border-gray-200') : 'bg-amber-50 border-amber-200'
+        )}>
+          <div className={cn('flex h-7 w-7 items-center justify-center rounded-lg shrink-0 mt-0.5',
+            plan.strategy_mode && MODE_COLORS[plan.strategy_mode] ? MODE_COLORS[plan.strategy_mode] : 'bg-amber-100 text-amber-700')}>
+            {ActiveModeIcon ? <ActiveModeIcon className="h-4 w-4" /> : <Target className="h-4 w-4" />}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-0.5">
+              <p className="text-xs font-bold uppercase tracking-wide text-gray-600">
+                Active Strategic Directive
+              </p>
+              {plan.strategy_mode && (
+                <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-semibold capitalize',
+                  plan.strategy_mode && MODE_COLORS[plan.strategy_mode] ? MODE_COLORS[plan.strategy_mode] : 'bg-gray-100 text-gray-600')}>
+                  {plan.strategy_mode}
+                </span>
+              )}
+            </div>
+            <p className="text-sm text-gray-700 leading-relaxed">{plan.directive}</p>
+          </div>
+          <button
+            onClick={handleRegenerateClick}
+            className="shrink-0 text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1 mt-1"
+          >
+            <Pencil className="h-3 w-3" /> Edit
+          </button>
+        </div>
+      )}
+
+      {/* ── No directive nudge (when plan exists but no directive) ─────────── */}
+      {plan?.plan_id && !plan.directive && !generating && (
+        <button
+          onClick={handleRegenerateClick}
+          className="w-full rounded-xl border-2 border-dashed border-amber-200 bg-amber-50 px-4 py-3 text-left hover:border-amber-300 transition-colors group"
+        >
+          <div className="flex items-center gap-3">
+            <Target className="h-5 w-5 text-amber-400 group-hover:text-amber-600" />
+            <div>
+              <p className="text-sm font-semibold text-amber-700">Set a Strategic Directive</p>
+              <p className="text-xs text-amber-600">Tell AI what to focus on — Scale, Efficiency, Product Launch, Seasonal, or Custom. Makes the plan 10x more relevant.</p>
+            </div>
+            <ChevronRight className="h-4 w-4 text-amber-400 ml-auto shrink-0" />
+          </div>
+        </button>
+      )}
 
       {/* ── Source Badges ───────────────────────────────────────────────────── */}
       {plan?.sources_used && Object.keys(plan.sources_used).length > 0 && (
@@ -420,16 +674,16 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
           <Sparkles className="h-10 w-10 text-amber-300 mx-auto mb-4" />
           <h3 className="text-base font-semibold text-gray-700 mb-2">No plan generated yet</h3>
           <p className="text-sm text-gray-500 max-w-md mx-auto mb-4">
-            Complete the YouTube Competitor Analysis first for richer insights, then click{' '}
-            <strong>Regenerate</strong> to synthesise all intelligence into an action plan.
+            Set a strategic directive to focus the AI, then click{' '}
+            <strong>Generate</strong> to synthesise all intelligence into an action plan.
           </p>
           <button
-            onClick={handleRegenerate}
+            onClick={handleRegenerateClick}
             className="inline-flex items-center gap-2 rounded-xl bg-amber-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-amber-400 transition-colors"
           >
-            <Sparkles className="h-4 w-4" />
-            Generate Action Plan
-            <span className="ml-1 rounded-full bg-amber-400 px-2 py-0.5 text-[10px] font-semibold">10 credits</span>
+            <Target className="h-4 w-4" />
+            Set Directive & Generate
+            <span className="ml-1 rounded-full bg-amber-400 px-2 py-0.5 text-[10px] font-semibold">10 cr</span>
           </button>
         </div>
       )}
