@@ -109,7 +109,7 @@ export default function Sidebar() {
   const [pendingCount, setPendingCount] = useState<number | null>(null)
   const [wsSwitcherOpen, setWsSwitcherOpen] = useState(false)
   const switcherRef = useRef<HTMLDivElement>(null)
-  const { current, workspaces, setCurrent } = useWorkspace()
+  const { current, workspaces, setCurrent, openCreateWorkspace } = useWorkspace()
   const wsType = current?.workspace_type ?? 'd2c'
   const { setChatOpen } = useChat()
 
@@ -235,16 +235,15 @@ export default function Sidebar() {
                 ))}
               </div>
               <div className="border-t border-gray-100 px-2 py-1.5">
-                <Link
-                  href={`/settings?ws=${wsId}`}
-                  onClick={() => setWsSwitcherOpen(false)}
+                <button
+                  onClick={() => { setWsSwitcherOpen(false); openCreateWorkspace() }}
                   className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-gray-50 transition-colors"
                 >
                   <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-dashed border-gray-300">
                     <Plus className="h-3 w-3 text-gray-400" />
                   </div>
                   <span className="text-xs font-medium text-gray-500">New workspace</span>
-                </Link>
+                </button>
               </div>
             </div>
           )}

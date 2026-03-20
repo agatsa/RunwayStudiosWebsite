@@ -24,6 +24,7 @@ interface WorkspaceContextValue {
   setCurrent: (ws: Workspace) => void
   loading: boolean
   refresh: () => void
+  openCreateWorkspace: () => void
 }
 
 const WorkspaceContext = createContext<WorkspaceContextValue>({
@@ -32,6 +33,7 @@ const WorkspaceContext = createContext<WorkspaceContextValue>({
   setCurrent: () => {},
   loading: true,
   refresh: () => {},
+  openCreateWorkspace: () => {},
 })
 
 export function useWorkspace() {
@@ -45,6 +47,8 @@ export default function WorkspaceProvider({ children }: { children: React.ReactN
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
+
+  const [showCreateWorkspace, setShowCreateWorkspace] = useState(false)
 
   // Connect accounts stepper state
   const [showConnectStepper, setShowConnectStepper] = useState(false)
@@ -131,7 +135,7 @@ export default function WorkspaceProvider({ children }: { children: React.ReactN
 
   return (
     <ChatProvider>
-    <WorkspaceContext.Provider value={{ workspaces, current, setCurrent, loading, refresh: load }}>
+    <WorkspaceContext.Provider value={{ workspaces, current, setCurrent, loading, refresh: load, openCreateWorkspace: () => setShowCreateWorkspace(true) }}>
       {children}
 
       {/* Full-screen loading overlay — fixed so it covers everything, fades out when done */}
@@ -140,9 +144,9 @@ export default function WorkspaceProvider({ children }: { children: React.ReactN
           <PageLoader section="Dashboard" />
         </div>
       )}
-      {/* New user — no workspace yet */}
-      {!loading && workspaces.length === 0 && (
-        <SetupWorkspaceModal onCreated={() => load()} />
+      {/* New user — no workspace yet, OR manually triggered from switcher */}
+      {!loading && (workspaces.length === 0 || showCreateWorkspace) && (
+        <SetupWorkspaceModal onCreated={() => { setShowCreateWorkspace(false); load() }} />
       )}
       {/* Existing workspace needs onboarding — hide if stepper is already open */}
       {!loading && !showConnectStepper && workspaces.length > 0 && current && current.onboarding_complete === false && (
