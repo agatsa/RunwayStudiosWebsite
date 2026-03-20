@@ -37,6 +37,7 @@ function PlatformCard({
   icon,
   comingSoon,
   planRequired,
+  approvalPending,
 }: {
   name: string
   connection: PlatformConnection | undefined
@@ -46,6 +47,7 @@ function PlatformCard({
   icon: React.ReactNode
   comingSoon?: boolean
   planRequired?: string   // e.g. "Starter" or "Growth" — if set and not connected, shows lock UI
+  approvalPending?: boolean
 }) {
   const [disconnecting, setDisconnecting] = useState(false)
   const isConnected = !!connection?.has_token
@@ -110,6 +112,10 @@ function PlatformCard({
                 Disconnect
               </button>
             </>
+          ) : approvalPending ? (
+            <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs text-gray-500">
+              Coming Soon
+            </span>
           ) : comingSoon ? (
             <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs text-gray-500">
               Coming soon
@@ -258,7 +264,7 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
           workspaceId={workspaceId}
           onConnect={handleMetaConnect}
           onDisconnected={refresh}
-          planRequired={!metaConn?.has_token && isStarterLocked ? 'Starter' : undefined}
+          approvalPending={!metaConn?.has_token}
           icon={
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-lg font-bold text-white">
               f
@@ -283,7 +289,7 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
           workspaceId={workspaceId}
           onConnect={handleGoogleConnect}
           onDisconnected={refresh}
-          planRequired={!googleConn?.has_token && isStarterLocked ? 'Starter' : undefined}
+          approvalPending={!googleConn?.has_token}
           icon={
             <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-gray-200 bg-white">
               <svg viewBox="0 0 48 48" className="h-6 w-6">
@@ -343,10 +349,8 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
                 <p className="font-semibold text-gray-900">Google Analytics 4</p>
                 {ga4Connected && ga4PropertyId ? (
                   <p className="text-xs text-gray-500">Property ID: {ga4PropertyId} · Auto-discovered</p>
-                ) : googleConn?.has_token ? (
-                  <p className="text-xs text-amber-600">GA4 not found — reconnect Google to auto-discover</p>
                 ) : (
-                  <p className="text-xs text-gray-400">Connect Google Ads first (includes GA4 scope)</p>
+                  <p className="text-xs text-gray-400">Available once Google Ads API is approved</p>
                 )}
               </div>
             </div>
@@ -356,22 +360,10 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
                   <CheckCircle className="h-3 w-3" />
                   Connected
                 </span>
-              ) : isStarterLocked ? (
-                <button
-                  onClick={handleGoogleConnect}
-                  className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-100"
-                >
-                  <Lock className="h-3 w-3" />
-                  Starter+ Required
-                </button>
               ) : (
-                <button
-                  onClick={() => setShowGoogleDialog(true)}
-                  className="flex items-center gap-1.5 rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-600"
-                >
-                  <Link2 className="h-3 w-3" />
-                  {googleConn?.has_token ? 'Reconnect Google' : 'Connect Google'}
-                </button>
+                <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs text-gray-500">
+                  Coming Soon
+                </span>
               )}
             </div>
           </div>

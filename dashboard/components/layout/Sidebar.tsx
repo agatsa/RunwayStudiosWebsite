@@ -1,13 +1,14 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname, useSearchParams } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { usePathname, useSearchParams, useRouter } from 'next/navigation'
+import { useEffect, useRef, useState } from 'react'
 import {
   LayoutDashboard, CheckSquare, Package, Megaphone, BarChart2,
   PlayCircle, Zap, Settings, ShoppingBag, TrendingUp, Crosshair,
   MessageSquare, ClipboardList, Layout, Layers, Send, Mail,
   Sparkles, CreditCard, LifeBuoy, Search, Smartphone,
+  ChevronDown, Check, Plus,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useWorkspace } from '@/components/layout/WorkspaceProvider'
@@ -103,11 +104,34 @@ function sortedChannels(items: NavItem[], wsType: string): NavItem[] {
 export default function Sidebar() {
   const pathname = usePathname()
   const searchParams = useSearchParams()
+  const router = useRouter()
   const wsId = searchParams.get('ws') ?? ''
   const [pendingCount, setPendingCount] = useState<number | null>(null)
-  const { current } = useWorkspace()
+  const [wsSwitcherOpen, setWsSwitcherOpen] = useState(false)
+  const switcherRef = useRef<HTMLDivElement>(null)
+  const { current, workspaces, setCurrent } = useWorkspace()
   const wsType = current?.workspace_type ?? 'd2c'
   const { setChatOpen } = useChat()
+
+  // Close switcher on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (switcherRef.current && !switcherRef.current.contains(e.target as Node)) {
+        setWsSwitcherOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const handleSwitchWorkspace = (ws: typeof current) => {
+    if (!ws) return
+    setCurrent(ws)
+    setWsSwitcherOpen(false)
+    const params = new URLSearchParams(searchParams.toString())
+    params.set('ws', ws.id)
+    router.replace(`${pathname}?${params.toString()}`)
+  }
 
   useEffect(() => {
     if (!wsId) return
@@ -170,11 +194,61 @@ export default function Sidebar() {
 
   return (
     <aside className="flex h-full w-56 flex-col bg-white border-r border-gray-200">
-      <div className="flex items-center gap-2 px-4 py-5 border-b border-gray-100">
-        <Zap className="h-6 w-6 text-brand-500" />
-        <span className="text-sm font-bold text-gray-900 leading-tight">
-          Runway<br />Studios
-        </span>
+      {/* Brand + Workspace Switcher */}
+      <div className="px-3 py-3 border-b border-gray-100">
+        {/* Logo row */}
+        <div className="flex items-center gap-2 px-1 mb-2">
+          <Zap className="h-5 w-5 text-brand-500 shrink-0" />
+          <span className="text-xs font-bold text-gray-900 tracking-wide uppercase">Runway Studios</span>
+        </div>
+        {/* Workspace dropdown */}
+        <div ref={switcherRef} className="relative">
+          <button
+            onClick={() => setWsSwitcherOpen(v => !v)}
+            className="flex w-full items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-left hover:bg-gray-100 transition-colors"
+          >
+            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-brand-600 text-[10px] font-bold text-white uppercase">
+              {current?.name?.[0] ?? '?'}
+            </div>
+            <span className="flex-1 truncate text-xs font-semibold text-gray-800">
+              {current?.name ?? 'Select workspace'}
+            </span>
+            <ChevronDown className={cn('h-3.5 w-3.5 text-gray-400 transition-transform shrink-0', wsSwitcherOpen && 'rotate-180')} />
+          </button>
+
+          {wsSwitcherOpen && (
+            <div className="absolute left-0 right-0 top-full z-50 mt-1 rounded-xl border border-gray-200 bg-white shadow-lg overflow-hidden">
+              <div className="px-2 py-1.5">
+                <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-widest text-gray-400">Workspaces</p>
+                {workspaces.map(ws => (
+                  <button
+                    key={ws.id}
+                    onClick={() => handleSwitchWorkspace(ws)}
+                    className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left hover:bg-gray-50 transition-colors"
+                  >
+                    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-brand-100 text-[10px] font-bold text-brand-700 uppercase">
+                      {ws.name?.[0] ?? '?'}
+                    </div>
+                    <span className="flex-1 truncate text-xs font-medium text-gray-800">{ws.name}</span>
+                    {ws.id === current?.id && <Check className="h-3.5 w-3.5 text-brand-600 shrink-0" />}
+                  </button>
+                ))}
+              </div>
+              <div className="border-t border-gray-100 px-2 py-1.5">
+                <Link
+                  href={`/settings?ws=${wsId}`}
+                  onClick={() => setWsSwitcherOpen(false)}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-gray-50 transition-colors"
+                >
+                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-dashed border-gray-300">
+                    <Plus className="h-3 w-3 text-gray-400" />
+                  </div>
+                  <span className="text-xs font-medium text-gray-500">New workspace</span>
+                </Link>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Ask ARIA button */}
