@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
-  RefreshCw, Send, CheckCircle2, AlertTriangle, Sparkles,
+  RefreshCw, CheckCircle2, AlertTriangle, Sparkles,
   Youtube, Megaphone, BarChart2, Globe, Target, Zap, Rocket,
   TrendingUp, Calendar, Pencil, X, ChevronRight,
   Loader2, CheckCircle, Circle, Link2, ExternalLink, ArrowRight,
@@ -23,6 +23,9 @@ interface GrowthAction {
   source_detail: string
   impact: 'high' | 'medium' | 'low'
   effort: 'low' | 'medium' | 'high'
+  creative_brief?: string
+  setup_guide?: string
+  done?: boolean
   action_data?: Record<string, unknown>
 }
 
@@ -33,6 +36,7 @@ interface GrowthOSPlan {
   sources_used: Record<string, boolean>
   directive?: string
   strategy_mode?: string
+  relevant_modules?: string[]
 }
 
 interface Props {
@@ -233,6 +237,78 @@ function timeAgo(isoStr: string | null): string {
   return `${Math.floor(hrs / 24)}d ago`
 }
 
+// ── ARIA Generating Overlay ────────────────────────────────────────────────────
+
+function StarCanvas() {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    let animId: number
+    const stars: { x: number; y: number; r: number; speed: number; opacity: number }[] = []
+    const resize = () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight }
+    resize()
+    window.addEventListener('resize', resize)
+    for (let i = 0; i < 120; i++) {
+      stars.push({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        r: Math.random() * 1.5 + 0.3,
+        speed: Math.random() * 0.4 + 0.1,
+        opacity: Math.random() * 0.7 + 0.3,
+      })
+    }
+    const draw = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      stars.forEach(s => {
+        s.opacity += (Math.random() - 0.5) * 0.05
+        s.opacity = Math.max(0.1, Math.min(1, s.opacity))
+        ctx.beginPath()
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(255,255,255,${s.opacity})`
+        ctx.fill()
+        s.y -= s.speed
+        if (s.y < -5) { s.y = canvas.height + 5; s.x = Math.random() * canvas.width }
+      })
+      animId = requestAnimationFrame(draw)
+    }
+    draw()
+    return () => { cancelAnimationFrame(animId); window.removeEventListener('resize', resize) }
+  }, [])
+  return <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
+}
+
+function ARIAGeneratingOverlay() {
+  return (
+    <div className="fixed inset-0 z-[9998] bg-gradient-to-br from-gray-950 via-indigo-950 to-purple-950 flex items-center justify-center">
+      <StarCanvas />
+      <div className="relative z-10 text-center px-6 max-w-md">
+        <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-white/10 backdrop-blur-sm mx-auto mb-6 border border-white/20">
+          <Sparkles className="h-10 w-10 text-amber-400 animate-pulse" />
+        </div>
+        <h2 className="text-2xl font-bold text-white mb-3">ARIA is building your strategy</h2>
+        <p className="text-white/60 text-sm leading-relaxed mb-6">
+          Scanning your brand, discovering competitors, and synthesising a personalised growth plan across all channels…
+        </p>
+        <div className="flex items-center justify-center gap-2 text-white/40 text-xs">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          This takes about 30–60 seconds
+        </div>
+        <div className="mt-8 flex flex-col gap-2 text-left">
+          {['Analysing competitor intelligence…', 'Scanning search trends…', 'Synthesising growth actions…'].map((msg, i) => (
+            <div key={i} className="flex items-center gap-3 rounded-lg bg-white/5 border border-white/10 px-4 py-2">
+              <div className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" style={{ animationDelay: `${i * 0.4}s` }} />
+              <span className="text-white/50 text-xs">{msg}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Strategy Directive Modal ───────────────────────────────────────────────────
 
 function StrategyDirectiveModal({
@@ -404,65 +480,103 @@ function SourceBadges({ sources }: { sources: Record<string, boolean> }) {
 
 function ActionCard({
   action,
-  sent,
-  onSend,
+  done,
+  onMarkDone,
 }: {
   action: GrowthAction
-  sent: boolean
-  onSend: (action: GrowthAction) => void
+  done: boolean
+  onMarkDone: (action: GrowthAction, done: boolean) => void
 }) {
+  const [expanded, setExpanded] = useState(false)
   const PlatformIcon = PLATFORM_ICONS[action.platform] ?? Globe
+  const hasBrief = !!(action.creative_brief || action.setup_guide)
 
   return (
-    <div className="rounded-xl border bg-white p-4 shadow-sm hover:shadow-md transition-shadow">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-2 flex-wrap">
-            <span className={cn('inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide', PLATFORM_COLORS[action.platform])}>
-              <PlatformIcon className="h-3 w-3" />
-              {action.platform.toUpperCase()}
-            </span>
-            <span className="rounded-md bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600 font-medium">
-              {ACTION_TYPE_LABELS[action.action_type] ?? action.action_type}
-            </span>
+    <div className={cn("rounded-xl border bg-white shadow-sm hover:shadow-md transition-all", done && "opacity-60")}>
+      <div className="p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
+              <span className={cn('inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide', PLATFORM_COLORS[action.platform])}>
+                <PlatformIcon className="h-3 w-3" />
+                {action.platform.toUpperCase()}
+              </span>
+              <span className="rounded-md bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600 font-medium">
+                {ACTION_TYPE_LABELS[action.action_type] ?? action.action_type}
+              </span>
+              {done && (
+                <span className="inline-flex items-center gap-1 rounded-md bg-green-100 px-2 py-0.5 text-[11px] font-semibold text-green-700">
+                  <CheckCircle2 className="h-3 w-3" /> Done
+                </span>
+              )}
+            </div>
+
+            <h3 className={cn("text-sm font-semibold text-gray-900 leading-tight mb-1.5", done && "line-through")}>
+              <BoldText text={action.title} />
+            </h3>
+
+            <p className="text-xs text-gray-600 leading-relaxed mb-2">
+              <BoldText text={action.rationale} />
+            </p>
+
+            {action.source_detail && (
+              <p className="text-[11px] text-gray-400 mb-2">
+                📍 {SOURCE_LABELS[action.source] ?? action.source} — {action.source_detail}
+              </p>
+            )}
+
+            <p className="text-[11px] text-gray-500">
+              Effort: <span className="font-medium text-gray-700">{EFFORT_LABELS[action.effort] ?? action.effort}</span>
+            </p>
           </div>
 
-          <h3 className="text-sm font-semibold text-gray-900 leading-tight mb-1.5">
-            <BoldText text={action.title} />
-          </h3>
-
-          <p className="text-xs text-gray-600 leading-relaxed mb-2">
-            <BoldText text={action.rationale} />
-          </p>
-
-          {action.source_detail && (
-            <p className="text-[11px] text-gray-400 mb-3">
-              📍 {SOURCE_LABELS[action.source] ?? action.source} — {action.source_detail}
-            </p>
-          )}
-
-          <p className="text-[11px] text-gray-500">
-            Effort: <span className="font-medium text-gray-700">{EFFORT_LABELS[action.effort] ?? action.effort}</span>
-          </p>
-        </div>
-
-        <div className="shrink-0">
-          {sent ? (
-            <span className="inline-flex items-center gap-1.5 rounded-lg bg-green-50 px-3 py-2 text-xs font-semibold text-green-700 border border-green-200">
-              <CheckCircle2 className="h-3.5 w-3.5" />
-              In Queue
-            </span>
-          ) : (
+          <div className="shrink-0 flex flex-col items-end gap-2">
             <button
-              onClick={() => onSend(action)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-3 py-2 text-xs font-semibold text-white hover:bg-gray-700 transition-colors"
+              onClick={() => onMarkDone(action, !done)}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold transition-colors",
+                done
+                  ? "bg-green-50 text-green-700 border border-green-200 hover:bg-green-100"
+                  : "bg-gray-900 text-white hover:bg-gray-700"
+              )}
             >
-              <Send className="h-3.5 w-3.5" />
-              Send
+              {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}
+              {done ? 'Done' : 'Mark Done'}
             </button>
-          )}
+            {hasBrief && (
+              <button
+                onClick={() => setExpanded(e => !e)}
+                className="inline-flex items-center gap-1 text-[11px] text-indigo-600 hover:text-indigo-800 font-medium"
+              >
+                {expanded ? 'Hide brief' : 'View brief'}
+                <ChevronRight className={cn("h-3 w-3 transition-transform", expanded && "rotate-90")} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* Expandable creative brief + setup guide */}
+      {expanded && hasBrief && (
+        <div className="border-t border-gray-100 bg-gray-50 rounded-b-xl p-4 space-y-4">
+          {action.creative_brief && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-600 mb-2">✨ Creative Brief</p>
+              <div className="text-xs text-gray-700 leading-relaxed whitespace-pre-line bg-white rounded-lg border border-gray-200 px-3 py-2.5">
+                {action.creative_brief}
+              </div>
+            </div>
+          )}
+          {action.setup_guide && (
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-green-600 mb-2">📋 Setup Guide</p>
+              <div className="text-xs text-gray-700 leading-relaxed whitespace-pre-line bg-white rounded-lg border border-gray-200 px-3 py-2.5">
+                {action.setup_guide}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -470,12 +584,12 @@ function ActionCard({
 // ── Impact Section ─────────────────────────────────────────────────────────────
 
 function ImpactSection({
-  impact, actions, sentIds, onSend,
+  impact, actions, doneIds, onMarkDone,
 }: {
   impact: 'high' | 'medium' | 'low'
   actions: GrowthAction[]
-  sentIds: Set<string>
-  onSend: (action: GrowthAction) => void
+  doneIds: Set<string>
+  onMarkDone: (action: GrowthAction, done: boolean) => void
 }) {
   if (actions.length === 0) return null
   const labels = { high: 'HIGH IMPACT', medium: 'MEDIUM IMPACT', low: 'LOW IMPACT' }
@@ -490,7 +604,7 @@ function ImpactSection({
       </div>
       <div className="space-y-3">
         {actions.map(a => (
-          <ActionCard key={a.id} action={a} sent={sentIds.has(a.id)} onSend={onSend} />
+          <ActionCard key={a.id} action={a} done={doneIds.has(a.id)} onMarkDone={onMarkDone} />
         ))}
       </div>
     </div>
@@ -565,8 +679,7 @@ function SetupChecklist({ workspaceId, wsType, connections }: {
 export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
   const [plan, setPlan] = useState<GrowthOSPlan | null>(initialPlan ?? null)
   const [generating, setGenerating] = useState(false)
-  const [sending, setSending] = useState(false)
-  const [sentIds, setSentIds] = useState<Set<string>>(new Set())
+  const [doneIds, setDoneIds] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
   const [showDirectiveModal, setShowDirectiveModal] = useState(false)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
@@ -595,6 +708,14 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
       fetchLatest()
     }
   }, [initialPlan, fetchLatest])
+
+  // Initialize doneIds from plan actions that have done=true
+  useEffect(() => {
+    if (plan?.actions) {
+      const ids = new Set(plan.actions.filter(a => a.done).map(a => a.id))
+      setDoneIds(ids)
+    }
+  }, [plan])
 
   // Fetch workspace type + connections
   useEffect(() => {
@@ -679,42 +800,22 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
     }
   }
 
-  const handleSend = async (action: GrowthAction) => {
-    setSending(true)
+  const handleMarkDone = async (action: GrowthAction, done: boolean) => {
+    // Optimistic update
+    setDoneIds(prev => {
+      const s = new Set(prev)
+      if (done) s.add(action.id)
+      else s.delete(action.id)
+      return s
+    })
     try {
-      const res = await fetch('/api/growth-os/send-to-approvals', {
+      await fetch('/api/growth-os/mark-done', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace_id: workspaceId, actions: [action] }),
+        body: JSON.stringify({ workspace_id: workspaceId, action_id: action.id, done }),
       })
-      if (res.ok) {
-        setSentIds(prev => { const s = new Set(prev); s.add(action.id); return s })
-      }
     } catch {
-      // silent
-    } finally {
-      setSending(false)
-    }
-  }
-
-  const handleSendAllHigh = async () => {
-    if (!plan) return
-    const highActions = plan.actions.filter(a => a.impact === 'high' && !sentIds.has(a.id))
-    if (highActions.length === 0) return
-    setSending(true)
-    try {
-      const res = await fetch('/api/growth-os/send-to-approvals', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace_id: workspaceId, actions: highActions }),
-      })
-      if (res.ok) {
-        setSentIds(prev => { const s = new Set(prev); highActions.forEach(a => s.add(a.id)); return s })
-      }
-    } catch {
-      // silent
-    } finally {
-      setSending(false)
+      // silent — optimistic update stays
     }
   }
 
@@ -722,14 +823,15 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
   const mediumActions = plan?.actions.filter(a => a.impact === 'medium') ?? []
   const lowActions = plan?.actions.filter(a => a.impact === 'low') ?? []
   const totalActions = plan?.actions.length ?? 0
-  const unsentHigh = highActions.filter(a => !sentIds.has(a.id))
-  const hasAnySent = sentIds.size > 0
 
   const activeMode = STRATEGY_MODES.find(m => m.id === (plan?.strategy_mode || ''))
   const ActiveModeIcon = activeMode ? activeMode.icon : null
 
   return (
     <div className="space-y-6">
+
+      {/* ── ARIA Generating Overlay ──────────────────────────────────────────── */}
+      {autoPolling && <ARIAGeneratingOverlay />}
 
       {/* ── Strategy Directive Modal ──────────────────────────────────────────── */}
       {showDirectiveModal && (
@@ -844,29 +946,6 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
         </div>
       )}
 
-      {/* ── Welcome / Auto-generating state ─────────────────────────────────── */}
-      {!generating && totalActions === 0 && autoPolling && (
-        <div className="rounded-xl border bg-gradient-to-br from-indigo-900 to-purple-900 p-8 text-center overflow-hidden relative">
-          <div className="absolute inset-0 opacity-10">
-            {[...Array(6)].map((_, i) => (
-              <div key={i} className="absolute rounded-full bg-white animate-ping"
-                style={{ width: 8, height: 8, top: `${15 + i * 15}%`, left: `${10 + i * 14}%`, animationDelay: `${i * 0.4}s`, animationDuration: '2.5s' }} />
-            ))}
-          </div>
-          <div className="relative">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/10 mx-auto mb-4">
-              <Sparkles className="h-8 w-8 text-white animate-pulse" />
-            </div>
-            <h3 className="text-lg font-bold text-white mb-2">ARIA is building your first strategy</h3>
-            <p className="text-sm text-white/70 mb-4">Scanning your brand, discovering competitors, and generating a personalised action plan…</p>
-            <div className="flex items-center justify-center gap-2 text-white/50 text-xs">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              This takes about 30–60 seconds
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ── Empty state (no plan, not auto-polling) ───────────────────────────── */}
       {!generating && totalActions === 0 && !autoPolling && (
         <div className="rounded-xl border bg-white p-10 text-center">
@@ -893,36 +972,10 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
       {/* ── Action sections ──────────────────────────────────────────────────── */}
       {!generating && totalActions > 0 && (
         <div className="space-y-8">
-          <ImpactSection impact="high" actions={highActions} sentIds={sentIds} onSend={handleSend} />
-          <ImpactSection impact="medium" actions={mediumActions} sentIds={sentIds} onSend={handleSend} />
-          <ImpactSection impact="low" actions={lowActions} sentIds={sentIds} onSend={handleSend} />
+          <ImpactSection impact="high" actions={highActions} doneIds={doneIds} onMarkDone={handleMarkDone} />
+          <ImpactSection impact="medium" actions={mediumActions} doneIds={doneIds} onMarkDone={handleMarkDone} />
+          <ImpactSection impact="low" actions={lowActions} doneIds={doneIds} onMarkDone={handleMarkDone} />
         </div>
-      )}
-
-      {/* ── Footer bulk action ────────────────────────────────────────────────── */}
-      {!generating && unsentHigh.length > 0 && (
-        <div className="rounded-xl border bg-gray-50 p-4 flex items-center justify-between gap-4">
-          <div>
-            <p className="text-sm font-semibold text-gray-800">
-              Send all {unsentHigh.length} High-Impact action{unsentHigh.length !== 1 ? 's' : ''} to Approvals
-            </p>
-            <p className="text-xs text-gray-500">They'll appear as pending approvals for your team to execute</p>
-          </div>
-          <button
-            onClick={handleSendAllHigh}
-            disabled={sending}
-            className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-60 transition-colors shrink-0"
-          >
-            <Send className="h-4 w-4" />
-            {sending ? 'Sending…' : 'Send All High-Impact'}
-          </button>
-        </div>
-      )}
-
-      {hasAnySent && !generating && (
-        <p className="text-center text-xs text-green-600 font-medium">
-          ✓ {sentIds.size} action{sentIds.size !== 1 ? 's' : ''} added to the Approvals queue
-        </p>
       )}
     </div>
   )

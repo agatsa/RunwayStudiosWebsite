@@ -11348,6 +11348,11 @@ async def admin_migrate(request: Request):
         # v38 workspace onboarding fields
         "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS competitors JSONB DEFAULT '[]'",
         "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS monthly_budget NUMERIC DEFAULT 0",
+        # v39 Growth OS: relevant_modules + creative_brief + setup_guide + done
+        "ALTER TABLE growth_os_plans ADD COLUMN IF NOT EXISTS relevant_modules JSONB DEFAULT '[]'",
+        "ALTER TABLE growth_os_actions ADD COLUMN IF NOT EXISTS creative_brief TEXT",
+        "ALTER TABLE growth_os_actions ADD COLUMN IF NOT EXISTS setup_guide TEXT",
+        "ALTER TABLE growth_os_actions ADD COLUMN IF NOT EXISTS done BOOLEAN DEFAULT FALSE",
     ]
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -14128,7 +14133,8 @@ async def growth_os_latest(request: Request, workspace_id: str = None):
             cur.execute(
                 """
                 SELECT id, generated_at, plan_json, sources_used,
-                       COALESCE(directive, ''), COALESCE(strategy_mode, '')
+                       COALESCE(directive, ''), COALESCE(strategy_mode, ''),
+                       COALESCE(relevant_modules, '[]'::jsonb)
                 FROM growth_os_plans
                 WHERE workspace_id = %s
                 ORDER BY generated_at DESC
@@ -14140,10 +14146,12 @@ async def growth_os_latest(request: Request, workspace_id: str = None):
 
     if not row:
         return {"plan_id": None, "generated_at": None, "actions": [], "sources_used": {},
-                "directive": "", "strategy_mode": ""}
+                "directive": "", "strategy_mode": "", "relevant_modules": []}
 
     plan_json = row[2] if isinstance(row[2], dict) else _json.loads(row[2] or "{}")
     sources_used = row[3] if isinstance(row[3], dict) else _json.loads(row[3] or "{}")
+    relevant_modules_raw = row[6]
+    relevant_modules = relevant_modules_raw if isinstance(relevant_modules_raw, list) else _json.loads(relevant_modules_raw or "[]")
 
     return {
         "plan_id": str(row[0]),
@@ -14152,7 +14160,47 @@ async def growth_os_latest(request: Request, workspace_id: str = None):
         "sources_used": sources_used,
         "directive": row[4],
         "strategy_mode": row[5],
+        "relevant_modules": relevant_modules or plan_json.get("relevant_modules", []),
     }
+
+
+@app.post("/growth-os/action/done")
+async def growth_os_action_done(request: Request):
+    """Mark a Growth OS action as done (simple checkbox, no approvals)."""
+    body = await request.json()
+    workspace_id = body.get("workspace_id")
+    action_id = body.get("action_id")
+    done = body.get("done", True)
+
+    if not workspace_id or not action_id:
+        raise HTTPException(status_code=400, detail="workspace_id and action_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Store done status in growth_os_plans JSONB — update the action in plan_json
+            # Find the latest plan for this workspace and mark the action done
+            cur.execute(
+                """
+                UPDATE growth_os_plans
+                SET plan_json = jsonb_set(
+                    plan_json,
+                    '{actions}',
+                    (
+                        SELECT jsonb_agg(
+                            CASE WHEN (a->>'id') = %s
+                            THEN a || jsonb_build_object('done', %s::boolean)
+                            ELSE a
+                            END
+                        )
+                        FROM jsonb_array_elements(plan_json->'actions') AS a
+                    )
+                )
+                WHERE workspace_id = %s::uuid
+                AND id = (SELECT id FROM growth_os_plans WHERE workspace_id = %s::uuid ORDER BY generated_at DESC LIMIT 1)
+                """,
+                (action_id, done, workspace_id, workspace_id)
+            )
+    return {"ok": True, "action_id": action_id, "done": done}
 
 
 @app.post("/growth-os/send-to-approvals")

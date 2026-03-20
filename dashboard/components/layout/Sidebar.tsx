@@ -23,6 +23,7 @@ interface NavItem {
   limited?: boolean   // amber "API Soon" badge — partial functionality
   badge?: boolean
   highlight?: boolean
+  moduleKey?: string   // maps to relevant_modules from Growth OS plan
 }
 
 interface NavSection {
@@ -39,32 +40,32 @@ const navSections: NavSection[] = [
   {
     title: 'CHANNELS',
     items: [
-      { label: 'Meta Ads',    href: '/campaigns',       icon: Megaphone },
-      { label: 'Google Ads',  href: '/google-ads',      icon: BarChart2,  limited: true },
-      { label: 'YouTube',     href: '/youtube',         icon: PlayCircle },
-      { label: 'Marketplace', href: '/marketplace',     icon: ShoppingBag },
+      { label: 'Meta Ads',    href: '/campaigns',       icon: Megaphone,    moduleKey: 'meta' },
+      { label: 'Google Ads',  href: '/google-ads',      icon: BarChart2,    limited: true, moduleKey: 'google_ads' },
+      { label: 'YouTube',     href: '/youtube',         icon: PlayCircle,   moduleKey: 'youtube' },
+      { label: 'Marketplace', href: '/marketplace',     icon: ShoppingBag,  moduleKey: 'marketplace' },
     ],
   },
   {
     title: 'GROWTH OS',
     items: [
       { label: 'Command Center', href: '/growth-os', icon: Sparkles, highlight: true },
-      { label: 'App Growth',     href: '/app-growth', icon: Smartphone },
+      { label: 'App Growth',     href: '/app-growth', icon: Smartphone, moduleKey: 'app_growth' },
     ],
   },
   {
     title: 'INTELLIGENCE',
     items: [
-      { label: 'Search Trends',      href: '/search-trends',    icon: TrendingUp,   soon: true },
-      { label: 'Competitor Intel',   href: '/competitor-intel', icon: Crosshair },
+      { label: 'Search Trends',      href: '/search-trends',    icon: TrendingUp,   soon: true, moduleKey: 'search_trends' },
+      { label: 'Competitor Intel',   href: '/competitor-intel', icon: Crosshair,    moduleKey: 'competitor_intel' },
       { label: 'Comments & Reviews', href: '/comments',         icon: MessageSquare },
-      { label: 'SEO',                href: '/seo',              icon: Search },
+      { label: 'SEO',                href: '/seo',              icon: Search,       moduleKey: 'seo' },
     ],
   },
   {
     title: 'PLANNING',
     items: [
-      { label: 'Campaign Planner', href: '/campaign-planner', icon: ClipboardList },
+      { label: 'Campaign Planner', href: '/campaign-planner', icon: ClipboardList, moduleKey: 'campaign_planner' },
       { label: 'Landing Pages',    href: '/landing-pages',    icon: Layout,       soon: true },
       { label: 'Awareness Funnel', href: '/awareness',        icon: Layers,       soon: true },
     ],
@@ -72,10 +73,9 @@ const navSections: NavSection[] = [
   {
     title: 'OPERATIONS',
     items: [
-      { label: 'Organic Posts', href: '/organic-posts', icon: Send },
-      { label: 'Products',      href: '/products',      icon: Package },
-      { label: 'Approvals',     href: '/approvals',     icon: CheckSquare, badge: true },
-      { label: 'Email',         href: '/email-intel',   icon: Mail },
+      { label: 'Organic Posts', href: '/organic-posts', icon: Send,       moduleKey: 'organic_posts' },
+      { label: 'Products',      href: '/products',      icon: Package,    moduleKey: 'products' },
+      { label: 'Email',         href: '/email-intel',   icon: Mail,       moduleKey: 'email' },
       { label: 'Billing',       href: '/billing',       icon: CreditCard },
       { label: 'Support',       href: '/support',       icon: LifeBuoy },
     ],
@@ -101,6 +101,12 @@ function sortedChannels(items: NavItem[], wsType: string): NavItem[] {
   })
 }
 
+function isItemVisible(item: NavItem, relevantModules: string[] | null): boolean {
+  if (!item.moduleKey) return true  // always-visible items
+  if (!relevantModules) return true  // no plan yet — show everything
+  return relevantModules.includes(item.moduleKey)
+}
+
 export default function Sidebar() {
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -112,6 +118,7 @@ export default function Sidebar() {
   const { current, workspaces, setCurrent, openCreateWorkspace } = useWorkspace()
   const wsType = current?.workspace_type ?? 'd2c'
   const { setChatOpen } = useChat()
+  const [relevantModules, setRelevantModules] = useState<string[] | null>(null)
 
   // Close switcher on outside click
   useEffect(() => {
@@ -145,6 +152,21 @@ export default function Sidebar() {
     load()
     const id = setInterval(load, 60_000)
     return () => clearInterval(id)
+  }, [wsId])
+
+  // Fetch relevant_modules from latest Growth OS plan
+  useEffect(() => {
+    if (!wsId) return
+    fetch(`/api/growth-os/latest?workspace_id=${wsId}`, { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d?.relevant_modules && Array.isArray(d.relevant_modules) && d.relevant_modules.length > 0) {
+          setRelevantModules(d.relevant_modules)
+        } else {
+          setRelevantModules(null) // null = show all (no plan yet)
+        }
+      })
+      .catch(() => setRelevantModules(null))
   }, [wsId])
 
   const renderItem = (item: NavItem) => {
@@ -300,9 +322,12 @@ export default function Sidebar() {
 
       <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-4">
         {navSections.map((section, si) => {
-          const items = section.title === 'CHANNELS'
+          let items = section.title === 'CHANNELS'
             ? sortedChannels(section.items, wsType)
             : section.items
+          // Filter by relevant_modules
+          items = items.filter(item => isItemVisible(item, relevantModules))
+          if (items.length === 0) return null
           const topLabel = section.title === 'CHANNELS' ? items[0]?.label : null
           return (
             <div key={si}>

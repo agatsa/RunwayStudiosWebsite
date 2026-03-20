@@ -385,30 +385,56 @@ Your job is to synthesise cross-platform intelligence into a prioritised
 action plan for the brand.
 
 Rules:
-1. Return ONLY a valid JSON array — no markdown, no prose, no code fences.
-2. Generate exactly 12–15 action objects.
-3. Each action MUST have all required fields (see schema below).
-4. Base every "rationale" on specific data from the intelligence provided.
-5. Use the EXACT impact/effort values: "high", "medium", "low".
-6. Use the EXACT platform values: "youtube", "meta", "google", "all".
-7. Use the EXACT action_type values: "new_creative", "create_campaign",
+1. Return ONLY a valid JSON object — no markdown, no prose, no code fences.
+2. The JSON object must have exactly two keys: "relevant_modules" and "actions".
+3. Generate exactly 12–15 action objects in the "actions" array.
+4. Each action MUST have all required fields (see schema below).
+5. Base every "rationale" on specific data from the intelligence provided.
+6. Use the EXACT impact/effort values: "high", "medium", "low".
+7. Use the EXACT platform values: "youtube", "meta", "google", "all".
+8. Use the EXACT action_type values: "new_creative", "create_campaign",
    "keyword_addition", "review".
-8. If a STRATEGIC DIRECTIVE is provided, ALL actions must serve that directive.
+9. If a STRATEGIC DIRECTIVE is provided, ALL actions must serve that directive.
    Weight your action selection, channels, and priorities accordingly.
+10. "relevant_modules" must be a JSON array of strings from this list ONLY:
+    ["youtube", "meta", "google_ads", "marketplace", "app_growth", "seo",
+     "email", "competitor_intel", "campaign_planner", "products",
+     "organic_posts", "search_trends"]
+    Include only modules that are actually relevant to this workspace's data
+    and strategy. A new workspace with no data should get: ["youtube", "seo"].
 
-Schema (one object in the array):
+Schema:
 {
-  "id": "<uuid4 string>",
-  "platform": "youtube|meta|google|all",
-  "action_type": "new_creative|create_campaign|keyword_addition|review",
-  "title": "<short imperative title, ≤10 words>",
-  "rationale": "<1-2 sentences citing specific data>",
-  "source": "yt_competitor_intel|meta_performance|google_ads|search_trends|comment_intel|all",
-  "source_detail": "<e.g. Topic cluster: ECG Home · hit_rate 89%>",
-  "impact": "high|medium|low",
-  "effort": "low|medium|high",
-  "action_data": { <optional platform-specific payload> }
+  "relevant_modules": ["module1", "module2", ...],
+  "actions": [
+    {
+      "id": "<uuid4 string>",
+      "platform": "youtube|meta|google|all",
+      "action_type": "new_creative|create_campaign|keyword_addition|review",
+      "title": "<short imperative title, ≤10 words>",
+      "rationale": "<1-2 sentences citing specific data>",
+      "source": "yt_competitor_intel|meta_performance|google_ads|search_trends|comment_intel|all",
+      "source_detail": "<e.g. Topic cluster: ECG Home · hit_rate 89%>",
+      "impact": "high|medium|low",
+      "effort": "low|medium|high",
+      "creative_brief": "<Hook: ...\\nBody: ...\\nCTA: ...\\nVisual: ...>",
+      "setup_guide": "<Step 1: ...\\nStep 2: ...\\nStep 3: ...>",
+      "action_data": {}
+    }
+  ]
 }
+
+For "creative_brief": Write a concise creative brief for each action. Format:
+Hook: <attention-grabbing opening line or ad hook>
+Body: <core message / value proposition>
+CTA: <call to action text>
+Visual: <visual direction — what to show on screen/image>
+
+For "setup_guide": Write step-by-step implementation instructions.
+Step 1: <first concrete action>
+Step 2: <second action>
+Step 3: <third action>
+(Add more steps if needed)
 """
 
 
@@ -609,6 +635,7 @@ def generate_action_plan(workspace_id: str, conn, directive: str = None, strateg
     has_any_data = any(sources_used.values())
     if not has_any_data:
         # Return a minimal plan with instructional actions
+        relevant_modules = ["youtube", "seo"]
         actions = [
             {
                 "id": str(uuid.uuid4()),
@@ -640,12 +667,17 @@ def generate_action_plan(workspace_id: str, conn, directive: str = None, strateg
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
                     raw = raw[4:]
-            actions = json.loads(raw)
-            if not isinstance(actions, list):
-                actions = actions.get("actions", [])
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                actions = parsed
+                relevant_modules = []
+            else:
+                actions = parsed.get("actions", [])
+                relevant_modules = parsed.get("relevant_modules", [])
         except Exception as e:
             print(f"[growth_os] Claude call failed: {e}")
             actions = []
+            relevant_modules = []
 
         # Ensure each action has a uuid id
         for a in actions:
@@ -662,14 +694,15 @@ def generate_action_plan(workspace_id: str, conn, directive: str = None, strateg
             cur.execute(
                 """
                 INSERT INTO growth_os_plans
-                    (id, workspace_id, plan_json, sources_used, directive, strategy_mode)
-                VALUES (%s::uuid, %s::uuid, %s::jsonb, %s::jsonb, %s, %s)
+                    (id, workspace_id, plan_json, sources_used, directive, strategy_mode, relevant_modules)
+                VALUES (%s::uuid, %s::uuid, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb)
                 """,
                 (
                     plan_id, workspace_id,
                     json.dumps(plan_json), json.dumps(sources_used),
                     (directive or "").strip(),
                     strategy_mode or "",
+                    json.dumps(relevant_modules),
                 ),
             )
         conn.commit()
@@ -687,6 +720,7 @@ def generate_action_plan(workspace_id: str, conn, directive: str = None, strateg
         "sources_used": sources_used,
         "directive": (directive or "").strip(),
         "strategy_mode": strategy_mode or "",
+        "relevant_modules": relevant_modules,
     }
 
 
