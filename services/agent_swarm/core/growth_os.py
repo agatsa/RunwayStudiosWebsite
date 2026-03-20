@@ -242,7 +242,7 @@ def gather_intelligence(workspace_id: str, conn) -> dict:
                 WHERE workspace_id = %s
                   AND platform = 'meta'
                   AND entity_level = 'campaign'
-                  AND ts >= NOW() - INTERVAL '30 days'
+                  AND hour_ts >= NOW() - INTERVAL '30 days'
                 """,
                 (workspace_id,),
             )
@@ -277,7 +277,7 @@ def gather_intelligence(workspace_id: str, conn) -> dict:
                 WHERE workspace_id = %s
                   AND platform IN ('google', 'google_ads')
                   AND entity_level = 'campaign'
-                  AND ts >= NOW() - INTERVAL '30 days'
+                  AND hour_ts >= NOW() - INTERVAL '30 days'
                 """,
                 (workspace_id,),
             )
@@ -333,7 +333,7 @@ def gather_intelligence(workspace_id: str, conn) -> dict:
                 FROM kpi_hourly
                 WHERE workspace_id = %s
                   AND entity_level = 'search_term'
-                  AND ts >= NOW() - INTERVAL '30 days'
+                  AND hour_ts >= NOW() - INTERVAL '30 days'
                   AND entity_name IS NOT NULL
                 GROUP BY entity_name
                 ORDER BY total_clicks DESC
