@@ -363,7 +363,7 @@ def gather_intelligence(workspace_id: str, conn) -> dict:
                 FROM kpi_hourly
                 WHERE workspace_id = %s
                   AND entity_level = 'comment_intel'
-                ORDER BY ts DESC
+                ORDER BY hour_ts DESC
                 LIMIT 1
                 """,
                 (workspace_id,),
@@ -657,7 +657,7 @@ def generate_action_plan(workspace_id: str, conn, directive: str = None, strateg
         try:
             msg = client.messages.create(
                 model=CLAUDE_SONNET,
-                max_tokens=4096,
+                max_tokens=8192,
                 system=_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -667,6 +667,13 @@ def generate_action_plan(workspace_id: str, conn, directive: str = None, strateg
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
                     raw = raw[4:]
+                raw = raw.strip()
+            # Extract JSON object — find first { ... } block
+            start = raw.find("{")
+            if start == -1:
+                start = raw.find("[")
+            if start != -1:
+                raw = raw[start:]
             parsed = json.loads(raw)
             if isinstance(parsed, list):
                 actions = parsed
@@ -676,6 +683,7 @@ def generate_action_plan(workspace_id: str, conn, directive: str = None, strateg
                 relevant_modules = parsed.get("relevant_modules", [])
         except Exception as e:
             print(f"[growth_os] Claude call failed: {e}")
+            print(f"[growth_os] raw response (first 500 chars): {raw[:500] if 'raw' in dir() else 'N/A'}")
             actions = []
             relevant_modules = []
 
