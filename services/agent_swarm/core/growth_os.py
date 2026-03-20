@@ -686,7 +686,7 @@ def generate_action_plan(workspace_id: str, conn, directive: str = None, strateg
 
     # Upsert into growth_os_plans
     plan_id = str(uuid.uuid4())
-    plan_json = {"actions": actions}
+    plan_json = {"actions": actions, "relevant_modules": relevant_modules}
     generated_at = datetime.now(timezone.utc).isoformat()
 
     try:

@@ -14133,8 +14133,7 @@ async def growth_os_latest(request: Request, workspace_id: str = None):
             cur.execute(
                 """
                 SELECT id, generated_at, plan_json, sources_used,
-                       COALESCE(directive, ''), COALESCE(strategy_mode, ''),
-                       COALESCE(relevant_modules, '[]'::jsonb)
+                       COALESCE(directive, ''), COALESCE(strategy_mode, '')
                 FROM growth_os_plans
                 WHERE workspace_id = %s
                 ORDER BY generated_at DESC
@@ -14150,8 +14149,8 @@ async def growth_os_latest(request: Request, workspace_id: str = None):
 
     plan_json = row[2] if isinstance(row[2], dict) else _json.loads(row[2] or "{}")
     sources_used = row[3] if isinstance(row[3], dict) else _json.loads(row[3] or "{}")
-    relevant_modules_raw = row[6]
-    relevant_modules = relevant_modules_raw if isinstance(relevant_modules_raw, list) else _json.loads(relevant_modules_raw or "[]")
+    # relevant_modules stored in plan_json (new plans) — graceful fallback for old plans
+    relevant_modules = plan_json.get("relevant_modules", [])
 
     return {
         "plan_id": str(row[0]),
@@ -14160,7 +14159,7 @@ async def growth_os_latest(request: Request, workspace_id: str = None):
         "sources_used": sources_used,
         "directive": row[4],
         "strategy_mode": row[5],
-        "relevant_modules": relevant_modules or plan_json.get("relevant_modules", []),
+        "relevant_modules": relevant_modules,
     }
 
 
