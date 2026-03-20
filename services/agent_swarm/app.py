@@ -13809,6 +13809,37 @@ Return only the JSON array, nothing else."""
             except Exception:
                 pass
 
+        # Auto-generate first Growth OS plan for new workspace
+        try:
+            from services.agent_swarm.core.growth_os import generate_action_plan
+            with get_conn() as conn:
+                ws_check = get_workspace(workspace_id, conn)
+            # Only auto-generate if no plan exists yet
+            if ws_check:
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT id FROM growth_os_plans WHERE workspace_id = %s LIMIT 1",
+                            (workspace_id,)
+                        )
+                        has_plan = cur.fetchone() is not None
+                if not has_plan:
+                    with get_conn() as conn:
+                        setup_directive = (
+                            "This is a brand new workspace with no ad accounts connected yet. "
+                            "Generate a practical SETUP ROADMAP as the strategy — tell the user exactly what to connect first, "
+                            "what data to upload, and what quick wins they can achieve in their first 30 days on Runway Studios. "
+                            "Be specific to their business type and the competitors found."
+                        )
+                        await generate_action_plan(
+                            workspace_id, conn,
+                            directive=setup_directive,
+                            strategy_mode="launch"
+                        )
+        except Exception as _e:
+            import logging
+            logging.getLogger(__name__).warning(f"Auto GOS generation failed for {workspace_id}: {_e}")
+
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Competitor discovery failed for {workspace_id}: {e}")

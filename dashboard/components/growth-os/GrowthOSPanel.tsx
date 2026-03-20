@@ -5,7 +5,9 @@ import {
   RefreshCw, Send, CheckCircle2, AlertTriangle, Sparkles,
   Youtube, Megaphone, BarChart2, Globe, Target, Zap, Rocket,
   TrendingUp, Calendar, Pencil, X, ChevronRight,
+  Loader2, CheckCircle, Circle, Link2, ExternalLink, ArrowRight,
 } from 'lucide-react'
+import { useSearchParams } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import BoldText from '@/components/ui/BoldText'
 
@@ -147,6 +149,78 @@ const MODE_COLORS: Record<string, string> = {
   seasonal: 'bg-pink-100 text-pink-700',
   custom: 'bg-purple-100 text-purple-700',
 }
+
+// ── Setup Checklist (workspace-type-aware) ─────────────────────────────────
+
+interface SetupStep {
+  id: string
+  title: string
+  description: string
+  actionLabel: string
+  actionHref?: string
+  actionKey?: string   // used to check if already connected
+  wsTypes: string[]    // which workspace types see this step
+}
+
+const SETUP_STEPS: SetupStep[] = [
+  {
+    id: 'youtube',
+    title: 'Connect YouTube Channel',
+    description: 'Pull video analytics, comments, and run competitor intelligence.',
+    actionLabel: 'Connect YouTube',
+    actionHref: '/settings',
+    actionKey: 'youtube',
+    wsTypes: ['creator', 'd2c', 'saas', 'agency'],
+  },
+  {
+    id: 'shopify',
+    title: 'Connect Shopify Store',
+    description: 'Sync your product catalog for AI-powered campaign briefs.',
+    actionLabel: 'Connect Shopify',
+    actionHref: '/settings',
+    actionKey: 'shopify',
+    wsTypes: ['d2c'],
+  },
+  {
+    id: 'app_growth',
+    title: 'Set Up App Growth / ASO',
+    description: 'Track keyword ranks, pull reviews, and reply from the dashboard.',
+    actionLabel: 'Go to App Growth',
+    actionHref: '/app-growth',
+    wsTypes: ['saas'],
+  },
+  {
+    id: 'google_upload',
+    title: 'Upload Google Ads Report',
+    description: 'Upload an Excel export from Google Ads to unlock campaign analysis.',
+    actionLabel: 'Upload Report',
+    actionHref: '/google-ads',
+    wsTypes: ['d2c', 'saas', 'agency'],
+  },
+  {
+    id: 'competitor_yt',
+    title: 'Run YouTube Competitor Analysis',
+    description: 'ARIA discovers your top competitors and analyses what makes them win.',
+    actionLabel: 'Start Analysis',
+    actionHref: '/youtube',
+    wsTypes: ['creator'],
+  },
+  {
+    id: 'meta',
+    title: 'Meta Ads (Facebook & Instagram)',
+    description: 'API approval in progress — you\'ll be notified when live connection is ready.',
+    actionLabel: 'Coming Soon',
+    wsTypes: ['d2c', 'saas', 'agency', 'creator'],
+  },
+  {
+    id: 'seo',
+    title: 'Connect Google Search Console',
+    description: 'Track organic search performance and brand keyword lift.',
+    actionLabel: 'Go to SEO',
+    actionHref: '/seo',
+    wsTypes: ['d2c', 'saas'],
+  },
+]
 
 function timeAgo(isoStr: string | null): string {
   if (!isoStr) return 'never'
@@ -423,6 +497,69 @@ function ImpactSection({
   )
 }
 
+// ── Setup Checklist ────────────────────────────────────────────────────────
+
+function SetupChecklist({ workspaceId, wsType, connections }: {
+  workspaceId: string
+  wsType: string
+  connections: string[]   // list of connected platform keys
+}) {
+  const steps = SETUP_STEPS.filter(s => s.wsTypes.includes(wsType))
+  const allDone = steps.every(s => !s.actionKey || connections.includes(s.actionKey) || s.id === 'meta')
+
+  if (allDone) return null
+
+  return (
+    <div className="rounded-xl border border-indigo-200 bg-gradient-to-br from-indigo-50 to-purple-50 p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600">
+          <Sparkles className="h-4 w-4 text-white" />
+        </div>
+        <div>
+          <h3 className="text-sm font-bold text-gray-900">ARIA Setup Checklist</h3>
+          <p className="text-xs text-gray-500">Complete these to unlock your full intelligence brief</p>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {steps.map(step => {
+          const done = step.actionKey ? connections.includes(step.actionKey) : (step.id === 'meta')
+          const isComingSoon = step.id === 'meta'
+          return (
+            <div key={step.id} className={`flex items-center gap-3 rounded-xl px-4 py-3 ${
+              done ? 'bg-green-50 border border-green-200' : 'bg-white border border-gray-200'
+            }`}>
+              {done
+                ? <CheckCircle className="h-5 w-5 text-green-500 shrink-0" />
+                : <Circle className="h-5 w-5 text-gray-300 shrink-0" />}
+              <div className="flex-1 min-w-0">
+                <p className={`text-sm font-semibold ${done ? 'text-green-800 line-through opacity-60' : 'text-gray-800'}`}>
+                  {step.title}
+                </p>
+                <p className="text-xs text-gray-500 leading-tight">{step.description}</p>
+              </div>
+              {!done && (
+                isComingSoon ? (
+                  <span className="shrink-0 rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-400 font-medium">
+                    Coming Soon
+                  </span>
+                ) : step.actionHref ? (
+                  <a
+                    href={`${step.actionHref}?ws=${workspaceId}`}
+                    className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 transition-colors"
+                  >
+                    {step.actionLabel}
+                    <ArrowRight className="h-3 w-3" />
+                  </a>
+                ) : null
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ── Main Panel ─────────────────────────────────────────────────────────────────
 
 export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
@@ -433,6 +570,13 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [showDirectiveModal, setShowDirectiveModal] = useState(false)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
+
+  const searchParams = useSearchParams()
+  const isWelcome = searchParams.get('welcome') === '1'
+  const [wsType, setWsType] = useState<string>('d2c')
+  const [connections, setConnections] = useState<string[]>([])
+  const [autoPolling, setAutoPolling] = useState(isWelcome && !initialPlan?.plan_id)
+  const autoRef = useRef<NodeJS.Timeout | null>(null)
 
   const fetchLatest = useCallback(async () => {
     try {
@@ -451,6 +595,38 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
       fetchLatest()
     }
   }, [initialPlan, fetchLatest])
+
+  // Fetch workspace type + connections
+  useEffect(() => {
+    if (!workspaceId) return
+    fetch(`/api/workspace?workspace_id=${workspaceId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.workspace_type) setWsType(d.workspace_type) })
+      .catch(() => {})
+    fetch(`/api/settings?ws=${workspaceId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d?.connections) {
+          const connected = (d.connections as {platform: string, has_token: boolean}[])
+            .filter(c => c.has_token).map(c => c.platform)
+          setConnections(connected)
+        }
+      })
+      .catch(() => {})
+  }, [workspaceId])
+
+  // Auto-poll for first plan when welcome=1 and no plan yet
+  useEffect(() => {
+    if (!autoPolling) return
+    autoRef.current = setInterval(async () => {
+      const data = await fetchLatest()
+      if (data?.plan_id) {
+        setAutoPolling(false)
+        if (autoRef.current) { clearInterval(autoRef.current); autoRef.current = null }
+      }
+    }, 4000)
+    return () => { if (autoRef.current) clearInterval(autoRef.current) }
+  }, [autoPolling, fetchLatest])
 
   const stopPolling = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
@@ -668,8 +844,31 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
         </div>
       )}
 
-      {/* ── Empty state ──────────────────────────────────────────────────────── */}
-      {!generating && totalActions === 0 && (
+      {/* ── Welcome / Auto-generating state ─────────────────────────────────── */}
+      {!generating && totalActions === 0 && autoPolling && (
+        <div className="rounded-xl border bg-gradient-to-br from-indigo-900 to-purple-900 p-8 text-center overflow-hidden relative">
+          <div className="absolute inset-0 opacity-10">
+            {[...Array(6)].map((_, i) => (
+              <div key={i} className="absolute rounded-full bg-white animate-ping"
+                style={{ width: 8, height: 8, top: `${15 + i * 15}%`, left: `${10 + i * 14}%`, animationDelay: `${i * 0.4}s`, animationDuration: '2.5s' }} />
+            ))}
+          </div>
+          <div className="relative">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/10 mx-auto mb-4">
+              <Sparkles className="h-8 w-8 text-white animate-pulse" />
+            </div>
+            <h3 className="text-lg font-bold text-white mb-2">ARIA is building your first strategy</h3>
+            <p className="text-sm text-white/70 mb-4">Scanning your brand, discovering competitors, and generating a personalised action plan…</p>
+            <div className="flex items-center justify-center gap-2 text-white/50 text-xs">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              This takes about 30–60 seconds
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Empty state (no plan, not auto-polling) ───────────────────────────── */}
+      {!generating && totalActions === 0 && !autoPolling && (
         <div className="rounded-xl border bg-white p-10 text-center">
           <Sparkles className="h-10 w-10 text-amber-300 mx-auto mb-4" />
           <h3 className="text-base font-semibold text-gray-700 mb-2">No plan generated yet</h3>
@@ -687,6 +886,9 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
           </button>
         </div>
       )}
+
+      {/* ── Setup Checklist ──────────────────────────────────────────────────── */}
+      {!generating && <SetupChecklist workspaceId={workspaceId} wsType={wsType} connections={connections} />}
 
       {/* ── Action sections ──────────────────────────────────────────────────── */}
       {!generating && totalActions > 0 && (

@@ -82,7 +82,19 @@ export default function WorkspaceProvider({ children }: { children: React.ReactN
   }
 
   const handleOnboardingComplete = () => {
-    load()
+    load().then(() => {
+      // Get workspace ID from current state after reload
+      // Use the URL param approach — redirect to growth-os with welcome flag
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search)
+        const wsId = params.get('ws') ?? localStorage.getItem('runway_workspace_id') ?? ''
+        if (wsId) {
+          window.location.href = `/growth-os?ws=${wsId}&welcome=1`
+        } else {
+          load()
+        }
+      }
+    })
   }
 
   return (

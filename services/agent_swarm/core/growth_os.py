@@ -433,6 +433,26 @@ def _build_prompt(intel: dict, directive: str = None, strategy_mode: str = None)
             "Ignore data signals that conflict with this directive.\n"
         )
 
+    # Detect new/empty workspace — all intelligence sources are empty
+    all_empty = not any([
+        intel.get("meta_performance"),
+        intel.get("google_ads"),
+        intel.get("yt_channel_stats"),
+        intel.get("yt_competitor_intel"),
+        intel.get("search_trends"),
+        intel.get("comment_intel"),
+    ])
+    if all_empty:
+        lines.append(
+            "=== NEW WORKSPACE CONTEXT ===\n"
+            "This brand has JUST signed up and has no connected ad accounts or data yet. "
+            "Your job is to generate a SETUP ROADMAP — concrete first steps to get value fast. "
+            "Focus actions on: (1) what to connect first, (2) what data to upload, "
+            "(3) what early wins to chase in week 1. "
+            "Use the competitor context (if any) to make recommendations specific to their niche. "
+            "Every action should help them get started, not optimise existing campaigns.\n"
+        )
+
     lines.append("Here is the cross-platform intelligence for this brand:\n")
 
     # YT topics
