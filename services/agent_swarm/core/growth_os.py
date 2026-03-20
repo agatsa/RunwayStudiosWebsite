@@ -702,15 +702,14 @@ def generate_action_plan(workspace_id: str, conn, directive: str = None, strateg
             cur.execute(
                 """
                 INSERT INTO growth_os_plans
-                    (id, workspace_id, plan_json, sources_used, directive, strategy_mode, relevant_modules)
-                VALUES (%s::uuid, %s::uuid, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb)
+                    (id, workspace_id, plan_json, sources_used, directive, strategy_mode)
+                VALUES (%s::uuid, %s::uuid, %s::jsonb, %s::jsonb, %s, %s)
                 """,
                 (
                     plan_id, workspace_id,
                     json.dumps(plan_json), json.dumps(sources_used),
                     (directive or "").strip(),
                     strategy_mode or "",
-                    json.dumps(relevant_modules),
                 ),
             )
         conn.commit()
