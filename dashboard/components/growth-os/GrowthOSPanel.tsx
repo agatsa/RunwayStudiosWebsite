@@ -737,8 +737,18 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
   }, [workspaceId])
 
   // Auto-poll for first plan when welcome=1 and no plan yet
+  // Also triggers generation immediately if no plan exists yet
   useEffect(() => {
     if (!autoPolling) return
+
+    // Trigger generation immediately (fire and forget)
+    fetch('/api/growth-os/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace_id: workspaceId }),
+    }).catch(() => {})
+
+    // Poll for the result
     autoRef.current = setInterval(async () => {
       const data = await fetchLatest()
       if (data?.plan_id) {
@@ -746,8 +756,18 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
         if (autoRef.current) { clearInterval(autoRef.current); autoRef.current = null }
       }
     }, 4000)
-    return () => { if (autoRef.current) clearInterval(autoRef.current) }
-  }, [autoPolling, fetchLatest])
+
+    // 90s timeout — stop overlay even if generation fails
+    const timeout = setTimeout(() => {
+      setAutoPolling(false)
+      if (autoRef.current) { clearInterval(autoRef.current); autoRef.current = null }
+    }, 90000)
+
+    return () => {
+      if (autoRef.current) clearInterval(autoRef.current)
+      clearTimeout(timeout)
+    }
+  }, [autoPolling, fetchLatest, workspaceId])
 
   const stopPolling = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
