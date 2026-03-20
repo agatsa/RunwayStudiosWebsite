@@ -8,7 +8,7 @@ import {
   PlayCircle, Zap, Settings, ShoppingBag, TrendingUp, Crosshair,
   MessageSquare, ClipboardList, Layout, Layers, Send, Mail,
   Sparkles, CreditCard, LifeBuoy, Search, Smartphone,
-  ChevronDown, Check, Plus,
+  ChevronDown, Check, Plus, Trash2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useWorkspace } from '@/components/layout/WorkspaceProvider'
@@ -245,6 +245,41 @@ export default function Sidebar() {
                   <span className="text-xs font-medium text-gray-500">New workspace</span>
                 </button>
               </div>
+              {/* Delete current workspace — only if more than 1 exists */}
+              {workspaces.length > 1 && current && (
+                <div className="border-t border-gray-100 px-2 py-1.5">
+                  <button
+                    onClick={() => {
+                      setWsSwitcherOpen(false)
+                      if (!confirm(`Delete workspace "${current.name}"? This cannot be undone.`)) return
+                      fetch('/api/workspace/delete', {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ workspace_id: current.id }),
+                      }).then(r => r.json()).then(d => {
+                        if (d.ok) {
+                          // Switch to first other workspace
+                          const other = workspaces.find(w => w.id !== current.id)
+                          if (other) {
+                            setCurrent(other)
+                            const params = new URLSearchParams()
+                            params.set('ws', other.id)
+                            window.location.href = `/dashboard?${params.toString()}`
+                          }
+                        } else {
+                          alert(d.detail ?? 'Failed to delete workspace')
+                        }
+                      })
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-red-50 transition-colors group"
+                  >
+                    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-red-200 group-hover:border-red-300">
+                      <Trash2 className="h-3 w-3 text-red-400" />
+                    </div>
+                    <span className="text-xs font-medium text-red-400">Delete &quot;{current.name}&quot;</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -10,7 +10,6 @@ import GoogleConnectDialog from './GoogleConnectDialog'
 import GoogleAccountSelectDialog from './GoogleAccountSelectDialog'
 import YouTubeConnectDialog from './YouTubeConnectDialog'
 import ExcelUploadDialog from './ExcelUploadDialog'
-import ProductUrlsSection from './ProductUrlsSection'
 import MetaCompetitorPages from './MetaCompetitorPages'
 import type { PlatformConnection, PlanName } from '@/lib/types'
 
@@ -426,19 +425,13 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
         </div>
       </section>
 
-      {/* Product URLs + Meta Competitor Pages */}
+      {/* Products & Competitor Tracking */}
       <section className="space-y-3">
         <div>
-          <h2 className="text-base font-semibold text-gray-900">Products & Competitor Tracking</h2>
-          <p className="text-sm text-gray-500">
-            <strong>Left:</strong> your own product pages for catalog sync.&nbsp;
-            <strong>Right:</strong> competitor Facebook pages for Meta Ad Library tracking.
-          </p>
+          <h2 className="text-base font-semibold text-gray-900">Competitor Tracking</h2>
+          <p className="text-sm text-gray-500">Track competitor Facebook/Meta ad pages.</p>
         </div>
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <ProductUrlsSection workspaceId={workspaceId} />
-          <MetaCompetitorPages workspaceId={workspaceId} />
-        </div>
+        <MetaCompetitorPages workspaceId={workspaceId} />
       </section>
 
       {/* Coming soon integrations */}

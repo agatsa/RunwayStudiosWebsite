@@ -11345,6 +11345,9 @@ async def admin_migrate(request: Request):
             error            TEXT        DEFAULT ''
         )""",
         "CREATE INDEX IF NOT EXISTS idx_sync_log_ws ON app_sync_log(workspace_id, synced_at DESC)",
+        # v38 workspace onboarding fields
+        "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS competitors JSONB DEFAULT '[]'",
+        "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS monthly_budget NUMERIC DEFAULT 0",
     ]
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -13713,6 +13716,104 @@ async def workspace_get_info(request: Request, workspace_id: str = None):
     }
 
 
+async def _discover_competitors_background(workspace_id: str, brand_url: str, user_competitors: list, workspace_type: str):
+    """Auto-discover competitors for a workspace using Claude Haiku + web scraping."""
+    import httpx as _httpx
+    try:
+        # Fetch brand page content
+        page_text = ""
+        if brand_url:
+            try:
+                async with _httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+                    r = await client.get(brand_url, headers={"User-Agent": "Mozilla/5.0"})
+                    # Extract text from HTML (strip tags)
+                    import re as _re2
+                    page_text = _re2.sub(r'<[^>]+>', ' ', r.text)[:3000]
+            except Exception:
+                page_text = brand_url  # fallback: just use the URL
+
+        # Use Claude Haiku to find competitors
+        discovered = []
+        if page_text or brand_url:
+            try:
+                import anthropic as _ant
+                client = _ant.AsyncAnthropic()
+                type_context = {
+                    "d2c": "D2C e-commerce brand",
+                    "creator": "YouTube creator / content channel",
+                    "saas": "SaaS product or mobile app",
+                    "agency": "marketing agency",
+                }.get(workspace_type, "brand")
+                prompt = f"""This is a {type_context}. Brand URL: {brand_url}
+
+Page content snippet:
+{page_text[:1500]}
+
+List 5 direct competitor brands/companies/channels for this brand. Return ONLY a JSON array like:
+[{{"name": "Competitor Name", "url": "https://competitor.com"}}, ...]
+
+If it's a YouTube channel, return competitor YouTube channel names and URLs.
+If it's an app, return competitor app names and their website/store URLs.
+Return only the JSON array, nothing else."""
+
+                msg = await client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=500,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                import json as _json2
+                text = msg.content[0].text.strip()
+                # Extract JSON array from response
+                import re as _re3
+                arr_match = _re3.search(r'\[.*\]', text, _re3.DOTALL)
+                if arr_match:
+                    discovered = _json2.loads(arr_match.group())
+            except Exception:
+                discovered = []
+
+        # Merge user-provided competitors with discovered ones
+        # User-provided takes priority
+        merged = []
+        for uc in user_competitors:
+            if uc and uc.strip():
+                merged.append({"name": uc.strip(), "url": uc.strip() if uc.startswith("http") else "", "source": "user"})
+
+        for d in discovered:
+            if len(merged) >= 8:
+                break
+            # Don't duplicate
+            already = any(m.get("name", "").lower() == d.get("name", "").lower() for m in merged)
+            if not already:
+                d["source"] = "aria"
+                merged.append(d)
+
+        # Save to workspace
+        if merged:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE workspaces SET competitors = %s WHERE id = %s",
+                        (json.dumps(merged), workspace_id)
+                    )
+                conn.commit()
+
+        # For YouTube creators — trigger competitor discovery pipeline if channel connected
+        if workspace_type == "creator":
+            try:
+                with get_conn() as conn:
+                    ws = get_workspace(workspace_id, conn)
+                if ws:
+                    from services.agent_swarm.core.yt_intelligence import run_discovery_phase
+                    import asyncio as _asyncio
+                    _asyncio.create_task(run_discovery_phase(workspace_id))
+            except Exception:
+                pass
+
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Competitor discovery failed for {workspace_id}: {e}")
+
+
 @app.patch("/workspace/complete-onboarding")
 async def complete_onboarding(request: Request):
     """Mark onboarding complete and save workspace_type + channel preferences."""
@@ -13741,6 +13842,70 @@ async def complete_onboarding(request: Request):
         conn.commit()
 
     return {"ok": True, "workspace_type": workspace_type}
+
+
+@app.post("/workspace/onboard")
+async def workspace_onboard(request: Request, background_tasks: BackgroundTasks):
+    """New onboarding — saves brand context, competitors, budget, triggers auto-discovery."""
+    body = await request.json()
+    workspace_id   = (body.get("workspace_id") or "").strip()
+    workspace_type = body.get("workspace_type", "d2c")
+    brand_url      = (body.get("brand_url") or "").strip()
+    competitors    = body.get("competitors", [])   # list of strings (URLs or names)
+    monthly_budget = body.get("monthly_budget") or 0
+
+    VALID_TYPES = {"d2c", "creator", "saas", "agency", "media"}
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    if workspace_type not in VALID_TYPES:
+        workspace_type = "d2c"
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE workspaces
+                   SET onboarding_complete = TRUE,
+                       workspace_type = %s,
+                       store_url = COALESCE(NULLIF(%s, ''), store_url),
+                       monthly_budget = %s
+                   WHERE id = %s""",
+                (workspace_type, brand_url, monthly_budget, workspace_id),
+            )
+        conn.commit()
+
+    # Trigger competitor discovery in background (always runs — uses user hints if provided)
+    background_tasks.add_task(
+        _discover_competitors_background,
+        workspace_id, brand_url, competitors, workspace_type
+    )
+
+    return {"ok": True, "workspace_type": workspace_type, "discovery_started": True}
+
+
+@app.delete("/workspace/{workspace_id}")
+async def workspace_delete(workspace_id: str, request: Request):
+    """Delete (deactivate) a workspace. Cannot delete last workspace in org."""
+    _auth(request)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Get org_id for this workspace
+            cur.execute("SELECT org_id FROM workspaces WHERE id = %s AND active = TRUE", (workspace_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+            org_id = str(row[0])
+
+            # Count active workspaces in org
+            cur.execute("SELECT COUNT(*) FROM workspaces WHERE org_id = %s AND active = TRUE", (org_id,))
+            count = cur.fetchone()[0]
+            if count <= 1:
+                raise HTTPException(status_code=400, detail="Cannot delete your last workspace")
+
+            # Soft delete
+            cur.execute("UPDATE workspaces SET active = FALSE WHERE id = %s", (workspace_id,))
+        conn.commit()
+
+    return {"ok": True, "workspace_id": workspace_id}
 
 
 @app.post("/youtube/competitor-intel/regenerate-recipe")
