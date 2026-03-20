@@ -146,7 +146,10 @@ export default function WorkspaceProvider({ children }: { children: React.ReactN
       )}
       {/* New user — no workspace yet, OR manually triggered from switcher */}
       {!loading && (workspaces.length === 0 || showCreateWorkspace) && (
-        <SetupWorkspaceModal onCreated={() => { setShowCreateWorkspace(false); load() }} />
+        <SetupWorkspaceModal
+          onCreated={() => { setShowCreateWorkspace(false); load() }}
+          onCancel={workspaces.length > 0 ? () => setShowCreateWorkspace(false) : undefined}
+        />
       )}
       {/* Existing workspace needs onboarding — hide if stepper is already open */}
       {!loading && !showConnectStepper && workspaces.length > 0 && current && current.onboarding_complete === false && (

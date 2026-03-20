@@ -1,13 +1,14 @@
 'use client'
 
 import { useState } from 'react'
-import { Zap, ArrowRight } from 'lucide-react'
+import { Zap, ArrowRight, X } from 'lucide-react'
 
 interface Props {
   onCreated: (workspaceId: string) => void
+  onCancel?: () => void
 }
 
-export default function SetupWorkspaceModal({ onCreated }: Props) {
+export default function SetupWorkspaceModal({ onCreated, onCancel }: Props) {
   const [name, setName] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -41,12 +42,20 @@ export default function SetupWorkspaceModal({ onCreated }: Props) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/80 p-4">
       <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl overflow-hidden">
         {/* Header */}
-        <div className="bg-gradient-to-br from-brand-600 to-purple-700 px-6 py-8 text-center">
+        <div className="relative bg-gradient-to-br from-brand-600 to-purple-700 px-6 py-8 text-center">
+          {onCancel && (
+            <button
+              onClick={onCancel}
+              className="absolute top-3 right-3 flex h-7 w-7 items-center justify-center rounded-full bg-white/20 text-white hover:bg-white/30 transition-colors"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
           <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/20 mx-auto mb-4">
             <Zap className="h-7 w-7 text-white" />
           </div>
-          <h1 className="text-xl font-bold text-white">Welcome to Runway Studios</h1>
-          <p className="text-sm text-white/70 mt-1">Let's set up your workspace in 30 seconds</p>
+          <h1 className="text-xl font-bold text-white">{onCancel ? 'New Workspace' : 'Welcome to Runway Studios'}</h1>
+          <p className="text-sm text-white/70 mt-1">{onCancel ? 'Add a new brand to your account' : "Let's set up your workspace in 30 seconds"}</p>
         </div>
 
         {/* Body */}
@@ -78,9 +87,11 @@ export default function SetupWorkspaceModal({ onCreated }: Props) {
             {loading ? 'Creating workspace…' : <>Create Workspace <ArrowRight className="h-4 w-4" /></>}
           </button>
 
-          <p className="text-center text-xs text-gray-400">
-            You'll get 50 free credits to explore all AI features
-          </p>
+          {!onCancel && (
+            <p className="text-center text-xs text-gray-400">
+              You'll get 50 free credits to explore all AI features
+            </p>
+          )}
         </div>
       </div>
     </div>

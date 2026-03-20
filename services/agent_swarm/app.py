@@ -14560,43 +14560,59 @@ async def workspace_create(request: Request):
     import uuid as _uuid, re as _re
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # Prevent duplicate org for same Clerk user
+            # Check if org already exists for this Clerk user
+            existing_org_id = None
+            existing_plan = "free"
             if clerk_user_id:
                 cur.execute(
-                    "SELECT id FROM organizations WHERE clerk_user_id = %s LIMIT 1",
+                    "SELECT id, plan, credit_balance FROM organizations WHERE clerk_user_id = %s LIMIT 1",
                     (clerk_user_id,),
                 )
-                existing = cur.fetchone()
-                if existing:
-                    raise HTTPException(status_code=409, detail="workspace_exists")
-            # Create organization
-            org_id = str(_uuid.uuid4())
-            # Generate a unique slug from name + short id suffix
-            base_slug = _re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-') or 'org'
-            slug = f"{base_slug}-{org_id[:8]}"
-            cur.execute(
-                """INSERT INTO organizations (id, name, slug, plan, credit_balance, clerk_user_id)
-                   VALUES (%s, %s, %s, 'free', 0, %s)""",
-                (org_id, name, slug, clerk_user_id),
-            )
-            # Create workspace linked to org
-            ws_id = str(_uuid.uuid4())
-            cur.execute(
-                """INSERT INTO workspaces (id, org_id, name, store_url, workspace_type, active)
-                   VALUES (%s, %s, %s, %s, %s, TRUE)""",
-                (ws_id, org_id, name, store_url or None, workspace_type),
-            )
-        conn.commit()
-        # Grant 50 signup credits
-        new_balance = _grant_credits(conn, org_id, ws_id, 50, "signup_grant",
-                                     description="Welcome! 50 free credits to explore the platform")
+                existing_org = cur.fetchone()
+                if existing_org:
+                    existing_org_id = str(existing_org[0])
+                    existing_plan = existing_org[1] or "free"
+
+            if existing_org_id:
+                # Org already exists — add a new workspace to it (multi-workspace)
+                org_id = existing_org_id
+                ws_id = str(_uuid.uuid4())
+                cur.execute(
+                    """INSERT INTO workspaces (id, org_id, name, store_url, workspace_type, active)
+                       VALUES (%s, %s, %s, %s, %s, TRUE)""",
+                    (ws_id, org_id, name, store_url or None, workspace_type),
+                )
+                conn.commit()
+                # Fetch current balance
+                cur.execute("SELECT credit_balance FROM organizations WHERE id = %s", (org_id,))
+                row = cur.fetchone()
+                new_balance = int(row[0]) if row else 0
+            else:
+                # New user — create org + first workspace + grant signup credits
+                org_id = str(_uuid.uuid4())
+                base_slug = _re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-') or 'org'
+                slug = f"{base_slug}-{org_id[:8]}"
+                cur.execute(
+                    """INSERT INTO organizations (id, name, slug, plan, credit_balance, clerk_user_id)
+                       VALUES (%s, %s, %s, 'free', 0, %s)""",
+                    (org_id, name, slug, clerk_user_id),
+                )
+                ws_id = str(_uuid.uuid4())
+                cur.execute(
+                    """INSERT INTO workspaces (id, org_id, name, store_url, workspace_type, active)
+                       VALUES (%s, %s, %s, %s, %s, TRUE)""",
+                    (ws_id, org_id, name, store_url or None, workspace_type),
+                )
+                conn.commit()
+                new_balance = _grant_credits(conn, org_id, ws_id, 50, "signup_grant",
+                                             description="Welcome! 50 free credits to explore the platform")
 
     return {
         "ok": True,
         "workspace_id": ws_id,
         "org_id": org_id,
         "credit_balance": new_balance,
-        "plan": "free",
+        "plan": existing_plan if existing_org_id else "free",
     }
 
 
