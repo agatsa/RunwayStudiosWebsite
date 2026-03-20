@@ -13836,7 +13836,7 @@ Return only the JSON array, nothing else."""
                             "what data to upload, and what quick wins they can achieve in their first 30 days on Runway Studios. "
                             "Be specific to their business type and the competitors found."
                         )
-                        await generate_action_plan(
+                        generate_action_plan(
                             workspace_id, conn,
                             directive=setup_directive,
                             strategy_mode="launch"
