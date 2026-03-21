@@ -632,65 +632,50 @@ def generate_action_plan(workspace_id: str, conn, directive: str = None, strateg
         "comment_intel": bool(intel.get("comment_intel")),
     }
 
-    has_any_data = any(sources_used.values())
-    if not has_any_data:
-        # Return a minimal plan with instructional actions
-        relevant_modules = ["youtube", "seo"]
-        actions = [
-            {
-                "id": str(uuid.uuid4()),
-                "platform": "youtube",
-                "action_type": "review",
-                "title": "Complete YouTube Competitor Analysis",
-                "rationale": "No intelligence data found. Run the YouTube Competitor Discovery to unlock cross-platform insights.",
-                "source": "all",
-                "source_detail": "No data available yet",
-                "impact": "high",
-                "effort": "low",
-                "action_data": {},
-            }
-        ]
-    else:
-        prompt = _build_prompt(intel, directive=directive, strategy_mode=strategy_mode)
+    # Always call Claude — _build_prompt handles the new-workspace case with
+    # a "NEW WORKSPACE CONTEXT" block that tells Claude to generate a setup roadmap
+    relevant_modules = []
+    actions = []
+    prompt = _build_prompt(intel, directive=directive, strategy_mode=strategy_mode)
 
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        try:
-            msg = client.messages.create(
-                model=CLAUDE_SONNET,
-                max_tokens=8192,
-                system=_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw = msg.content[0].text.strip()
-            # Strip potential markdown code fences
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-                raw = raw.strip()
-            # Extract JSON object — find first { ... } block
-            start = raw.find("{")
-            if start == -1:
-                start = raw.find("[")
-            if start != -1:
-                raw = raw[start:]
-            parsed = json.loads(raw)
-            if isinstance(parsed, list):
-                actions = parsed
-                relevant_modules = []
-            else:
-                actions = parsed.get("actions", [])
-                relevant_modules = parsed.get("relevant_modules", [])
-        except Exception as e:
-            print(f"[growth_os] Claude call failed: {e}")
-            print(f"[growth_os] raw response (first 500 chars): {raw[:500] if 'raw' in dir() else 'N/A'}")
-            actions = []
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    try:
+        msg = client.messages.create(
+            model=CLAUDE_SONNET,
+            max_tokens=8192,
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = msg.content[0].text.strip()
+        # Strip potential markdown code fences
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        # Extract JSON object — find first { ... } block
+        start = raw.find("{")
+        if start == -1:
+            start = raw.find("[")
+        if start != -1:
+            raw = raw[start:]
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            actions = parsed
             relevant_modules = []
+        else:
+            actions = parsed.get("actions", [])
+            relevant_modules = parsed.get("relevant_modules", [])
+    except Exception as e:
+        print(f"[growth_os] Claude call failed: {e}")
+        print(f"[growth_os] raw response (first 500 chars): {raw[:500] if 'raw' in dir() else 'N/A'}")
+        actions = []
+        relevant_modules = []
 
-        # Ensure each action has a uuid id
-        for a in actions:
-            if not a.get("id"):
-                a["id"] = str(uuid.uuid4())
+    # Ensure each action has a uuid id
+    for a in actions:
+        if not a.get("id"):
+            a["id"] = str(uuid.uuid4())
 
     # Upsert into growth_os_plans
     plan_id = str(uuid.uuid4())
