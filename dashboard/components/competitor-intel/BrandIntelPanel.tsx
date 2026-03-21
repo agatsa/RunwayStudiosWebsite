@@ -85,7 +85,7 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
   const [logEntries, setLogEntries]   = useState<Array<{ type: string; msg: string; ts?: string }>>([])
   const [candidates, setCandidates]   = useState<Candidate[]>([])
   const [ownTopics, setOwnTopics]     = useState<string[]>([])
-  const [checkedDomains, setCheckedDomains] = useState<Set<string>>(new Set())
+  const [checkedDomains, setCheckedDomains] = useState<string[]>([])
   const [manualUrls, setManualUrls]   = useState(['', '', ''])
   const [profiles, setProfiles]       = useState<CompetitorProfile[]>([])
   const [recipe, setRecipe]           = useState<GrowthRecipe | null>(null)
@@ -110,7 +110,7 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
         setUiState('awaiting_confirmation')
         stopPoll()
         // Pre-check all auto candidates
-        const doms = new Set<string>((d.candidates || []).filter((c: Candidate) => c.is_auto).map((c: Candidate) => c.domain))
+        const doms = (d.candidates || []).filter((c: Candidate) => c.is_auto).map((c: Candidate) => c.domain)
         setCheckedDomains(doms)
       } else if (d.discovery_status === 'analysing') {
         setUiState('analysing')
@@ -244,7 +244,7 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
         body: JSON.stringify({
           workspace_id:      workspaceId,
           job_id:            jobId,
-          confirmed_domains: Array.from(checkedDomains),
+          confirmed_domains: checkedDomains,
           manual_urls:       manualUrls.filter(u => u.trim()),
         }),
       })
@@ -257,12 +257,9 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
   }
 
   const toggleDomain = (domain: string) => {
-    setCheckedDomains(prev => {
-      const next = new Set(prev)
-      if (next.has(domain)) next.delete(domain)
-      else next.add(domain)
-      return next
-    })
+    setCheckedDomains(prev =>
+      prev.includes(domain) ? prev.filter(d => d !== domain) : [...prev, domain]
+    )
   }
 
   const updateManual = (i: number, val: string) => {
@@ -412,12 +409,12 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
               key={c.domain}
               onClick={() => toggleDomain(c.domain)}
               className={`relative flex flex-col items-start gap-2 rounded-2xl border p-4 text-left transition-all ${
-                checkedDomains.has(c.domain)
+                checkedDomains.includes(c.domain)
                   ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-300'
                   : 'border-gray-200 bg-white hover:border-gray-300'
               }`}
             >
-              {checkedDomains.has(c.domain) && (
+              {checkedDomains.includes(c.domain) && (
                 <BadgeCheck className="absolute top-3 right-3 h-4 w-4 text-indigo-500" />
               )}
               <div className="flex items-center gap-2">
@@ -471,11 +468,11 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
 
         <button
           onClick={handleConfirm}
-          disabled={confirming || checkedDomains.size === 0}
+          disabled={confirming || checkedDomains.length === 0}
           className="w-full flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors"
         >
           {confirming ? <Loader2 className="h-4 w-4 animate-spin" /> : <ChevronRight className="h-4 w-4" />}
-          Confirm {checkedDomains.size} competitor{checkedDomains.size !== 1 ? 's' : ''} & Start Deep Analysis
+          Confirm {checkedDomains.length} competitor{checkedDomains.length !== 1 ? 's' : ''} & Start Deep Analysis
         </button>
       </div>
     )
