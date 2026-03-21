@@ -164,7 +164,8 @@ export default function OnboardingModal({ workspaceId, onComplete }: Props) {
     if (selectedChannels.includes('brand_intel')) steps.push(...SCAN_STEPS_BY_CHANNELS.brand_intel)
     else if (selectedChannels.includes('youtube')) steps.push(...SCAN_STEPS_BY_CHANNELS.youtube)
     else steps.push(...SCAN_STEPS_BY_CHANNELS.default)
-    return [...new Set(steps)].slice(0, 4)
+    // Deduplicate without Set spread (ES5 compat)
+    return steps.filter((s, i) => steps.indexOf(s) === i).slice(0, 4)
   })()
 
   // Animate scan steps
