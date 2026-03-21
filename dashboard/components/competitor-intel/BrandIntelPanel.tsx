@@ -7,7 +7,7 @@ import {
   TrendingUp, Star, Code2, ShoppingBag, BookOpen, ArrowRight,
   BadgeCheck, X,
 } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
+// No react-markdown dependency — render recipe as pre-formatted text
 
 interface Candidate {
   url: string
@@ -871,8 +871,8 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
                     <h4 className="text-sm font-bold text-gray-900 mb-3 flex items-center gap-2">
                       <BookOpen className="h-4 w-4 text-purple-500" /> Full Strategy
                     </h4>
-                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 prose prose-sm max-w-none text-gray-700">
-                      <ReactMarkdown>{recipe.recipe_text}</ReactMarkdown>
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 font-mono text-xs text-gray-700 whitespace-pre-wrap leading-relaxed overflow-x-auto">
+                      {recipe.recipe_text}
                     </div>
                   </div>
                 )}
