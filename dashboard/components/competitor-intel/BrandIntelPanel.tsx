@@ -36,6 +36,7 @@ interface CompetitorProfile {
     found?: boolean
     ad_count?: number
     summary?: {
+      found?: boolean
       ad_count: number
       winning_creatives: Array<{ body: string; title: string; days_running: number; platforms: string[] }>
       top_message_themes: string[]
