@@ -167,6 +167,26 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
       .catch(() => {})
   }, [workspaceId])
 
+  const [resettingOnboarding, setResettingOnboarding] = useState(false)
+
+  const handleResetOnboarding = async () => {
+    if (!confirm('This will re-show the ARIA setup wizard on next page load. Continue?')) return
+    setResettingOnboarding(true)
+    try {
+      await fetch('/api/workspace/reset-onboarding', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspace_id: workspaceId }),
+      })
+      toast.success('Setup wizard reset — reload to see it')
+      router.refresh()
+    } catch {
+      toast.error('Failed to reset')
+    } finally {
+      setResettingOnboarding(false)
+    }
+  }
+
   const handleSaveWorkspaceType = async (type: string) => {
     setWorkspaceType(type)
     setSavingType(true)
@@ -373,7 +393,7 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
       <section className="space-y-3">
         <h2 className="text-base font-semibold text-gray-900">Workspace</h2>
         <div className="rounded-xl border border-gray-200 bg-white p-4">
-          <div className="grid grid-cols-2 gap-4 text-sm">
+          <div className="grid grid-cols-2 gap-4 text-sm mb-4">
             <div>
               <p className="text-xs text-gray-500">Workspace Name</p>
               <p className="mt-0.5 font-medium text-gray-900">{workspaceName}</p>
@@ -383,6 +403,14 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
               <p className="mt-0.5 font-mono text-xs text-gray-600 break-all">{workspaceId}</p>
             </div>
           </div>
+          <button
+            onClick={handleResetOnboarding}
+            disabled={resettingOnboarding}
+            className="flex items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-100 transition-colors disabled:opacity-50"
+          >
+            {resettingOnboarding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            Re-run ARIA Setup Wizard
+          </button>
         </div>
       </section>
 

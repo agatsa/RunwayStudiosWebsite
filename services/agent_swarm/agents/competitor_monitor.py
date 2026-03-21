@@ -257,7 +257,7 @@ def _generate_gap_analysis(
             except json.JSONDecodeError:
                 # Attempt repair of truncated JSON
                 candidate = m.group().rstrip().rstrip(",")
-                candidate += "]}" * candidate.count("[") - candidate.count("]")
+                candidate += "]}" * (candidate.count("[") - candidate.count("]"))
                 try:
                     return json.loads(candidate)
                 except Exception:

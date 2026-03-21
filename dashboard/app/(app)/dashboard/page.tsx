@@ -9,6 +9,7 @@ import PlatformBreakdownTable from '@/components/dashboard/PlatformBreakdownTabl
 import ChannelHealthRow from '@/components/dashboard/ChannelHealthRow'
 import AiOpportunities from '@/components/dashboard/AiOpportunities'
 import type { KpiSummaryResponse } from '@/lib/types'
+import SetupChecklist from '@/components/onboarding/SetupChecklist'
 
 interface PageProps {
   searchParams: { ws?: string; days?: string }
@@ -105,6 +106,9 @@ export default async function DashboardPage({ searchParams }: PageProps) {
 
   return (
     <div className="space-y-6">
+      {/* Setup checklist — shown to new users until all steps complete or dismissed */}
+      <SetupChecklist workspaceId={workspaceId} />
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-gray-900">Dashboard</h1>

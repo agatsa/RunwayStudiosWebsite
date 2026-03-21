@@ -11350,9 +11350,9 @@ async def admin_migrate(request: Request):
         "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS monthly_budget NUMERIC DEFAULT 0",
         # v39 Growth OS: relevant_modules + creative_brief + setup_guide + done
         "ALTER TABLE growth_os_plans ADD COLUMN IF NOT EXISTS relevant_modules JSONB DEFAULT '[]'",
-        "ALTER TABLE growth_os_actions ADD COLUMN IF NOT EXISTS creative_brief TEXT",
-        "ALTER TABLE growth_os_actions ADD COLUMN IF NOT EXISTS setup_guide TEXT",
-        "ALTER TABLE growth_os_actions ADD COLUMN IF NOT EXISTS done BOOLEAN DEFAULT FALSE",
+        """DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='growth_os_actions') THEN ALTER TABLE growth_os_actions ADD COLUMN IF NOT EXISTS creative_brief TEXT; END IF; END $$""",
+        """DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='growth_os_actions') THEN ALTER TABLE growth_os_actions ADD COLUMN IF NOT EXISTS setup_guide TEXT; END IF; END $$""",
+        """DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='growth_os_actions') THEN ALTER TABLE growth_os_actions ADD COLUMN IF NOT EXISTS done BOOLEAN DEFAULT FALSE; END IF; END $$""",
         # v40 Brand Intelligence tables
         """CREATE TABLE IF NOT EXISTS brand_intel_jobs (
             id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -11403,14 +11403,43 @@ async def admin_migrate(request: Request):
         "CREATE INDEX IF NOT EXISTS idx_bgr_ws ON brand_growth_recipe(workspace_id, created_at DESC)",
         "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS brand_url TEXT DEFAULT ''",
         "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS youtube_channel_url TEXT DEFAULT ''",
+        # v41 Landing Page Audits
+        """CREATE TABLE IF NOT EXISTS lp_audits (
+            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id    UUID NOT NULL,
+            brand_url       TEXT NOT NULL DEFAULT '',
+            status          TEXT NOT NULL DEFAULT 'pending',
+            audit_json      JSONB NOT NULL DEFAULT '{}',
+            created_at      TIMESTAMPTZ DEFAULT NOW(),
+            updated_at      TIMESTAMPTZ DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_lp_audits_ws ON lp_audits(workspace_id, created_at DESC)",
+        # v42 Growth OS Jobs — persistent background job model
+        """CREATE TABLE IF NOT EXISTS growth_os_jobs (
+            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id    UUID NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            directive       TEXT DEFAULT '',
+            strategy_mode   TEXT DEFAULT '',
+            logs            JSONB DEFAULT '[]',
+            plan_json       JSONB,
+            credits_charged INT DEFAULT 0,
+            created_at      TIMESTAMPTZ DEFAULT NOW(),
+            completed_at    TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_gos_jobs_ws ON growth_os_jobs(workspace_id, created_at DESC)",
+        "ALTER TABLE growth_os_plans ADD COLUMN IF NOT EXISTS sources_used JSONB",
     ]
     with get_conn() as conn:
         with conn.cursor() as cur:
             for sql in migrations:
                 try:
+                    cur.execute("SAVEPOINT _m")
                     cur.execute(sql)
+                    cur.execute("RELEASE SAVEPOINT _m")
                     results.append({"sql": sql, "ok": True})
                 except Exception as e:
+                    cur.execute("ROLLBACK TO SAVEPOINT _m")
                     results.append({"sql": sql, "ok": False, "error": str(e)})
         conn.commit()
     return {"migrations": results}
@@ -13930,6 +13959,23 @@ async def complete_onboarding(request: Request):
     return {"ok": True, "workspace_type": workspace_type}
 
 
+@app.patch("/workspace/reset-onboarding")
+async def workspace_reset_onboarding(request: Request):
+    """Reset onboarding_complete so the modal shows again (testing / re-setup)."""
+    body = await request.json()
+    workspace_id = (body.get("workspace_id") or "").strip()
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE workspaces SET onboarding_complete = FALSE WHERE id = %s",
+                (workspace_id,)
+            )
+        conn.commit()
+    return {"ok": True, "workspace_id": workspace_id}
+
+
 @app.post("/workspace/onboard")
 async def workspace_onboard(request: Request, background_tasks: BackgroundTasks):
     """New onboarding — saves brand context, triggers Brand Intel + optional YouTube discovery."""
@@ -14169,6 +14215,7 @@ async def growth_os_generate(request: Request, background_tasks: BackgroundTasks
 
     directive = (body.get("directive") or "").strip()
     strategy_mode = (body.get("strategy_mode") or "").strip()
+    brand_url = (body.get("brand_url") or "").strip()
 
     # Deduct credits before generating AI plan
     with get_conn() as conn:
@@ -14278,6 +14325,397 @@ async def growth_os_action_done(request: Request):
                 (action_id, done, workspace_id, workspace_id)
             )
     return {"ok": True, "action_id": action_id, "done": done}
+
+
+@app.get("/growth-os/history")
+async def growth_os_history(request: Request, workspace_id: str = None):
+    """Return all saved Growth OS plan summaries for a workspace (newest first).
+    Returns only metadata — not the full plan_json — for list display.
+    """
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    import json as _json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, generated_at,
+                       COALESCE(strategy_mode, ''),
+                       COALESCE(directive, ''),
+                       plan_json,
+                       sources_used
+                FROM growth_os_plans
+                WHERE workspace_id = %s
+                ORDER BY generated_at DESC
+                LIMIT 50
+                """,
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+
+    plans = []
+    for row in rows:
+        plan_json = row[4] if isinstance(row[4], dict) else _json.loads(row[4] or "{}")
+        sources_used = row[5] if isinstance(row[5], dict) else _json.loads(row[5] or "{}")
+        actions = plan_json.get("actions", [])
+        plans.append({
+            "plan_id": str(row[0]),
+            "generated_at": row[1].isoformat() if row[1] else None,
+            "strategy_mode": row[2],
+            "directive": row[3],
+            "action_count": len(actions),
+            "high_count": sum(1 for a in actions if a.get("impact") == "high"),
+            "sources_used": sources_used,
+        })
+
+    return {"plans": plans}
+
+
+@app.get("/growth-os/plan")
+async def growth_os_get_plan(request: Request, workspace_id: str = None, plan_id: str = None):
+    """Return a specific Growth OS plan by plan_id."""
+    _auth(request)
+    if not workspace_id or not plan_id:
+        raise HTTPException(status_code=400, detail="workspace_id and plan_id required")
+
+    import json as _json
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, generated_at, plan_json, sources_used,
+                       COALESCE(directive, ''), COALESCE(strategy_mode, '')
+                FROM growth_os_plans
+                WHERE workspace_id = %s AND id = %s::uuid
+                """,
+                (workspace_id, plan_id),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    plan_json = row[2] if isinstance(row[2], dict) else _json.loads(row[2] or "{}")
+    sources_used = row[3] if isinstance(row[3], dict) else _json.loads(row[3] or "{}")
+    return {
+        "plan_id": str(row[0]),
+        "generated_at": row[1].isoformat() if row[1] else None,
+        "actions": plan_json.get("actions", []),
+        "relevant_modules": plan_json.get("relevant_modules", []),
+        "sources_used": sources_used,
+        "directive": row[4],
+        "strategy_mode": row[5],
+    }
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Landing Page Auditor                                                        ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+@app.post("/lp-audit/start")
+async def lp_audit_start(request: Request, background_tasks: BackgroundTasks):
+    """
+    Start a landing page audit job in the background.
+    Body: { "workspace_id": "...", "brand_url": "...", "competitor_urls": ["..."] }
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = (body.get("workspace_id") or "").strip()
+    brand_url    = (body.get("brand_url") or "").strip()
+    competitor_urls = body.get("competitor_urls") or []
+
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    if not brand_url:
+        raise HTTPException(status_code=400, detail="brand_url required")
+
+    job_id = str(__import__("uuid").uuid4())
+
+    # Insert pending job row
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO lp_audits (id, workspace_id, brand_url, status, audit_json)
+                VALUES (%s::uuid, %s::uuid, %s, 'pending', '{}'::jsonb)
+                ON CONFLICT DO NOTHING
+                """,
+                (job_id, workspace_id, brand_url),
+            )
+        conn.commit()
+
+    async def _run():
+        try:
+            from services.agent_swarm.connectors.lp_auditor import run_full_audit
+            # Get competitor URLs from brand_intel if none provided
+            if not competitor_urls:
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT bc.profile_json->>'url' AS url
+                            FROM brand_intel_jobs j
+                            JOIN brand_competitor_channels bc ON bc.job_id = j.id
+                            WHERE j.workspace_id = %s AND j.status = 'completed'
+                            ORDER BY j.updated_at DESC
+                            LIMIT 3
+                            """,
+                            (workspace_id,),
+                        )
+                        rows = cur.fetchall()
+                        comp_urls = [r[0] for r in rows if r[0]]
+            else:
+                comp_urls = competitor_urls
+
+            # Get workspace name
+            with get_conn() as conn:
+                ws = get_workspace(workspace_id, conn)
+            brand_name = ws.get("name", "Your Brand") if ws else "Your Brand"
+
+            result = await run_full_audit(brand_url, comp_urls, brand_name)
+
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE lp_audits
+                        SET status = 'completed', audit_json = %s::jsonb, updated_at = NOW()
+                        WHERE id = %s::uuid
+                        """,
+                        (json.dumps(result), job_id),
+                    )
+                conn.commit()
+        except Exception as e:
+            print(f"[lp_audit] job {job_id} failed: {e}")
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE lp_audits SET status = 'failed', updated_at = NOW() WHERE id = %s::uuid",
+                        (job_id,),
+                    )
+                conn.commit()
+
+    background_tasks.add_task(_run)
+    return {"ok": True, "job_id": job_id, "status": "pending"}
+
+
+@app.get("/lp-audit/status")
+async def lp_audit_status(request: Request, job_id: str = None, workspace_id: str = None):
+    """Poll job status. Returns status + full result when completed."""
+    _auth(request)
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, audit_json, updated_at FROM lp_audits WHERE id = %s::uuid",
+                (job_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    audit_json = row[1] if isinstance(row[1], dict) else {}
+    return {
+        "job_id": job_id,
+        "status": row[0],
+        "updated_at": row[2].isoformat() if row[2] else None,
+        "result": audit_json if row[0] == "completed" else None,
+    }
+
+
+@app.get("/lp-audit/latest")
+async def lp_audit_latest(request: Request, workspace_id: str = None):
+    """Return latest completed LP audit for a workspace."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, brand_url, status, audit_json, created_at, updated_at
+                FROM lp_audits
+                WHERE workspace_id = %s AND status = 'completed'
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return {"audit": None}
+
+    audit_json = row[3] if isinstance(row[3], dict) else {}
+    return {
+        "audit": {
+            "job_id": str(row[0]),
+            "brand_url": row[1],
+            "status": row[2],
+            "result": audit_json,
+            "created_at": row[4].isoformat() if row[4] else None,
+            "updated_at": row[5].isoformat() if row[5] else None,
+        }
+    }
+
+
+@app.get("/lp-audit/history")
+async def lp_audit_history(request: Request, workspace_id: str = None):
+    """Return all LP audits for a workspace (newest first)."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, brand_url, status,
+                       (audit_json->'summary'->'our_score')::int,
+                       audit_json->'summary'->>'our_grade',
+                       (audit_json->'summary'->'our_load_ms')::int,
+                       audit_json->'summary'->>'top_issue',
+                       created_at, updated_at
+                FROM lp_audits
+                WHERE workspace_id = %s
+                ORDER BY created_at DESC
+                LIMIT 20
+                """,
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+
+    return {
+        "audits": [
+            {
+                "job_id": str(r[0]),
+                "brand_url": r[1],
+                "status": r[2],
+                "score": r[3],
+                "grade": r[4],
+                "load_ms": r[5],
+                "top_issue": r[6],
+                "created_at": r[7].isoformat() if r[7] else None,
+                "updated_at": r[8].isoformat() if r[8] else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.post("/growth-os/run-v2")
+async def growth_os_run_v2(request: Request, background_tasks: BackgroundTasks):
+    """Start a v2 Growth OS job. Returns job_id immediately; poll /growth-os/job-status/{job_id}."""
+    _auth(request)
+    body = await request.json()
+    workspace_id = (body.get("workspace_id") or "").strip()
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    directive = (body.get("directive") or "").strip()
+    strategy_mode = (body.get("strategy_mode") or "").strip()
+    brand_url = (body.get("brand_url") or "").strip()
+
+    # Deduct credits
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_and_deduct_credits(conn, org_id, workspace_id,
+                                  FEATURE_COSTS["growth_os"], "growth_os")
+
+    # Create the job row
+    import uuid as _uuid
+    job_id = str(_uuid.uuid4())
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO growth_os_jobs (id, workspace_id, directive, strategy_mode, status)
+                   VALUES (%s::uuid, %s::uuid, %s, %s, 'pending')""",
+                (job_id, workspace_id, directive or "", strategy_mode or ""),
+            )
+
+    async def _run():
+        from services.agent_swarm.core.growth_os import run_full_strategy_job
+        try:
+            run_full_strategy_job(
+                job_id, workspace_id,
+                directive=directive or None,
+                brand_url=brand_url or None,
+                strategy_mode=strategy_mode or None,
+                credits_base=FEATURE_COSTS["growth_os"],
+            )
+        except Exception as e:
+            print(f"[growth_os_v2] job {job_id} error: {e}")
+
+    background_tasks.add_task(_run)
+    return {"ok": True, "job_id": job_id, "status": "pending"}
+
+
+@app.get("/growth-os/job-status/{job_id}")
+async def growth_os_job_status(job_id: str, request: Request):
+    """Poll status + logs for a growth OS job."""
+    _auth(request)
+    workspace_id = request.query_params.get("workspace_id", "")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT status, logs, plan_json, credits_charged, created_at, completed_at
+                   FROM growth_os_jobs
+                   WHERE id = %s::uuid AND (%s = '' OR workspace_id = %s::uuid)""",
+                (job_id, workspace_id, workspace_id if workspace_id else job_id),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    status, logs, plan_json, credits, created_at, completed_at = row
+    logs_list = logs if isinstance(logs, list) else []
+    plan = plan_json if isinstance(plan_json, dict) else {}
+    return {
+        "job_id": job_id,
+        "status": status,
+        "logs": logs_list,
+        "plan": plan,
+        "credits_charged": credits or 0,
+        "created_at": created_at.isoformat() if created_at else None,
+        "completed_at": completed_at.isoformat() if completed_at else None,
+    }
+
+
+@app.get("/growth-os/active-job")
+async def growth_os_active_job(request: Request, workspace_id: str = None):
+    """Return the most recent job (running or completed) for a workspace."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, status, logs, plan_json, credits_charged, created_at, completed_at
+                   FROM growth_os_jobs
+                   WHERE workspace_id = %s::uuid
+                   ORDER BY created_at DESC LIMIT 1""",
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+    if not row:
+        return {"job_id": None, "status": "none"}
+    job_id, status, logs, plan_json, credits, created_at, completed_at = row
+    logs_list = logs if isinstance(logs, list) else []
+    plan = plan_json if isinstance(plan_json, dict) else {}
+    return {
+        "job_id": str(job_id),
+        "status": status,
+        "logs": logs_list,
+        "plan": plan,
+        "credits_charged": credits or 0,
+        "created_at": created_at.isoformat() if created_at else None,
+        "completed_at": completed_at.isoformat() if completed_at else None,
+    }
 
 
 @app.post("/growth-os/send-to-approvals")
@@ -17225,6 +17663,42 @@ async def brand_intel_job_status(request: Request, workspace_id: str = None, job
         "status": row[1], "discovery_status": row[2],
         "created_at":   row[3].isoformat() if row[3] else None,
         "completed_at": row[4].isoformat() if row[4] else None,
+    }
+
+
+@app.get("/brand-intel/history")
+async def brand_intel_history(request: Request, workspace_id: str = None):
+    """Return metadata list of all completed brand intel jobs for this workspace."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT j.id, j.brand_url, j.created_at, j.completed_at,
+                          COUNT(p.id) AS competitor_count,
+                          ARRAY_AGG(p.competitor_name ORDER BY p.confidence_pct DESC) FILTER (WHERE p.id IS NOT NULL) AS names
+                     FROM brand_intel_jobs j
+                     LEFT JOIN brand_competitor_profiles p ON p.job_id = j.id AND p.confirmed = TRUE
+                    WHERE j.workspace_id = %s::uuid AND j.status = 'completed'
+                    GROUP BY j.id, j.brand_url, j.created_at, j.completed_at
+                    ORDER BY j.created_at DESC
+                    LIMIT 20""",
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+    return {
+        "history": [
+            {
+                "job_id":           str(r[0]),
+                "brand_url":        r[1] or "",
+                "created_at":       r[2].isoformat() if r[2] else None,
+                "completed_at":     r[3].isoformat() if r[3] else None,
+                "competitor_count": r[4] or 0,
+                "competitor_names":  (r[5] or [])[:5],
+            }
+            for r in rows
+        ]
     }
 
 

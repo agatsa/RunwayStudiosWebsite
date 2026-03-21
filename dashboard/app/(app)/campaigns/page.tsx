@@ -2,7 +2,8 @@ import { fetchFromFastAPI } from '@/lib/api'
 import CampaignSection from '@/components/campaigns/CampaignSection'
 import type { MetaCampaignsResponse, MetaCampaign } from '@/lib/types'
 import { formatINR } from '@/lib/utils'
-import { TrendingUp, MousePointer, ShoppingCart, DollarSign } from 'lucide-react'
+import { TrendingUp, MousePointer, ShoppingCart, DollarSign, Megaphone } from 'lucide-react'
+import EmptyStateCard from '@/components/ui/EmptyStateCard'
 
 interface PageProps {
   searchParams: { ws?: string }
@@ -72,6 +73,8 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
   const metaBreakdown = summary?.platform_breakdown?.meta
   const spend = metaBreakdown?.spend ?? summary?.spend ?? null
   const clicks = metaBreakdown?.clicks ?? summary?.clicks ?? null
+
+  const hasNoData = totalCount === 0 && !spend && !clicks
   const impressions = metaBreakdown?.impressions ?? summary?.impressions ?? null
   const conversions = metaBreakdown?.conversions ?? summary?.conversions ?? null
   const revenue = metaBreakdown?.revenue ?? summary?.revenue ?? null
@@ -96,6 +99,28 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
       sub: spend && conversions && conversions > 0 ? `CPA ${formatINR(spend / conversions)}` : 'purchases / leads', icon: ShoppingCart, color: 'text-orange-600', bg: 'bg-orange-50',
     },
   ]
+
+  if (hasNoData) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-xl font-bold text-gray-900">Meta Ads</h1>
+          <p className="text-sm text-gray-500">Facebook & Instagram campaigns</p>
+        </div>
+        <EmptyStateCard
+          icon={Megaphone}
+          iconBg="bg-blue-600"
+          title="No Meta Ads data yet"
+          description="Connect your Facebook Ads account to see live campaign performance, ROAS, and audience breakdowns — or upload a report to get started instantly."
+          actions={[
+            { label: 'Connect Meta Ads →', href: `/settings?ws=${workspaceId}`, primary: true },
+            { label: 'Upload a Report', href: `/google-ads?ws=${workspaceId}` },
+          ]}
+          hint="We only read your data — we never create, modify or delete your ads."
+        />
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">

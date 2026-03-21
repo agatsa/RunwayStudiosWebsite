@@ -5,7 +5,7 @@ import {
   Search, Globe, Zap, CheckCircle2, Loader2, RefreshCw,
   ChevronRight, ExternalLink, AlertCircle, Target, Megaphone,
   TrendingUp, Star, Code2, ShoppingBag, BookOpen, ArrowRight,
-  BadgeCheck, X,
+  BadgeCheck, X, History, ChevronDown,
 } from 'lucide-react'
 // No react-markdown dependency — render recipe as pre-formatted text
 
@@ -72,6 +72,15 @@ interface GrowthRecipe {
 
 type UIState = 'idle' | 'discovering' | 'awaiting_confirmation' | 'analysing' | 'completed'
 
+interface HistoryItem {
+  job_id:           string
+  brand_url:        string
+  created_at:       string
+  completed_at:     string | null
+  competitor_count: number
+  competitor_names: string[]
+}
+
 const PRIORITY_COLORS: Record<string, string> = {
   high: 'bg-red-50 border-red-200 text-red-700',
   medium: 'bg-amber-50 border-amber-200 text-amber-700',
@@ -91,6 +100,10 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
   const [recipe, setRecipe]           = useState<GrowthRecipe | null>(null)
   const [activeTab, setActiveTab]     = useState<'overview' | 'ads' | 'pricing' | 'reviews' | 'recipe'>('overview')
   const [confirming, setConfirming]   = useState(false)
+  const [history, setHistory]           = useState<HistoryItem[]>([])
+  const [historyOpen, setHistoryOpen]   = useState(false)
+  const [viewingJobId, setViewingJobId] = useState<string | null>(null)
+  const [latestJobId, setLatestJobId]   = useState<string | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
 
@@ -117,8 +130,11 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
       } else if (d.status === 'completed') {
         setUiState('completed')
         stopPoll()
+        setLatestJobId(jid)
+        setViewingJobId(null)
         fetchProfiles(jid)
         fetchRecipe()
+        fetchHistory()
       }
     } catch { /* ignore */ }
   }, [workspaceId])
@@ -139,6 +155,38 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
     } catch { /* ignore */ }
   }
 
+  const fetchHistory = async () => {
+    try {
+      const r = await fetch(`/api/brand-intel/history?workspace_id=${workspaceId}`)
+      const d = await r.json()
+      setHistory(d.history || [])
+    } catch { /* ignore */ }
+  }
+
+  const loadHistoryJob = async (item: HistoryItem) => {
+    setHistoryOpen(false)
+    setViewingJobId(item.job_id)
+    setUiState('completed')
+    setProfiles([])
+    setRecipe(null)
+    await fetchProfiles(item.job_id)
+    // Recipe is workspace-level (always latest), no per-job recipe
+  }
+
+  const backToLatest = async () => {
+    setViewingJobId(null)
+    if (latestJobId) {
+      await fetchProfiles(latestJobId)
+      await fetchRecipe()
+    }
+  }
+
+  function formatDT(iso: string) {
+    const d = new Date(iso)
+    return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) +
+      ' ' + d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+  }
+
   // On mount, check if there's an existing job
   useEffect(() => {
     const init = async () => {
@@ -148,9 +196,11 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
         if (!d.exists) return
         setJobId(d.job_id)
         if (d.status === 'completed') {
+          setLatestJobId(d.job_id)
           setUiState('completed')
           fetchProfiles(d.job_id)
           fetchRecipe()
+          fetchHistory()
         } else if (d.discovery_status === 'awaiting_confirmation') {
           fetchDiscoveryStatus(d.job_id)
         } else if (d.status === 'discovering' || d.status === 'analysing' || d.discovery_status === 'analysing') {
@@ -178,8 +228,11 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
         if (d.status === 'completed') {
           setUiState('completed')
           clearInterval(poll)
+          setLatestJobId(jobId)
+          setViewingJobId(null)
           fetchProfiles(jobId)
           fetchRecipe()
+          fetchHistory()
         }
       } catch { /* ignore */ }
     }, 3000)
@@ -375,16 +428,37 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
 
   // Awaiting confirmation — candidate cards
   if (uiState === 'awaiting_confirmation') {
+    const hasSelections = checkedDomains.length > 0 || manualUrls.some(u => u.trim())
     return (
       <div className="space-y-4">
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 flex items-start gap-3">
           <AlertCircle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
-          <div>
+          <div className="flex-1">
             <p className="text-sm font-semibold text-amber-900">Review competitor candidates</p>
             <p className="text-xs text-amber-700 mt-0.5">
               ARIA found {candidates.length} potential competitors. Select which to analyse deeply,
               or add your own.
             </p>
+          </div>
+          {/* Re-discover with URL */}
+          <div className="shrink-0 flex flex-col items-end gap-1.5">
+            <div className="flex gap-1.5">
+              <input
+                type="url"
+                value={brandUrl}
+                onChange={e => setBrandUrl(e.target.value)}
+                placeholder="https://yourbrand.com"
+                className="w-48 rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-400"
+              />
+              <button
+                onClick={handleReDiscover}
+                disabled={!brandUrl.trim()}
+                className="flex items-center gap-1 rounded-lg bg-amber-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-40"
+              >
+                <RefreshCw className="h-3 w-3" /> Re-discover
+              </button>
+            </div>
+            <p className="text-[10px] text-amber-600">Enter your URL for better results</p>
           </div>
         </div>
 
@@ -468,7 +542,7 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
 
         <button
           onClick={handleConfirm}
-          disabled={confirming || checkedDomains.length === 0}
+          disabled={confirming || !hasSelections}
           className="w-full flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors"
         >
           {confirming ? <Loader2 className="h-4 w-4 animate-spin" /> : <ChevronRight className="h-4 w-4" />}
@@ -512,6 +586,20 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
   // Completed — full intel dashboard
   return (
     <div className="space-y-4">
+      {/* Viewing past analysis banner */}
+      {viewingJobId && viewingJobId !== latestJobId && (
+        <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5">
+          <History className="h-4 w-4 text-amber-600 shrink-0" />
+          <p className="text-sm text-amber-800 flex-1">Viewing a past competitor analysis</p>
+          <button
+            onClick={backToLatest}
+            className="text-xs font-semibold text-amber-700 hover:text-amber-900 underline"
+          >
+            Back to Latest
+          </button>
+        </div>
+      )}
+
       {/* Header row */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -520,12 +608,60 @@ export default function BrandIntelPanel({ workspaceId }: { workspaceId: string }
             {profiles.length} competitor{profiles.length !== 1 ? 's' : ''} analysed
           </span>
         </div>
-        <button
-          onClick={handleReDiscover}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 transition-colors"
-        >
-          <RefreshCw className="h-3.5 w-3.5" /> Re-discover
-        </button>
+        <div className="flex items-center gap-2">
+          {/* History picker */}
+          {history.length > 1 && (
+            <div className="relative">
+              <button
+                onClick={() => setHistoryOpen(o => !o)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 transition-colors"
+              >
+                <History className="h-3.5 w-3.5" /> History
+                <ChevronDown className="h-3 w-3" />
+              </button>
+              {historyOpen && (
+                <div className="absolute right-0 top-full mt-1 z-50 w-72 rounded-xl border border-gray-200 bg-white shadow-lg overflow-hidden">
+                  <div className="px-3 py-2 border-b border-gray-100 bg-gray-50">
+                    <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Past Analyses</p>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto">
+                    {history.map(item => (
+                      <button
+                        key={item.job_id}
+                        onClick={() => loadHistoryJob(item)}
+                        className={`w-full text-left px-3 py-2.5 hover:bg-gray-50 transition-colors border-b border-gray-50 ${
+                          item.job_id === (viewingJobId || latestJobId) ? 'bg-indigo-50' : ''
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-0.5">
+                          <span className="text-xs font-semibold text-gray-800 truncate max-w-[180px]">
+                            {item.brand_url.replace(/https?:\/\/(www\.)?/, '').split('/')[0] || 'Analysis'}
+                          </span>
+                          {item.job_id === latestJobId && (
+                            <span className="rounded-full bg-green-100 px-1.5 py-0.5 text-[9px] font-bold text-green-700">Latest</span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-gray-400">{item.created_at ? formatDT(item.created_at) : '—'}</p>
+                        {item.competitor_names.length > 0 && (
+                          <p className="text-[11px] text-gray-500 mt-0.5 truncate">
+                            {item.competitor_names.slice(0, 3).join(', ')}
+                            {item.competitor_count > 3 ? ` +${item.competitor_count - 3}` : ''}
+                          </p>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          <button
+            onClick={handleReDiscover}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 transition-colors"
+          >
+            <RefreshCw className="h-3.5 w-3.5" /> Re-discover
+          </button>
+        </div>
       </div>
 
       {/* Competitor cards */}

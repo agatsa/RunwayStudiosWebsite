@@ -23,7 +23,7 @@ from services.agent_swarm.config import ANTHROPIC_API_KEY
 from services.agent_swarm.connectors.brand_scraper import (
     fetch_page, fetch_text, try_sub_pages, strip_html,
     detect_tech_stack, extract_social_links, extract_fb_page_handle,
-    fetch_meta_ads, search_ddg, serp_presence,
+    fetch_meta_ads, jina_read, jina_search, search_ddg, serp_presence,
     scrape_trustpilot, scrape_g2,
     extract_domain, extract_brand_name,
 )
@@ -118,8 +118,9 @@ async def run_discovery_phase(
 
     _log(conn, job_id, {"type": "info", "msg": f"Fetching your brand page: {brand_url}"})
 
+    # Use Jina reader for clean text (bypasses Cloudflare/bot protection)
+    own_text = await jina_read(brand_url, max_chars=3000) if brand_url else ""
     own_html, own_headers = await fetch_page(brand_url) if brand_url else ("", {})
-    own_text = strip_html(own_html)[:2500] if own_html else ""
 
     # Save own topic space keywords to DB
     own_keywords = _extract_keywords(own_text, n=12) if own_text else []
@@ -142,8 +143,8 @@ async def run_discovery_phase(
         "keywords": own_keywords,
     })
 
-    # ── Step 2: Generate search queries via Claude Haiku ─────────────────────
-    _log(conn, job_id, {"type": "info", "msg": "Generating competitor search queries…"})
+    # ── Step 2: Claude Haiku — directly identify competitor domains ──────────────
+    _log(conn, job_id, {"type": "info", "msg": "Asking ARIA to identify competitors…"})
 
     type_labels = {
         "d2c": "D2C / e-commerce product brand",
@@ -154,22 +155,84 @@ async def run_discovery_phase(
     }
     type_label = type_labels.get(workspace_type, "brand")
 
+    candidate_urls: dict[str, dict] = {}   # domain → {url, title, hit_count}
+
+    skip_domains = {
+        "reddit.com", "quora.com", "trustpilot.com", "g2.com",
+        "capterra.com", "producthunt.com", "techcrunch.com",
+        "wikipedia.org", "youtube.com", "twitter.com", "x.com",
+        "linkedin.com", "facebook.com", "instagram.com",
+        "medium.com", "substack.com", "amazon.com", "flipkart.com",
+        "google.com", "bing.com", "duckduckgo.com",
+    }
+
+    # Primary: Ask Claude Haiku to directly name competitor domains using its world knowledge
+    claude_competitors = []
+    if own_text or brand_url:
+        try:
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            msg = client.messages.create(
+                model=CLAUDE_HAIKU,
+                max_tokens=700,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Brand: {own_name}\n"
+                        f"Website: {brand_url}\n"
+                        f"Type: {type_label}\n"
+                        f"Brand page content:\n{own_text[:2000]}\n\n"
+                        "Based on the brand page content and your world knowledge, "
+                        "list the 6 most direct competitors to this brand "
+                        "(same product category, similar price range, similar target audience).\n\n"
+                        "Return ONLY a valid JSON array, no explanation:\n"
+                        '[{"domain": "competitor.com", "name": "Brand Name", "reason": "same category + audience"}]\n\n'
+                        "Use real, verifiable competitor domains. "
+                        "If this is an Indian brand, prioritise Indian competitors first."
+                    ),
+                }],
+            )
+            raw = msg.content[0].text.strip()
+            start = raw.find("[")
+            if start != -1:
+                claude_competitors = json.loads(raw[start:raw.rfind("]") + 1])
+                _log(conn, job_id, {
+                    "type": "info",
+                    "msg": f"ARIA identified {len(claude_competitors)} competitor candidates",
+                })
+        except Exception as e:
+            print(f"[brand_intel] claude competitor discovery failed: {e}")
+
+    # Add Claude's suggestions to candidate pool (high initial hit_count = high priority)
+    for item in claude_competitors:
+        dom = extract_domain(item.get("domain", ""))
+        if not dom or dom == own_domain or any(s in dom for s in skip_domains):
+            continue
+        if dom not in candidate_urls:
+            candidate_urls[dom] = {
+                "url": f"https://{dom}",
+                "domain": dom,
+                "title": item.get("name", dom),
+                "reason": item.get("reason", ""),
+                "hit_count": 3,  # Claude-suggested gets priority score
+            }
+
+    # ── Step 3: Web search (DDG) as secondary signal ──────────────────────────
+    _log(conn, job_id, {"type": "info", "msg": "Running web searches to validate competitors…"})
+
+    # Generate 2 search queries from Claude
     search_queries = []
     if own_text or brand_url:
         try:
             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
             msg = client.messages.create(
                 model=CLAUDE_HAIKU,
-                max_tokens=400,
+                max_tokens=200,
                 messages=[{
                     "role": "user",
                     "content": (
-                        f"Brand: {own_name} ({brand_url})\n"
-                        f"Type: {type_label}\n"
-                        f"Page snippet: {own_text[:800]}\n\n"
-                        "Generate 4 Google/DuckDuckGo search queries to find direct competitors "
-                        "of this brand. Focus on same product category + geography.\n"
-                        "Return ONLY a JSON array of 4 query strings. No explanation."
+                        f"Brand: {own_name} ({brand_url}), type: {type_label}\n"
+                        "Give 2 Google search queries to find direct competitors of this brand.\n"
+                        "Return ONLY a JSON array of 2 query strings."
                     ),
                 }],
             )
@@ -177,40 +240,26 @@ async def run_discovery_phase(
             start = raw.find("[")
             if start != -1:
                 search_queries = json.loads(raw[start:raw.rfind("]") + 1])
-        except Exception as e:
-            print(f"[brand_intel] query gen failed: {e}")
+        except Exception:
+            pass
 
-    # Fallback queries
     if not search_queries:
         search_queries = [
             f"{own_name} alternatives",
-            f"best {type_label} like {own_name}",
             f"{own_domain} competitors",
-            f"{' '.join(own_keywords[:3])} top brands" if own_keywords else f"{own_name} vs",
         ]
 
-    # ── Step 3: Run searches and collect candidate URLs ───────────────────────
-    candidate_urls: dict[str, dict] = {}   # domain → {url, title, confidence}
-
-    for query in search_queries[:4]:
+    for query in search_queries[:2]:
         _log(conn, job_id, {"type": "search", "msg": f"Searching: {query}"})
-        results = await search_ddg(query, max_results=6)
-        await asyncio.sleep(0.4)
+        results = await search_ddg(query, max_results=8)
+        await asyncio.sleep(0.5)
 
         for r in results:
             url   = r.get("url", "")
             title = r.get("title", "")
             dom   = extract_domain(url)
-            # Skip own domain, social media, aggregator sites
             if not dom or dom == own_domain:
                 continue
-            skip_domains = {
-                "reddit.com", "quora.com", "trustpilot.com", "g2.com",
-                "capterra.com", "producthunt.com", "techcrunch.com",
-                "wikipedia.org", "youtube.com", "twitter.com", "x.com",
-                "linkedin.com", "facebook.com", "instagram.com",
-                "medium.com", "substack.com", "amazon.com", "flipkart.com",
-            }
             if any(s in dom for s in skip_domains):
                 continue
             if dom not in candidate_urls:
@@ -235,18 +284,18 @@ async def run_discovery_phase(
         if len(validated) >= MAX_COMPETITORS:
             break
         _log(conn, job_id, {"type": "checking", "msg": f"Checking: {cand['domain']}"})
-        # Quick scrape to validate it's a real brand site
-        html, _ = await fetch_page(cand["url"])
-        if not html:
-            # Try root domain
-            root = f"https://{cand['domain']}"
-            html, _ = await fetch_page(root)
-            if html:
-                cand["url"] = root
-        if not html:
+        # Use Jina reader for reliable page fetch (bypasses bot protection)
+        root = f"https://{cand['domain']}"
+        text = await jina_read(root, max_chars=1500)
+        html, _ = await fetch_page(root)  # also need raw HTML for tech stack
+        # Claude-suggested competitors (hit_count=3) are accepted even if page fetch fails
+        is_claude_suggested = cand.get("hit_count", 0) >= 3
+        if not text and not html and not is_claude_suggested:
             continue
-
-        text = strip_html(html)[:800]
+        if not text:
+            text = strip_html(html)[:1500] if html else cand.get("reason", "")[:400]
+        cand["url"] = root
+        text = text[:800]
         keywords = _extract_keywords(text, n=8)
         # Confidence: based on keyword overlap + hit count
         overlap = len(set(own_keywords) & set(keywords)) if own_keywords else 0
@@ -448,16 +497,22 @@ async def run_analysis_phase(
 # ── Layer helpers ───────────────────────────────────────────────────────────────
 
 async def _analyse_brand_dna(url: str, name: str, workspace_type: str) -> dict:
-    """Layer 1: Scrape homepage + about page, extract brand identity via Claude Haiku."""
-    pages = await try_sub_pages(url, ["about", "about-us", "company", "features", "product"], max_chars=1500)
+    """Layer 1: Scrape homepage + about page via Jina, extract brand identity via Claude Haiku."""
+    # Use Jina for reliable text extraction
+    homepage_text = await jina_read(url, max_chars=2500)
+    # Also get raw HTML for social link extraction
     html, _ = await fetch_page(url)
-    homepage_text = strip_html(html)[:2000] if html else ""
     social = extract_social_links(html) if html else {}
     fb_handle = extract_fb_page_handle(html) if html else None
 
+    # Sub-pages via Jina
+    about_text = await jina_read(f"{url.rstrip('/')}/about", max_chars=1500)
+    if not about_text:
+        about_text = await jina_read(f"{url.rstrip('/')}/about-us", max_chars=1500)
+
     combined = f"Homepage:\n{homepage_text}\n\n"
-    for k, v in list(pages.items())[:2]:
-        combined += f"/{k}:\n{v}\n\n"
+    if about_text:
+        combined += f"/about:\n{about_text}\n\n"
     combined = combined[:3500]
 
     result = {
@@ -494,8 +549,9 @@ async def _analyse_brand_dna(url: str, name: str, workspace_type: str) -> dict:
         )
         raw = msg.content[0].text.strip()
         start = raw.find("{")
-        if start != -1:
-            parsed = json.loads(raw[start:])
+        end = raw.rfind("}") + 1
+        if start != -1 and end > start:
+            parsed = json.loads(raw[start:end])
             result.update(parsed)
     except Exception as e:
         print(f"[brand_intel] brand_dna failed for {name}: {e}")
@@ -536,8 +592,9 @@ async def _analyse_content_strategy(base_url: str) -> dict:
         )
         raw = msg.content[0].text.strip()
         start = raw.find("{")
-        if start != -1:
-            return {**json.loads(raw[start:]), "found": True, "titles": titles}
+        end = raw.rfind("}") + 1
+        if start != -1 and end > start:
+            return {**json.loads(raw[start:end]), "found": True, "titles": titles}
     except Exception:
         pass
 
@@ -571,8 +628,9 @@ async def _analyse_pricing(base_url: str, name: str) -> dict:
         )
         raw = msg.content[0].text.strip()
         start = raw.find("{")
-        if start != -1:
-            return json.loads(raw[start:])
+        end = raw.rfind("}") + 1
+        if start != -1 and end > start:
+            return json.loads(raw[start:end])
     except Exception:
         pass
 
@@ -607,8 +665,9 @@ async def _get_review_intel(domain: str, name: str) -> dict:
             )
             raw = msg.content[0].text.strip()
             start = raw.find("{")
-            if start != -1:
-                parsed = json.loads(raw[start:])
+            end = raw.rfind("}") + 1
+            if start != -1 and end > start:
+                parsed = json.loads(raw[start:end])
                 pain_points = parsed.get("pain_points", [])
                 wins = parsed.get("wins", [])
         except Exception:
@@ -740,9 +799,10 @@ async def generate_brand_growth_recipe(
 
         # Also parse structured output
         start = raw.find("{")
-        if start != -1:
+        end = raw.rfind("}") + 1
+        if start != -1 and end > start:
             try:
-                parsed = json.loads(raw[start:])
+                parsed = json.loads(raw[start:end])
                 competitive_gaps        = parsed.get("competitive_gaps", [])
                 ad_angle_opportunities  = parsed.get("ad_angle_opportunities", [])
                 recipe_text             = parsed.get("recipe_narrative", raw)

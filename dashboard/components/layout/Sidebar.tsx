@@ -40,10 +40,10 @@ const navSections: NavSection[] = [
   {
     title: 'CHANNELS',
     items: [
-      { label: 'Meta Ads',    href: '/campaigns',       icon: Megaphone,    moduleKey: 'meta' },
-      { label: 'Google Ads',  href: '/google-ads',      icon: BarChart2,    limited: true, moduleKey: 'google_ads' },
-      { label: 'YouTube',     href: '/youtube',         icon: PlayCircle,   moduleKey: 'youtube' },
-      { label: 'Marketplace', href: '/marketplace',     icon: ShoppingBag,  moduleKey: 'marketplace' },
+      { label: 'Meta Ads',    href: '/campaigns',       icon: Megaphone },
+      { label: 'Google Ads',  href: '/google-ads',      icon: BarChart2,    limited: true },
+      { label: 'YouTube',     href: '/youtube',         icon: PlayCircle },
+      { label: 'Marketplace', href: '/marketplace',     icon: ShoppingBag },
     ],
   },
   {
@@ -66,7 +66,7 @@ const navSections: NavSection[] = [
     title: 'PLANNING',
     items: [
       { label: 'Campaign Planner', href: '/campaign-planner', icon: ClipboardList, moduleKey: 'campaign_planner' },
-      { label: 'Landing Pages',    href: '/landing-pages',    icon: Layout,       soon: true },
+      { label: 'Landing Pages',    href: '/landing-pages',    icon: Layout },
       { label: 'Awareness Funnel', href: '/awareness',        icon: Layers,       soon: true },
     ],
   },
@@ -322,11 +322,9 @@ export default function Sidebar() {
 
       <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-4">
         {navSections.map((section, si) => {
-          let items = section.title === 'CHANNELS'
+          const items = section.title === 'CHANNELS'
             ? sortedChannels(section.items, wsType)
             : section.items
-          // Filter by relevant_modules
-          items = items.filter(item => isItemVisible(item, relevantModules))
           if (items.length === 0) return null
           const topLabel = section.title === 'CHANNELS' ? items[0]?.label : null
           return (
