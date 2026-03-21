@@ -26,3 +26,4 @@ Thumbs.db
 
 # Cloud Build temp
 *.tgz
+.claude/settings.local.json
