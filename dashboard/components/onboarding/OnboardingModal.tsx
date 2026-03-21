@@ -327,13 +327,13 @@ export default function OnboardingModal({ workspaceId, onComplete }: Props) {
                       {sel && ch.hasInput && (
                         <div className="mt-1.5 ml-11">
                           <div className="relative">
-                            <Globe className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/30" />
+                            <Globe className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
                             <input
                               type="url"
                               value={channelInputs[ch.id] || ''}
                               onChange={e => setChannelInputs(prev => ({ ...prev, [ch.id]: e.target.value }))}
                               placeholder={ch.inputPlaceholder}
-                              className="w-full rounded-xl border border-white/15 bg-white/8 pl-9 pr-4 py-2.5 text-sm text-white placeholder-white/25 focus:outline-none focus:border-indigo-500/60"
+                              className="w-full rounded-xl border border-white/20 bg-white/90 pl-9 pr-4 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400"
                             />
                           </div>
                           <p className="mt-1 text-[11px] text-white/30">{ch.inputLabel}</p>
@@ -350,13 +350,13 @@ export default function OnboardingModal({ workspaceId, onComplete }: Props) {
                   Monthly ad budget <span className="font-normal">(optional)</span>
                 </label>
                 <div className="relative">
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm text-white/35">₹</span>
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm text-gray-500">₹</span>
                   <input
                     type="number"
                     value={budget}
                     onChange={e => setBudget(e.target.value)}
                     placeholder="50,000"
-                    className="w-full rounded-xl border border-white/10 bg-white/5 pl-8 pr-4 py-2.5 text-sm text-white placeholder-white/20 focus:outline-none focus:border-indigo-500/50"
+                    className="w-full rounded-xl border border-white/20 bg-white/90 pl-8 pr-4 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400"
                   />
                 </div>
               </div>
