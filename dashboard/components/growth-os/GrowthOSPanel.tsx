@@ -748,7 +748,7 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
       body: JSON.stringify({ workspace_id: workspaceId }),
     }).catch(() => {})
 
-    // Poll for the result
+    // Poll for the result — keep polling until plan arrives
     autoRef.current = setInterval(async () => {
       const data = await fetchLatest()
       if (data?.plan_id) {
@@ -757,11 +757,17 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
       }
     }, 4000)
 
-    // 90s timeout — stop overlay even if generation fails
+    // 120s timeout — only hide overlay, keep polling in background via startPolling
     const timeout = setTimeout(() => {
       setAutoPolling(false)
-      if (autoRef.current) { clearInterval(autoRef.current); autoRef.current = null }
-    }, 90000)
+      // Don't stop the interval — keep polling silently for another 60s
+      const fallbackTimeout = setTimeout(() => {
+        if (autoRef.current) { clearInterval(autoRef.current); autoRef.current = null }
+        // One final fetch to catch any late plan
+        fetchLatest()
+      }, 60000)
+      return () => clearTimeout(fallbackTimeout)
+    }, 120000)
 
     return () => {
       if (autoRef.current) clearInterval(autoRef.current)
@@ -970,11 +976,24 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
       {!generating && totalActions === 0 && !autoPolling && (
         <div className="rounded-xl border bg-white p-10 text-center">
           <Sparkles className="h-10 w-10 text-amber-300 mx-auto mb-4" />
-          <h3 className="text-base font-semibold text-gray-700 mb-2">No plan generated yet</h3>
+          <h3 className="text-base font-semibold text-gray-700 mb-2">
+            {isWelcome ? 'ARIA is still building your strategy…' : 'No plan generated yet'}
+          </h3>
           <p className="text-sm text-gray-500 max-w-md mx-auto mb-4">
-            Set a strategic directive to focus the AI, then click{' '}
-            <strong>Generate</strong> to synthesise all intelligence into an action plan.
+            {isWelcome
+              ? 'ARIA is generating your personalised strategy in the background. It takes 60–90 seconds. Refresh to check.'
+              : <>Set a strategic directive to focus the AI, then click <strong>Generate</strong> to synthesise all intelligence into an action plan.</>
+            }
           </p>
+          {isWelcome ? (
+            <button
+              onClick={() => fetchLatest()}
+              className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Check for Strategy
+            </button>
+          ) : (
           <button
             onClick={handleRegenerateClick}
             className="inline-flex items-center gap-2 rounded-xl bg-amber-500 px-5 py-2.5 text-sm font-semibold text-white hover:bg-amber-400 transition-colors"
@@ -983,6 +1002,7 @@ export default function GrowthOSPanel({ workspaceId, initialPlan }: Props) {
             Set Directive & Generate
             <span className="ml-1 rounded-full bg-amber-400 px-2 py-0.5 text-[10px] font-semibold">10 cr</span>
           </button>
+          )}
         </div>
       )}
 
