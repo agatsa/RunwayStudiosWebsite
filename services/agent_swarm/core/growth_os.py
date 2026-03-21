@@ -39,6 +39,11 @@ def gather_intelligence(workspace_id: str, conn) -> dict:
         "auction_insights": [],
         "search_terms": [],
         "comment_intel": {},
+        # Brand Intel
+        "brand_competitors": [],
+        "brand_ad_angles": [],
+        "brand_gaps": [],
+        "brand_recipe": None,
     }
 
     try:
@@ -374,6 +379,14 @@ def gather_intelligence(workspace_id: str, conn) -> dict:
     except Exception as e:
         print(f"[growth_os] comment_intel query failed: {e}")
 
+    # ── Brand Intel ───────────────────────────────────────────────────────────
+    try:
+        from services.agent_swarm.core.brand_intel import gather_brand_intel
+        brand_data = gather_brand_intel(workspace_id, conn)
+        result.update(brand_data)
+    except Exception as e:
+        print(f"[growth_os] brand_intel gather failed: {e}")
+
     return result
 
 
@@ -591,6 +604,27 @@ def _build_prompt(intel: dict, directive: str = None, strategy_mode: str = None)
             lines.append(f"=== Winning Messages ===")
             lines.append(", ".join(ci["winning_terms"][:10]))
 
+    # Brand Intelligence
+    if intel.get("brand_competitors"):
+        lines.append("\n=== Brand & Competitor Intel (Website + Ad Library) ===")
+        for bc in intel["brand_competitors"][:3]:
+            lines.append(
+                f"• {bc['name']}: positioning={bc.get('positioning','N/A')} | "
+                f"uvp={bc.get('uvp','N/A')} | "
+                f"ad_themes={', '.join(bc.get('ad_themes',[])[:3])} | "
+                f"pain_points={', '.join(bc.get('pain_points',[])[:2])}"
+            )
+
+    if intel.get("brand_gaps"):
+        lines.append("\n=== Competitive Gaps Identified ===")
+        for g in intel["brand_gaps"][:4]:
+            lines.append(f"• [{g.get('priority','medium').upper()}] {g.get('gap','')} → {g.get('opportunity','')}")
+
+    if intel.get("brand_ad_angles"):
+        lines.append("\n=== Winning Ad Angles (from competitor analysis) ===")
+        for aa in intel["brand_ad_angles"][:4]:
+            lines.append(f"• {aa.get('angle','')}: \"{aa.get('headline','')}\" — {aa.get('why_it_works','')[:120]}")
+
     closing = (
         "\nNow generate 12-15 cross-platform growth actions as a JSON array. "
         "Prioritise high-confidence, high-data-backed actions. "
@@ -630,6 +664,7 @@ def generate_action_plan(workspace_id: str, conn, directive: str = None, strateg
         "competitor_auction": bool(intel.get("auction_insights")),
         "search_trends": bool(intel.get("search_terms")),
         "comment_intel": bool(intel.get("comment_intel")),
+        "brand_intel": bool(intel.get("brand_competitors")),
     }
 
     # Always call Claude — _build_prompt handles the new-workspace case with

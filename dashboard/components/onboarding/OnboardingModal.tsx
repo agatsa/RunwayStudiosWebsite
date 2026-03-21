@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef } from 'react'
 import {
   CheckCircle2, ArrowRight, ShoppingBag, Youtube, Building2,
-  MonitorSmartphone, Sparkles, Search, Globe, ChevronRight,
-  Loader2, Users,
+  MonitorSmartphone, Sparkles, Globe, ChevronRight,
+  Loader2, Search, BarChart2, Megaphone,
 } from 'lucide-react'
 
 type WorkspaceType = 'd2c' | 'creator' | 'agency' | 'saas'
@@ -14,8 +14,6 @@ interface BizType {
   icon: React.ElementType
   label: string
   description: string
-  urlLabel: string
-  urlPlaceholder: string
   accent: string
   border: string
   bg: string
@@ -24,31 +22,73 @@ interface BizType {
 const BIZ_TYPES: BizType[] = [
   {
     id: 'd2c', icon: ShoppingBag, label: 'D2C Brand', description: 'Selling products online via ads',
-    urlLabel: 'Your store URL', urlPlaceholder: 'https://yourstore.com',
     accent: 'text-blue-400', border: 'border-blue-500/60', bg: 'bg-blue-500/10',
   },
   {
     id: 'creator', icon: Youtube, label: 'YouTube Creator', description: 'Growing a channel & audience',
-    urlLabel: 'Your YouTube channel URL', urlPlaceholder: 'https://youtube.com/@yourchannel',
     accent: 'text-red-400', border: 'border-red-500/60', bg: 'bg-red-500/10',
   },
   {
     id: 'saas', icon: MonitorSmartphone, label: 'SaaS / App', description: 'Driving signups and subscriptions',
-    urlLabel: 'Your app or website URL', urlPlaceholder: 'https://yourapp.com',
     accent: 'text-emerald-400', border: 'border-emerald-500/60', bg: 'bg-emerald-500/10',
   },
   {
     id: 'agency', icon: Building2, label: 'Agency', description: 'Managing multiple client accounts',
-    urlLabel: 'Your agency website', urlPlaceholder: 'https://youragency.com',
     accent: 'text-purple-400', border: 'border-purple-500/60', bg: 'bg-purple-500/10',
   },
 ]
 
-const SCAN_STEPS: Record<WorkspaceType, string[]> = {
-  d2c:     ['Fetching your product catalog…', 'Scanning competitor brands…', 'Building your Growth OS brief…'],
-  creator: ['Analysing your channel…', 'Discovering competitor channels…', 'Preparing Growth Plan…'],
-  saas:    ['Analysing your app listing…', 'Finding competitor apps…', 'Building your first strategy…'],
-  agency:  ['Setting up your workspace…', 'Configuring multi-brand tools…', 'Ready to manage clients…'],
+// What ARIA can analyse — multi-select cards
+interface AnalysisChannel {
+  id: string
+  icon: React.ElementType
+  label: string
+  description: string
+  hasInput?: boolean
+  inputLabel?: string
+  inputPlaceholder?: string
+  comingSoon?: boolean
+}
+
+const ANALYSIS_CHANNELS: AnalysisChannel[] = [
+  {
+    id: 'brand_intel',
+    icon: Search,
+    label: 'Brand & Competitor Intel',
+    description: 'ARIA scrapes competitor websites, pulls their Meta ads, pricing, reviews & tech stack',
+    hasInput: true,
+    inputLabel: 'Your website / brand URL',
+    inputPlaceholder: 'https://yourwebsite.com',
+  },
+  {
+    id: 'youtube',
+    icon: Youtube,
+    label: 'YouTube Intelligence',
+    description: '9-layer competitor analysis — topics, formats, thumbnails, upload rhythm, growth recipe',
+    hasInput: true,
+    inputLabel: 'Your YouTube channel URL or handle',
+    inputPlaceholder: 'https://youtube.com/@yourchannel',
+  },
+  {
+    id: 'meta',
+    icon: Megaphone,
+    label: 'Meta Ads',
+    description: 'Facebook & Instagram campaign analytics — spend, ROAS, audience breakdowns',
+    hasInput: false,
+  },
+  {
+    id: 'google',
+    icon: BarChart2,
+    label: 'Google Ads',
+    description: 'Google Ads + YouTube Analytics + GA4 — one OAuth click connects all',
+    hasInput: false,
+  },
+]
+
+const SCAN_STEPS_BY_CHANNELS: Record<string, string[]> = {
+  brand_intel: ['Fetching your brand page…', 'Discovering competitors…', 'Building Brand Intel brief…'],
+  youtube:     ['Scanning your channel…', 'Discovering competitor channels…', 'Building YouTube Growth Plan…'],
+  default:     ['Setting up your workspace…', 'Configuring ARIA…', 'Building your first strategy…'],
 }
 
 // ── Starfield canvas ─────────────────────────────────────────────────────────
@@ -98,39 +138,59 @@ interface Props {
 }
 
 export default function OnboardingModal({ workspaceId, onComplete }: Props) {
-  const [step, setStep]               = useState<1 | 2 | 3>(1)
-  const [bizType, setBizType]         = useState<WorkspaceType | null>(null)
-  const [brandUrl, setBrandUrl]       = useState('')
-  const [competitors, setCompetitors] = useState(['', '', ''])
-  const [budget, setBudget]           = useState('')
-  const [scanning, setScanning]       = useState(false)
-  const [scanIdx, setScanIdx]         = useState(0)
-  const [done, setDone]               = useState(false)
+  const [step, setStep]                   = useState<1 | 2 | 3>(1)
+  const [bizType, setBizType]             = useState<WorkspaceType | null>(null)
+  const [selectedChannels, setSelectedChannels] = useState<string[]>(['brand_intel'])
+  const [channelInputs, setChannelInputs] = useState<Record<string, string>>({})
+  const [budget, setBudget]               = useState('')
+  const [scanIdx, setScanIdx]             = useState(0)
+  const [done, setDone]                   = useState(false)
 
   const biz = BIZ_TYPES.find(b => b.id === bizType)
+
+  // Pre-select channels based on biz type
+  useEffect(() => {
+    if (!bizType) return
+    if (bizType === 'creator') {
+      setSelectedChannels(['youtube'])
+    } else {
+      setSelectedChannels(['brand_intel'])
+    }
+  }, [bizType])
+
+  // Build scan steps from selected channels
+  const scanSteps = (() => {
+    const steps: string[] = []
+    if (selectedChannels.includes('brand_intel')) steps.push(...SCAN_STEPS_BY_CHANNELS.brand_intel)
+    else if (selectedChannels.includes('youtube')) steps.push(...SCAN_STEPS_BY_CHANNELS.youtube)
+    else steps.push(...SCAN_STEPS_BY_CHANNELS.default)
+    return [...new Set(steps)].slice(0, 4)
+  })()
 
   // Animate scan steps
   useEffect(() => {
     if (step !== 3 || done) return
-    const steps = SCAN_STEPS[bizType!] ?? []
-    if (scanIdx < steps.length - 1) {
-      const t = setTimeout(() => setScanIdx(i => i + 1), 1200)
+    if (scanIdx < scanSteps.length - 1) {
+      const t = setTimeout(() => setScanIdx(i => i + 1), 1300)
       return () => clearTimeout(t)
     } else {
-      // All steps shown — finish
-      const t = setTimeout(() => { setDone(true) }, 900)
+      const t = setTimeout(() => setDone(true), 900)
       return () => clearTimeout(t)
     }
-  }, [step, scanIdx, done, bizType])
+  }, [step, scanIdx, done, scanSteps.length])
 
-  // Once done, call onComplete
   useEffect(() => {
     if (done && bizType) onComplete(bizType)
   }, [done, bizType, onComplete])
 
+  const toggleChannel = (id: string) => {
+    setSelectedChannels(prev =>
+      prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]
+    )
+  }
+
   const handleStartScan = async () => {
     if (!bizType) return
-    setScanning(true)
     setStep(3)
     setScanIdx(0)
     setDone(false)
@@ -139,19 +199,15 @@ export default function OnboardingModal({ workspaceId, onComplete }: Props) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          workspace_id: workspaceId,
-          workspace_type: bizType,
-          brand_url: brandUrl.trim(),
-          competitors: competitors.filter(c => c.trim()),
-          monthly_budget: budget ? Number(budget) : 0,
+          workspace_id:        workspaceId,
+          workspace_type:      bizType,
+          brand_url:           channelInputs['brand_intel']?.trim() || '',
+          youtube_channel_url: channelInputs['youtube']?.trim() || '',
+          selected_channels:   selectedChannels,
+          monthly_budget:      budget ? Number(budget) : 0,
         }),
       })
     } catch { /* non-fatal — background task */ }
-    setScanning(false)
-  }
-
-  const updateCompetitor = (i: number, val: string) => {
-    setCompetitors(prev => { const next = [...prev]; next[i] = val; return next })
   }
 
   return (
@@ -171,7 +227,6 @@ export default function OnboardingModal({ workspaceId, onComplete }: Props) {
         </div>
 
         <div className="px-8 py-8">
-          {/* Step pill */}
           {step < 3 && (
             <div className="flex items-center justify-between mb-6">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white/60">
@@ -190,7 +245,7 @@ export default function OnboardingModal({ workspaceId, onComplete }: Props) {
           {step === 1 && (
             <>
               <div className="mb-6">
-                <h2 className="text-2xl font-bold text-white mb-1">Welcome to Runway Studios 🚀</h2>
+                <h2 className="text-2xl font-bold text-white mb-1">Welcome to Runway Studios</h2>
                 <p className="text-sm text-white/50">What best describes you? ARIA will personalise your entire dashboard.</p>
               </div>
               <div className="grid grid-cols-2 gap-3 mb-6">
@@ -222,67 +277,86 @@ export default function OnboardingModal({ workspaceId, onComplete }: Props) {
             </>
           )}
 
-          {/* ── Step 2: Brand context ── */}
+          {/* ── Step 2: What should ARIA analyse ── */}
           {step === 2 && biz && (
             <>
               <div className="mb-5">
-                <h2 className="text-2xl font-bold text-white mb-1">Tell ARIA about your brand</h2>
-                <p className="text-sm text-white/50">The more context you give, the smarter your first strategy will be.</p>
+                <h2 className="text-2xl font-bold text-white mb-1">What should ARIA analyse?</h2>
+                <p className="text-sm text-white/50">Select what intelligence you want ARIA to gather for you. You can always add more in Settings.</p>
               </div>
 
-              <div className="space-y-4 mb-5">
-                {/* Brand URL */}
-                <div>
-                  <label className="block text-xs font-semibold text-white/60 mb-1.5 flex items-center gap-1.5">
-                    <Globe className="h-3.5 w-3.5" /> {biz.urlLabel}
-                  </label>
+              <div className="space-y-3 mb-5">
+                {ANALYSIS_CHANNELS.map(ch => {
+                  const Icon  = ch.icon
+                  const sel   = selectedChannels.includes(ch.id)
+                  return (
+                    <div key={ch.id}>
+                      <button
+                        onClick={() => toggleChannel(ch.id)}
+                        className={`w-full flex items-start gap-3 rounded-2xl border p-4 text-left transition-all duration-200 ${
+                          sel
+                            ? 'border-indigo-500/50 bg-indigo-500/10 ring-1 ring-inset ring-indigo-500/30'
+                            : 'border-white/10 bg-white/5 hover:bg-white/8 hover:border-white/20'
+                        }`}
+                      >
+                        <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors ${
+                          sel ? 'bg-indigo-500/20 border border-indigo-500/40' : 'bg-white/10 border border-white/15'
+                        }`}>
+                          <Icon className={`h-4 w-4 ${sel ? 'text-indigo-300' : 'text-white/50'}`} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-semibold text-white">{ch.label}</p>
+                            {!ch.hasInput && sel && (
+                              <span className="rounded-full bg-amber-500/20 border border-amber-500/30 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+                                Connect in Settings
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-white/45 mt-0.5 leading-relaxed">{ch.description}</p>
+                        </div>
+                        <div className={`mt-1 h-4 w-4 shrink-0 rounded-full border-2 transition-all ${
+                          sel ? 'border-indigo-400 bg-indigo-400' : 'border-white/25'
+                        }`}>
+                          {sel && <CheckCircle2 className="h-3 w-3 text-white -translate-x-px -translate-y-px" />}
+                        </div>
+                      </button>
+
+                      {/* Input shown when channel is selected and has an input */}
+                      {sel && ch.hasInput && (
+                        <div className="mt-1.5 ml-11">
+                          <div className="relative">
+                            <Globe className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/30" />
+                            <input
+                              type="url"
+                              value={channelInputs[ch.id] || ''}
+                              onChange={e => setChannelInputs(prev => ({ ...prev, [ch.id]: e.target.value }))}
+                              placeholder={ch.inputPlaceholder}
+                              className="w-full rounded-xl border border-white/15 bg-white/8 pl-9 pr-4 py-2.5 text-sm text-white placeholder-white/25 focus:outline-none focus:border-indigo-500/60"
+                            />
+                          </div>
+                          <p className="mt-1 text-[11px] text-white/30">{ch.inputLabel}</p>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Optional budget */}
+              <div className="mb-5">
+                <label className="block text-xs font-semibold text-white/40 mb-1.5">
+                  Monthly ad budget <span className="font-normal">(optional)</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm text-white/35">₹</span>
                   <input
-                    type="url"
-                    value={brandUrl}
-                    onChange={e => setBrandUrl(e.target.value)}
-                    placeholder={biz.urlPlaceholder}
-                    className="w-full rounded-xl border border-white/15 bg-white/8 px-4 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-indigo-500/60 focus:bg-white/10"
+                    type="number"
+                    value={budget}
+                    onChange={e => setBudget(e.target.value)}
+                    placeholder="50,000"
+                    className="w-full rounded-xl border border-white/10 bg-white/5 pl-8 pr-4 py-2.5 text-sm text-white placeholder-white/20 focus:outline-none focus:border-indigo-500/50"
                   />
-                </div>
-
-                {/* Competitors */}
-                <div>
-                  <label className="block text-xs font-semibold text-white/60 mb-1 flex items-center gap-1.5">
-                    <Users className="h-3.5 w-3.5" /> Competitors
-                    <span className="text-white/30 font-normal">(optional — ARIA will auto-find if blank)</span>
-                  </label>
-                  <div className="space-y-2">
-                    {competitors.map((c, i) => (
-                      <input
-                        key={i}
-                        type="text"
-                        value={c}
-                        onChange={e => updateCompetitor(i, e.target.value)}
-                        placeholder={`Competitor ${i + 1} — URL or brand name`}
-                        className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white placeholder-white/25 focus:outline-none focus:border-indigo-500/50 focus:bg-white/8"
-                      />
-                    ))}
-                  </div>
-                  <p className="mt-1.5 text-[11px] text-white/30 flex items-center gap-1">
-                    <Search className="h-3 w-3" /> Left blank? ARIA will automatically discover your top competitors.
-                  </p>
-                </div>
-
-                {/* Budget */}
-                <div>
-                  <label className="block text-xs font-semibold text-white/60 mb-1.5">
-                    Monthly ad budget <span className="text-white/30 font-normal">(optional)</span>
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm text-white/40">₹</span>
-                    <input
-                      type="number"
-                      value={budget}
-                      onChange={e => setBudget(e.target.value)}
-                      placeholder="50,000"
-                      className="w-full rounded-xl border border-white/10 bg-white/5 pl-8 pr-4 py-2.5 text-sm text-white placeholder-white/25 focus:outline-none focus:border-indigo-500/50 focus:bg-white/8"
-                    />
-                  </div>
                 </div>
               </div>
 
@@ -291,8 +365,8 @@ export default function OnboardingModal({ workspaceId, onComplete }: Props) {
                   className="flex-1 rounded-xl border border-white/15 px-4 py-3 text-sm font-medium text-white/60 hover:bg-white/5 hover:text-white/80 transition-colors">
                   Back
                 </button>
-                <button onClick={handleStartScan}
-                  className="flex-[2] flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold text-white transition-all"
+                <button onClick={handleStartScan} disabled={selectedChannels.length === 0}
+                  className="flex-[2] flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold text-white transition-all disabled:opacity-30"
                   style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}>
                   Launch ARIA <ChevronRight className="h-4 w-4" />
                 </button>
@@ -311,7 +385,7 @@ export default function OnboardingModal({ workspaceId, onComplete }: Props) {
                     : <Sparkles className="h-8 w-8 text-white animate-pulse" />}
                 </div>
                 <h2 className="text-2xl font-bold text-white mb-1">
-                  {done ? 'ARIA is ready! 🚀' : 'ARIA is scanning…'}
+                  {done ? 'ARIA is ready!' : 'ARIA is scanning…'}
                 </h2>
                 <p className="text-sm text-white/50">
                   {done
@@ -321,7 +395,7 @@ export default function OnboardingModal({ workspaceId, onComplete }: Props) {
               </div>
 
               <div className="space-y-3 mb-8 text-left">
-                {(SCAN_STEPS[bizType] ?? []).map((s, i) => (
+                {scanSteps.map((s, i) => (
                   <div key={i} className={`flex items-center gap-3 rounded-xl border px-4 py-3 transition-all duration-500 ${
                     i < scanIdx ? 'border-green-500/30 bg-green-500/10' :
                     i === scanIdx ? 'border-indigo-500/40 bg-indigo-500/10' :

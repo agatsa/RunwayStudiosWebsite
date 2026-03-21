@@ -11353,6 +11353,56 @@ async def admin_migrate(request: Request):
         "ALTER TABLE growth_os_actions ADD COLUMN IF NOT EXISTS creative_brief TEXT",
         "ALTER TABLE growth_os_actions ADD COLUMN IF NOT EXISTS setup_guide TEXT",
         "ALTER TABLE growth_os_actions ADD COLUMN IF NOT EXISTS done BOOLEAN DEFAULT FALSE",
+        # v40 Brand Intelligence tables
+        """CREATE TABLE IF NOT EXISTS brand_intel_jobs (
+            id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id        UUID NOT NULL,
+            status              TEXT DEFAULT 'pending',
+            brand_url           TEXT DEFAULT '',
+            workspace_type      TEXT DEFAULT 'd2c',
+            discovery_log       JSONB DEFAULT '[]',
+            discovery_candidates JSONB DEFAULT '[]',
+            own_topic_space     JSONB DEFAULT '[]',
+            discovery_status    TEXT DEFAULT 'idle',
+            created_at          TIMESTAMPTZ DEFAULT NOW(),
+            updated_at          TIMESTAMPTZ DEFAULT NOW(),
+            completed_at        TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_bij_ws ON brand_intel_jobs(workspace_id, created_at DESC)",
+        """CREATE TABLE IF NOT EXISTS brand_competitor_profiles (
+            id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            job_id              UUID NOT NULL,
+            workspace_id        UUID NOT NULL,
+            competitor_url      TEXT NOT NULL,
+            competitor_name     TEXT DEFAULT '',
+            confidence_pct      INT DEFAULT 0,
+            confirmed           BOOLEAN DEFAULT FALSE,
+            is_auto             BOOLEAN DEFAULT TRUE,
+            brand_dna           JSONB DEFAULT '{}',
+            meta_ads            JSONB DEFAULT '{}',
+            serp_presence       JSONB DEFAULT '{}',
+            content_strategy    JSONB DEFAULT '{}',
+            pricing_intel       JSONB DEFAULT '{}',
+            review_intel        JSONB DEFAULT '{}',
+            tech_stack          JSONB DEFAULT '[]',
+            created_at          TIMESTAMPTZ DEFAULT NOW(),
+            updated_at          TIMESTAMPTZ DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_bcp_job ON brand_competitor_profiles(job_id)",
+        "CREATE INDEX IF NOT EXISTS idx_bcp_ws  ON brand_competitor_profiles(workspace_id)",
+        """CREATE TABLE IF NOT EXISTS brand_growth_recipe (
+            id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id            UUID NOT NULL,
+            job_id                  UUID,
+            own_brand_profile       JSONB DEFAULT '{}',
+            competitive_gaps        JSONB DEFAULT '[]',
+            ad_angle_opportunities  JSONB DEFAULT '[]',
+            recipe_text             TEXT DEFAULT '',
+            created_at              TIMESTAMPTZ DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_bgr_ws ON brand_growth_recipe(workspace_id, created_at DESC)",
+        "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS brand_url TEXT DEFAULT ''",
+        "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS youtube_channel_url TEXT DEFAULT ''",
     ]
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -13882,13 +13932,14 @@ async def complete_onboarding(request: Request):
 
 @app.post("/workspace/onboard")
 async def workspace_onboard(request: Request, background_tasks: BackgroundTasks):
-    """New onboarding — saves brand context, competitors, budget, triggers auto-discovery."""
+    """New onboarding — saves brand context, triggers Brand Intel + optional YouTube discovery."""
     body = await request.json()
-    workspace_id   = (body.get("workspace_id") or "").strip()
-    workspace_type = body.get("workspace_type", "d2c")
-    brand_url      = (body.get("brand_url") or "").strip()
-    competitors    = body.get("competitors", [])   # list of strings (URLs or names)
-    monthly_budget = body.get("monthly_budget") or 0
+    workspace_id        = (body.get("workspace_id") or "").strip()
+    workspace_type      = body.get("workspace_type", "d2c")
+    brand_url           = (body.get("brand_url") or "").strip()
+    youtube_channel_url = (body.get("youtube_channel_url") or "").strip()
+    selected_channels   = body.get("selected_channels", ["brand_intel"])
+    monthly_budget      = body.get("monthly_budget") or 0
 
     VALID_TYPES = {"d2c", "creator", "saas", "agency", "media"}
     if not workspace_id:
@@ -13900,22 +13951,49 @@ async def workspace_onboard(request: Request, background_tasks: BackgroundTasks)
         with conn.cursor() as cur:
             cur.execute(
                 """UPDATE workspaces
-                   SET onboarding_complete = TRUE,
-                       workspace_type = %s,
-                       store_url = COALESCE(NULLIF(%s, ''), store_url),
-                       monthly_budget = %s
+                   SET onboarding_complete  = TRUE,
+                       workspace_type       = %s,
+                       store_url            = COALESCE(NULLIF(%s, ''), store_url),
+                       brand_url            = COALESCE(NULLIF(%s, ''), brand_url),
+                       youtube_channel_url  = COALESCE(NULLIF(%s, ''), youtube_channel_url),
+                       onboarding_channels  = %s::jsonb,
+                       monthly_budget       = %s
                    WHERE id = %s""",
-                (workspace_type, brand_url, monthly_budget, workspace_id),
+                (workspace_type, brand_url, brand_url, youtube_channel_url,
+                 json.dumps(selected_channels), monthly_budget, workspace_id),
             )
         conn.commit()
 
-    # Trigger competitor discovery in background (always runs — uses user hints if provided)
+    # If Brand Intel selected — start Phase 1 discovery
+    if "brand_intel" in selected_channels and brand_url:
+        import uuid as _uuid_ob
+        bi_job_id = str(_uuid_ob.uuid4())
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO brand_intel_jobs
+                           (id, workspace_id, brand_url, workspace_type, status, discovery_status)
+                       VALUES (%s::uuid, %s::uuid, %s, %s, 'pending', 'idle')""",
+                    (bi_job_id, workspace_id, brand_url, workspace_type),
+                )
+            conn.commit()
+        background_tasks.add_task(
+            _brand_intel_discovery_bg,
+            bi_job_id, workspace_id, brand_url, workspace_type,
+        )
+
+    # Legacy: trigger old competitor discovery + GOS generation
     background_tasks.add_task(
         _discover_competitors_background,
-        workspace_id, brand_url, competitors, workspace_type
+        workspace_id, brand_url, [], workspace_type
     )
 
-    return {"ok": True, "workspace_type": workspace_type, "discovery_started": True}
+    return {
+        "ok": True,
+        "workspace_type": workspace_type,
+        "brand_intel_started": "brand_intel" in selected_channels and bool(brand_url),
+        "discovery_started": True,
+    }
 
 
 @app.delete("/workspace/{workspace_id}")
@@ -16936,3 +17014,326 @@ async def products_resync(request: Request, product_id: str):
                  product_type, product_id, workspace_id)
             )
     return {"ok": True, "name": ext["name"]}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BRAND INTELLIGENCE MODULE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import asyncio as _asyncio_bi
+import logging as _logging_bi
+
+from services.agent_swarm.core.brand_intel import (
+    run_discovery_phase as _bi_discover,
+    run_analysis_phase  as _bi_analyse,
+    gather_brand_intel,
+)
+
+
+async def _brand_intel_discovery_bg(job_id: str, workspace_id: str, brand_url: str, workspace_type: str):
+    """Background: run Phase 1 brand discovery."""
+    try:
+        with get_conn() as conn:
+            await _bi_discover(job_id, workspace_id, brand_url, workspace_type, conn)
+    except Exception as e:
+        _logging_bi.getLogger(__name__).warning(f"[brand_intel] discovery bg failed: {e}")
+
+
+async def _brand_intel_analysis_bg(job_id: str, workspace_id: str, brand_url: str, workspace_type: str, meta_token: str):
+    """Background: run Phase 2 deep analysis."""
+    try:
+        with get_conn() as conn:
+            await _bi_analyse(job_id, workspace_id, brand_url, workspace_type, meta_token, conn)
+    except Exception as e:
+        _logging_bi.getLogger(__name__).warning(f"[brand_intel] analysis bg failed: {e}")
+
+
+@app.post("/brand-intel/start")
+async def brand_intel_start(request: Request, background_tasks: BackgroundTasks):
+    """Start Phase 1: competitor discovery for a brand URL."""
+    _auth(request)
+    body         = await request.json()
+    workspace_id = (body.get("workspace_id") or "").strip()
+    brand_url    = (body.get("brand_url") or "").strip()
+
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    ws = get_workspace(workspace_id)
+    workspace_type = (ws or {}).get("workspace_type", "d2c")
+    if not brand_url:
+        brand_url = (ws or {}).get("store_url") or ""
+
+    import uuid as _uuid_bi
+    job_id = str(_uuid_bi.uuid4())
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO brand_intel_jobs
+                       (id, workspace_id, brand_url, workspace_type, status, discovery_status)
+                   VALUES (%s::uuid, %s::uuid, %s, %s, 'pending', 'idle')""",
+                (job_id, workspace_id, brand_url, workspace_type),
+            )
+        conn.commit()
+
+    background_tasks.add_task(
+        _brand_intel_discovery_bg,
+        job_id, workspace_id, brand_url, workspace_type,
+    )
+    return {"ok": True, "job_id": job_id}
+
+
+@app.get("/brand-intel/discovery-status")
+async def brand_intel_discovery_status(request: Request, workspace_id: str = None, job_id: str = None):
+    """Poll Phase 1 progress: discovery_log, candidates, own_topic_space."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if job_id:
+                cur.execute(
+                    """SELECT id, status, discovery_status, discovery_log,
+                              discovery_candidates, own_topic_space
+                         FROM brand_intel_jobs
+                        WHERE id=%s::uuid AND workspace_id=%s::uuid""",
+                    (job_id, workspace_id),
+                )
+            else:
+                cur.execute(
+                    """SELECT id, status, discovery_status, discovery_log,
+                              discovery_candidates, own_topic_space
+                         FROM brand_intel_jobs
+                        WHERE workspace_id=%s::uuid
+                        ORDER BY created_at DESC LIMIT 1""",
+                    (workspace_id,),
+                )
+            row = cur.fetchone()
+
+    if not row:
+        return {"exists": False}
+    return {
+        "exists":            True,
+        "job_id":            str(row[0]),
+        "status":            row[1],
+        "discovery_status":  row[2],
+        "discovery_log":     row[3] or [],
+        "candidates":        row[4] or [],
+        "own_topic_space":   row[5] or [],
+    }
+
+
+@app.post("/brand-intel/confirm-discovery")
+async def brand_intel_confirm(request: Request, background_tasks: BackgroundTasks):
+    """
+    Confirm competitors and start Phase 2 deep analysis.
+    Body: {workspace_id, job_id, confirmed_domains, manual_urls}
+    """
+    _auth(request)
+    body              = await request.json()
+    workspace_id      = (body.get("workspace_id") or "").strip()
+    job_id            = (body.get("job_id") or "").strip()
+    confirmed_domains = body.get("confirmed_domains", [])
+    manual_urls       = [u.strip() for u in body.get("manual_urls", []) if u.strip()]
+
+    if not workspace_id or not job_id:
+        raise HTTPException(status_code=400, detail="workspace_id and job_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT discovery_candidates, brand_url, workspace_type FROM brand_intel_jobs WHERE id=%s::uuid",
+                (job_id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        candidates     = list(row[0] or [])
+        brand_url      = row[1] or ""
+        workspace_type = row[2] or "d2c"
+
+        for c in candidates:
+            c["confirmed"] = c.get("domain", "") in confirmed_domains
+
+        for murl in manual_urls[:3]:
+            from services.agent_swarm.connectors.brand_scraper import extract_domain as _ed, extract_brand_name as _ebn
+            dom = _ed(murl)
+            if dom and dom not in [c.get("domain") for c in candidates]:
+                candidates.append({
+                    "url": murl, "domain": dom,
+                    "name": _ebn(dom), "confidence_pct": 75,
+                    "topic_space": [], "is_auto": False, "confirmed": True,
+                })
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE brand_intel_jobs SET discovery_candidates=%s::jsonb, discovery_status='analysing' WHERE id=%s::uuid",
+                (json.dumps(candidates), job_id),
+            )
+        conn.commit()
+
+    meta_token = ""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT access_token FROM platform_connections WHERE workspace_id=%s::uuid AND platform='meta' LIMIT 1",
+                    (workspace_id,),
+                )
+                tr = cur.fetchone()
+                if tr:
+                    meta_token = tr[0] or ""
+    except Exception:
+        pass
+
+    background_tasks.add_task(
+        _brand_intel_analysis_bg,
+        job_id, workspace_id, brand_url, workspace_type, meta_token,
+    )
+    return {"ok": True, "job_id": job_id, "analysis_started": True}
+
+
+@app.get("/brand-intel/status")
+async def brand_intel_job_status(request: Request, workspace_id: str = None, job_id: str = None):
+    """Get current job status."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if job_id:
+                cur.execute(
+                    "SELECT id, status, discovery_status, created_at, completed_at FROM brand_intel_jobs WHERE id=%s::uuid",
+                    (job_id,),
+                )
+            else:
+                cur.execute(
+                    """SELECT id, status, discovery_status, created_at, completed_at
+                         FROM brand_intel_jobs WHERE workspace_id=%s::uuid
+                         ORDER BY created_at DESC LIMIT 1""",
+                    (workspace_id,),
+                )
+            row = cur.fetchone()
+
+    if not row:
+        return {"exists": False, "status": "idle"}
+    return {
+        "exists": True, "job_id": str(row[0]),
+        "status": row[1], "discovery_status": row[2],
+        "created_at":   row[3].isoformat() if row[3] else None,
+        "completed_at": row[4].isoformat() if row[4] else None,
+    }
+
+
+@app.get("/brand-intel/profiles")
+async def brand_intel_profiles(request: Request, workspace_id: str = None, job_id: str = None):
+    """Return all competitor profiles for the latest completed job."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not job_id:
+                cur.execute(
+                    """SELECT id FROM brand_intel_jobs
+                        WHERE workspace_id=%s::uuid AND status='completed'
+                        ORDER BY created_at DESC LIMIT 1""",
+                    (workspace_id,),
+                )
+                jrow = cur.fetchone()
+                if not jrow:
+                    return {"profiles": []}
+                job_id = str(jrow[0])
+
+            cur.execute(
+                """SELECT id, competitor_name, competitor_url, confidence_pct,
+                          brand_dna, meta_ads, serp_presence, content_strategy,
+                          pricing_intel, review_intel, tech_stack
+                     FROM brand_competitor_profiles
+                    WHERE job_id=%s::uuid AND confirmed=TRUE
+                    ORDER BY confidence_pct DESC""",
+                (job_id,),
+            )
+            rows = cur.fetchall()
+
+    return {
+        "profiles": [
+            {
+                "id": str(r[0]), "name": r[1], "url": r[2], "confidence_pct": r[3],
+                "brand_dna": r[4] or {}, "meta_ads": r[5] or {},
+                "serp_presence": r[6] or {}, "content_strategy": r[7] or {},
+                "pricing_intel": r[8] or {}, "review_intel": r[9] or {},
+                "tech_stack": r[10] or [],
+            }
+            for r in rows
+        ],
+        "job_id": job_id,
+    }
+
+
+@app.get("/brand-intel/growth-recipe")
+async def brand_intel_recipe(request: Request, workspace_id: str = None):
+    """Return the latest brand growth recipe."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, competitive_gaps, ad_angle_opportunities, recipe_text, created_at
+                     FROM brand_growth_recipe
+                    WHERE workspace_id=%s::uuid
+                    ORDER BY created_at DESC LIMIT 1""",
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return {"exists": False}
+    return {
+        "exists": True, "id": str(row[0]),
+        "competitive_gaps":       row[1] or [],
+        "ad_angle_opportunities": row[2] or [],
+        "recipe_text":            row[3] or "",
+        "created_at":             row[4].isoformat() if row[4] else None,
+    }
+
+
+@app.post("/brand-intel/re-discover")
+async def brand_intel_rediscover(request: Request, background_tasks: BackgroundTasks):
+    """Restart Phase 1 with a fresh job."""
+    _auth(request)
+    body         = await request.json()
+    workspace_id = (body.get("workspace_id") or "").strip()
+    brand_url    = (body.get("brand_url") or "").strip()
+
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    ws = get_workspace(workspace_id)
+    workspace_type = (ws or {}).get("workspace_type", "d2c")
+    if not brand_url:
+        brand_url = (ws or {}).get("store_url") or ""
+
+    import uuid as _uuid_bi2
+    job_id = str(_uuid_bi2.uuid4())
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO brand_intel_jobs
+                       (id, workspace_id, brand_url, workspace_type, status, discovery_status)
+                   VALUES (%s::uuid, %s::uuid, %s, %s, 'pending', 'idle')""",
+                (job_id, workspace_id, brand_url, workspace_type),
+            )
+        conn.commit()
+
+    background_tasks.add_task(
+        _brand_intel_discovery_bg,
+        job_id, workspace_id, brand_url, workspace_type,
+    )
+    return {"ok": True, "job_id": job_id}
