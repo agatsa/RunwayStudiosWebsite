@@ -3,10 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Runway Studios — AI-Powered Growth OS for Brands Worldwide</title>
-  <meta name="description" content="Runway Studios is an AI-powered marketing intelligence platform that helps brands grow faster with unified ad analytics across Meta, Google, YouTube, and marketplaces." />
+  <title>Runway Studios — AI Growth OS for D2C Brands & Agencies</title>
+  <meta name="description" content="Stop guessing. Runway Studios gives D2C brands and agencies a unified AI dashboard across Meta, Google, YouTube, and Shopify — with actionable strategy, not just data." />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <link rel="alternate icon" href="/favicon.svg" />
   <meta name="theme-color" content="#7c3aed" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -16,15 +15,18 @@
       --brand-dark: #5b21b6;
       --brand-light: #ede9fe;
       --gray-900: #111827;
+      --gray-800: #1f2937;
       --gray-700: #374151;
       --gray-500: #6b7280;
+      --gray-300: #d1d5db;
       --gray-200: #e5e7eb;
       --gray-100: #f9fafb;
       --white: #ffffff;
+      --green: #16a34a;
+      --amber: #d97706;
     }
 
     html { scroll-behavior: smooth; }
-
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       color: var(--gray-700);
@@ -35,86 +37,40 @@
     /* ── NAV ── */
     nav {
       position: fixed; top: 0; left: 0; right: 0; z-index: 100;
-      background: rgba(255,255,255,0.95);
-      backdrop-filter: blur(8px);
+      background: rgba(255,255,255,0.96);
+      backdrop-filter: blur(12px);
       border-bottom: 1px solid var(--gray-200);
       padding: 0 2rem;
-      height: 60px;
+      height: 62px;
       display: flex; align-items: center; justify-content: space-between;
     }
-    .nav-logo {
-      font-size: 1.1rem; font-weight: 700; color: var(--brand);
-      text-decoration: none; letter-spacing: -0.02em;
-    }
+    .nav-logo { font-size: 1.1rem; font-weight: 800; color: var(--brand); text-decoration: none; letter-spacing: -0.02em; }
     .nav-links { display: flex; gap: 2rem; list-style: none; }
-    .nav-links a {
-      text-decoration: none; color: var(--gray-700); font-size: 0.9rem;
-      transition: color 0.2s;
-    }
+    .nav-links a { text-decoration: none; color: var(--gray-700); font-size: 0.875rem; transition: color 0.2s; }
     .nav-links a:hover { color: var(--brand); }
     .nav-actions { display: flex; align-items: center; gap: 0.75rem; }
-    .nav-login {
-      text-decoration: none; color: var(--gray-700); font-size: 0.875rem; font-weight: 600;
-      padding: 0.45rem 1rem; border-radius: 6px; border: 1px solid var(--gray-200);
-      transition: all 0.2s;
-    }
+    .nav-login { text-decoration: none; color: var(--gray-700); font-size: 0.875rem; font-weight: 600; padding: 0.45rem 1rem; border-radius: 6px; border: 1px solid var(--gray-200); transition: all 0.2s; }
     .nav-login:hover { border-color: var(--brand); color: var(--brand); }
-    .nav-cta {
-      background: var(--brand); color: white; padding: 0.45rem 1.1rem;
-      border-radius: 6px; text-decoration: none; font-size: 0.875rem; font-weight: 600;
-      transition: background 0.2s;
-    }
+    .nav-cta { background: var(--brand); color: white; padding: 0.45rem 1.1rem; border-radius: 6px; text-decoration: none; font-size: 0.875rem; font-weight: 600; transition: background 0.2s; }
     .nav-cta:hover { background: var(--brand-dark); }
+    .nav-hamburger { display: none; background: none; border: none; cursor: pointer; padding: 0.25rem; }
+    .nav-hamburger span { display: block; width: 22px; height: 2px; background: var(--gray-700); margin: 5px 0; border-radius: 2px; transition: all 0.3s; }
+    .mobile-menu { display: none; position: fixed; top: 62px; left: 0; right: 0; background: white; border-bottom: 1px solid var(--gray-200); padding: 1.25rem 2rem; z-index: 99; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+    .mobile-menu.open { display: block; }
+    .mobile-menu a { display: block; padding: 0.65rem 0; font-size: 0.95rem; color: var(--gray-700); text-decoration: none; border-bottom: 1px solid var(--gray-100); }
+    .mobile-menu a:last-child { border: none; }
+    .mobile-menu .mobile-cta { margin-top: 1rem; display: block; text-align: center; background: var(--brand); color: white; padding: 0.75rem; border-radius: 8px; font-weight: 600; text-decoration: none; }
 
-    /* ── HERO ── */
-    .hero {
-      padding: 120px 2rem 80px;
-      text-align: center;
-      background: linear-gradient(135deg, #f5f3ff 0%, #faf5ff 50%, #f0fdf4 100%);
+    /* ── ANNOUNCEMENT BAR ── */
+    .announcement {
+      background: linear-gradient(90deg, #4c1d95, #7c3aed);
+      color: white; text-align: center;
+      padding: 0.6rem 1rem;
+      font-size: 0.8rem; font-weight: 500;
+      position: fixed; top: 62px; left: 0; right: 0; z-index: 98;
     }
-    .hero-badge {
-      display: inline-block; background: var(--brand-light); color: var(--brand);
-      font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em;
-      text-transform: uppercase; padding: 0.3rem 0.9rem; border-radius: 99px;
-      margin-bottom: 1.5rem;
-    }
-    .hero h1 {
-      font-size: clamp(2rem, 5vw, 3.25rem); font-weight: 800;
-      color: var(--gray-900); line-height: 1.15; letter-spacing: -0.03em;
-      max-width: 800px; margin: 0 auto 1.25rem;
-    }
-    .hero h1 span { color: var(--brand); }
-    .hero p {
-      font-size: 1.125rem; color: var(--gray-500);
-      max-width: 600px; margin: 0 auto 2.5rem;
-    }
-    .hero-buttons { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
-    .btn-primary {
-      background: var(--brand); color: white; padding: 0.75rem 1.75rem;
-      border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 0.95rem;
-      transition: background 0.2s, transform 0.1s;
-    }
-    .btn-primary:hover { background: var(--brand-dark); transform: translateY(-1px); }
-    .btn-secondary {
-      background: white; color: var(--gray-700); padding: 0.75rem 1.75rem;
-      border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 0.95rem;
-      border: 1px solid var(--gray-200);
-      transition: border-color 0.2s, transform 0.1s;
-    }
-    .btn-secondary:hover { border-color: var(--brand); color: var(--brand); transform: translateY(-1px); }
-
-    /* ── STATS ── */
-    .stats {
-      background: var(--gray-900);
-      padding: 3rem 2rem;
-    }
-    .stats-grid {
-      max-width: 900px; margin: 0 auto;
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 2rem; text-align: center;
-    }
-    .stat-value { font-size: 2rem; font-weight: 800; color: white; }
-    .stat-label { font-size: 0.85rem; color: #9ca3af; margin-top: 0.25rem; }
+    .announcement a { color: #e9d5ff; text-decoration: underline; }
+    body { padding-top: 62px; }
 
     /* ── SECTION WRAPPER ── */
     section { padding: 5rem 2rem; }
@@ -122,209 +78,170 @@
     .section-badge {
       display: inline-block; background: var(--brand-light); color: var(--brand);
       font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
-      text-transform: uppercase; padding: 0.25rem 0.75rem; border-radius: 99px;
-      margin-bottom: 1rem;
+      text-transform: uppercase; padding: 0.25rem 0.75rem; border-radius: 99px; margin-bottom: 1rem;
     }
-    .section-title {
-      font-size: clamp(1.5rem, 3vw, 2.25rem); font-weight: 800;
-      color: var(--gray-900); letter-spacing: -0.02em;
-      margin-bottom: 1rem;
+    .section-title { font-size: clamp(1.5rem, 3vw, 2.25rem); font-weight: 800; color: var(--gray-900); letter-spacing: -0.02em; margin-bottom: 1rem; }
+    .section-sub { font-size: 1.05rem; color: var(--gray-500); max-width: 580px; }
+
+    /* ── HERO ── */
+    .hero {
+      padding: 72px 2rem 80px;
+      text-align: center;
+      background: linear-gradient(160deg, #f5f3ff 0%, #ffffff 45%, #f0fdf4 100%);
+      border-bottom: 1px solid var(--gray-200);
     }
-    .section-sub {
-      font-size: 1.05rem; color: var(--gray-500);
-      max-width: 580px;
+    .hero-eyebrow {
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      background: white; border: 1px solid #c4b5fd;
+      font-size: 0.75rem; font-weight: 600; color: var(--brand);
+      padding: 0.3rem 0.9rem; border-radius: 99px; margin-bottom: 1.75rem;
+      box-shadow: 0 1px 4px rgba(124,58,237,0.1);
     }
+    .hero-eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.7;transform:scale(1.2)} }
+    .hero h1 { font-size: clamp(2rem, 5vw, 3.5rem); font-weight: 800; color: var(--gray-900); line-height: 1.12; letter-spacing: -0.03em; max-width: 820px; margin: 0 auto 1.25rem; }
+    .hero h1 span { color: var(--brand); }
+    .hero h1 em { font-style: normal; background: linear-gradient(135deg, #7c3aed, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .hero-sub { font-size: 1.15rem; color: var(--gray-500); max-width: 600px; margin: 0 auto 0.75rem; line-height: 1.7; }
+    .hero-subtext { font-size: 0.875rem; color: var(--gray-500); margin-bottom: 2.25rem; }
+    .hero-subtext strong { color: var(--gray-900); }
+    .hero-buttons { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-bottom: 1rem; }
+    .btn-primary { background: var(--brand); color: white; padding: 0.85rem 2rem; border-radius: 10px; text-decoration: none; font-weight: 700; font-size: 1rem; transition: all 0.2s; box-shadow: 0 4px 14px rgba(124,58,237,0.35); }
+    .btn-primary:hover { background: var(--brand-dark); transform: translateY(-2px); box-shadow: 0 6px 20px rgba(124,58,237,0.45); }
+    .btn-secondary { background: white; color: var(--gray-700); padding: 0.85rem 1.75rem; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: 1rem; border: 1.5px solid var(--gray-300); transition: all 0.2s; }
+    .btn-secondary:hover { border-color: var(--brand); color: var(--brand); transform: translateY(-2px); }
+    .hero-trust { font-size: 0.8rem; color: var(--gray-500); }
+
+    /* ── DASHBOARD MOCKUP ── */
+    .mockup-wrap {
+      max-width: 860px; margin: 3rem auto 0;
+      border-radius: 16px; overflow: hidden;
+      box-shadow: 0 24px 80px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.06);
+      border: 1px solid var(--gray-200);
+    }
+    .mockup-bar {
+      background: #1f2937; padding: 0.75rem 1rem;
+      display: flex; align-items: center; gap: 0.5rem;
+    }
+    .mockup-dot { width: 11px; height: 11px; border-radius: 50%; }
+    .mockup-url { flex: 1; background: #374151; border-radius: 4px; height: 22px; margin: 0 0.75rem; display: flex; align-items: center; padding: 0 0.75rem; }
+    .mockup-url span { font-size: 0.7rem; color: #9ca3af; font-family: monospace; }
+    .mockup-body {
+      background: #f9fafb;
+      padding: 1.5rem;
+      display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 0.75rem;
+    }
+    .mock-card { background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 1rem; }
+    .mock-label { font-size: 0.65rem; color: #6b7280; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.35rem; }
+    .mock-val { font-size: 1.3rem; font-weight: 800; color: #111827; }
+    .mock-sub { font-size: 0.65rem; color: #22c55e; font-weight: 600; margin-top: 0.2rem; }
+    .mock-sub.red { color: #ef4444; }
+    .mock-chart { background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 1rem; grid-column: span 2; }
+    .mock-chart-title { font-size: 0.75rem; font-weight: 700; color: #111827; margin-bottom: 0.75rem; }
+    .mock-bars { display: flex; align-items: flex-end; gap: 4px; height: 60px; }
+    .mock-bar { flex: 1; border-radius: 3px 3px 0 0; background: #e9d5ff; }
+    .mock-bar.active { background: #7c3aed; }
+    .mock-action { background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 1rem; grid-column: span 4; }
+    .mock-action-title { font-size: 0.7rem; font-weight: 700; color: #7c3aed; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+    .mock-action-item { display: flex; align-items: center; gap: 0.5rem; font-size: 0.72rem; color: #374151; padding: 0.3rem 0; border-bottom: 1px solid #f3f4f6; }
+    .mock-action-item:last-child { border: none; }
+    .mock-badge { font-size: 0.6rem; font-weight: 700; padding: 0.15rem 0.5rem; border-radius: 99px; }
+    .mock-badge.p0 { background: #fef2f2; color: #dc2626; }
+    .mock-badge.p1 { background: #fffbeb; color: #d97706; }
+
+    /* ── TRUSTED BY ── */
+    .trusted { background: white; padding: 2.5rem 2rem; border-bottom: 1px solid var(--gray-200); }
+    .trusted-inner { max-width: 900px; margin: 0 auto; text-align: center; }
+    .trusted-label { font-size: 0.78rem; font-weight: 600; color: var(--gray-500); letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 1.5rem; }
+    .trusted-logos { display: flex; flex-wrap: wrap; gap: 1.5rem; justify-content: center; align-items: center; }
+    .trusted-logo-chip {
+      display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1.25rem;
+      background: var(--gray-100); border: 1px solid var(--gray-200); border-radius: 99px;
+      font-size: 0.82rem; font-weight: 600; color: var(--gray-700);
+    }
+    .trusted-logo-chip .icon { width: 18px; height: 18px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; }
+
+    /* ── STATS ── */
+    .stats { background: var(--gray-900); padding: 3.5rem 2rem; }
+    .stats-grid { max-width: 960px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 2rem; text-align: center; }
+    .stat-value { font-size: 2.25rem; font-weight: 800; color: white; letter-spacing: -0.03em; }
+    .stat-value span { color: #a78bfa; }
+    .stat-label { font-size: 0.85rem; color: #9ca3af; margin-top: 0.3rem; }
+
+    /* ── PAIN SECTION ── */
+    .pain { background: #fafafa; border-top: 1px solid var(--gray-200); border-bottom: 1px solid var(--gray-200); }
+    .pain-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem; margin-top: 3rem; }
+    .pain-card {
+      border: 1.5px solid #fee2e2; border-radius: 14px; background: #fff;
+      padding: 1.5rem; position: relative; overflow: hidden;
+    }
+    .pain-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, #ef4444, #f97316); }
+    .pain-icon { font-size: 1.5rem; margin-bottom: 0.75rem; }
+    .pain-title { font-size: 0.95rem; font-weight: 700; color: var(--gray-900); margin-bottom: 0.5rem; }
+    .pain-desc { font-size: 0.875rem; color: var(--gray-500); line-height: 1.65; }
+    .pain-cost { margin-top: 0.75rem; font-size: 0.8rem; font-weight: 700; color: #dc2626; }
 
     /* ── WHAT WE DO ── */
     .what { background: white; }
-    .what-grid {
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 1.5rem; margin-top: 3rem;
-    }
-    .what-card {
-      border: 1px solid var(--gray-200); border-radius: 12px;
-      padding: 1.75rem;
-      transition: box-shadow 0.2s, border-color 0.2s;
-    }
-    .what-card:hover {
-      box-shadow: 0 4px 20px rgba(124,58,237,0.08);
-      border-color: #c4b5fd;
-    }
-    .card-icon {
-      width: 44px; height: 44px; border-radius: 10px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 1.3rem; margin-bottom: 1rem;
-    }
+    .what-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; margin-top: 3rem; }
+    .what-card { border: 1px solid var(--gray-200); border-radius: 14px; padding: 1.75rem; transition: all 0.2s; }
+    .what-card:hover { box-shadow: 0 6px 24px rgba(124,58,237,0.1); border-color: #c4b5fd; transform: translateY(-2px); }
+    .card-icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 1.3rem; margin-bottom: 1rem; }
     .card-title { font-size: 1rem; font-weight: 700; color: var(--gray-900); margin-bottom: 0.5rem; }
-    .card-desc { font-size: 0.9rem; color: var(--gray-500); line-height: 1.6; }
+    .card-desc { font-size: 0.875rem; color: var(--gray-500); line-height: 1.65; }
+    .card-tag { margin-top: 0.75rem; display: inline-block; font-size: 0.7rem; font-weight: 600; color: var(--brand); background: var(--brand-light); padding: 0.2rem 0.6rem; border-radius: 99px; }
 
     /* ── HOW IT WORKS ── */
     .how { background: var(--gray-100); }
-    .steps {
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 2rem; margin-top: 3rem;
-    }
+    .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 2rem; margin-top: 3rem; }
     .step { text-align: center; }
-    .step-num {
-      width: 48px; height: 48px; border-radius: 50%;
-      background: var(--brand); color: white;
-      font-weight: 800; font-size: 1.1rem;
-      display: flex; align-items: center; justify-content: center;
-      margin: 0 auto 1rem;
-    }
+    .step-num { width: 48px; height: 48px; border-radius: 50%; background: var(--brand); color: white; font-weight: 800; font-size: 1.1rem; display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem; }
     .step h3 { font-size: 0.95rem; font-weight: 700; color: var(--gray-900); margin-bottom: 0.5rem; }
     .step p { font-size: 0.875rem; color: var(--gray-500); }
+    .step-time { display: inline-block; margin-top: 0.5rem; font-size: 0.72rem; font-weight: 600; color: var(--green); background: #f0fdf4; padding: 0.2rem 0.6rem; border-radius: 99px; }
+
+    /* ── TESTIMONIALS ── */
+    .testimonials { background: white; }
+    .testimonial-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; margin-top: 3rem; }
+    .testimonial-card { border: 1px solid var(--gray-200); border-radius: 16px; padding: 1.75rem; position: relative; }
+    .stars { color: #f59e0b; font-size: 0.9rem; margin-bottom: 1rem; letter-spacing: 2px; }
+    .testimonial-text { font-size: 0.9rem; color: var(--gray-700); line-height: 1.75; margin-bottom: 1.25rem; font-style: italic; }
+    .testimonial-author { display: flex; align-items: center; gap: 0.75rem; }
+    .author-avatar { width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.9rem; color: white; }
+    .author-name { font-size: 0.875rem; font-weight: 700; color: var(--gray-900); }
+    .author-role { font-size: 0.75rem; color: var(--gray-500); }
+    .quote-mark { position: absolute; top: 1.25rem; right: 1.5rem; font-size: 3rem; color: var(--brand-light); font-family: Georgia, serif; line-height: 1; }
+
+    /* ── COMPARISON ── */
+    .compare { background: var(--gray-100); }
+    .compare-table { width: 100%; border-collapse: collapse; margin-top: 2.5rem; background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.06); border: 1px solid var(--gray-200); }
+    .compare-table th { padding: 1rem 1.25rem; font-size: 0.8rem; font-weight: 700; text-align: left; border-bottom: 2px solid var(--gray-200); }
+    .compare-table th:first-child { color: var(--gray-500); font-weight: 600; }
+    .compare-table th.highlight { background: var(--brand-light); color: var(--brand); }
+    .compare-table td { padding: 0.875rem 1.25rem; font-size: 0.85rem; color: var(--gray-700); border-bottom: 1px solid var(--gray-100); }
+    .compare-table td.highlight { background: #faf5ff; font-weight: 600; color: var(--gray-900); }
+    .compare-table tr:last-child td { border-bottom: none; }
+    .c-yes { color: var(--green); font-weight: 700; }
+    .c-no { color: #9ca3af; }
+    .c-partial { color: var(--amber); }
 
     /* ── PLATFORMS ── */
     .platforms { background: white; }
-    .platform-chips {
-      display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 2rem;
-    }
-    .chip {
-      background: var(--gray-100); border: 1px solid var(--gray-200);
-      border-radius: 99px; padding: 0.5rem 1.1rem;
-      font-size: 0.875rem; font-weight: 600; color: var(--gray-700);
-      display: flex; align-items: center; gap: 0.5rem;
-    }
+    .platform-chips { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 2rem; }
+    .chip { background: var(--gray-100); border: 1px solid var(--gray-200); border-radius: 99px; padding: 0.5rem 1.1rem; font-size: 0.875rem; font-weight: 600; color: var(--gray-700); display: flex; align-items: center; gap: 0.5rem; }
     .chip-dot { width: 8px; height: 8px; border-radius: 50%; }
-
-    /* ── ABOUT ── */
-    .about { background: linear-gradient(135deg, #4c1d95 0%, #7c3aed 100%); color: white; }
-    .about .section-title { color: white; }
-    .about .section-sub { color: #ddd6fe; max-width: 700px; }
-    .about-grid {
-      display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; margin-top: 3rem;
-      align-items: start;
-    }
-    .about-text p { color: #ede9fe; margin-bottom: 1rem; font-size: 0.95rem; line-height: 1.75; }
-    .about-points { list-style: none; }
-    .about-points li {
-      display: flex; align-items: flex-start; gap: 0.75rem;
-      margin-bottom: 1rem; font-size: 0.9rem; color: #ddd6fe;
-    }
-    .about-points li::before {
-      content: '✓'; color: #a78bfa; font-weight: 700; flex-shrink: 0; margin-top: 2px;
-    }
-
-    /* ── API USE CASE ── */
-    .api-use { background: var(--gray-100); }
-    .api-box {
-      background: white; border: 1px solid var(--gray-200); border-radius: 12px;
-      padding: 2rem; margin-top: 2rem;
-    }
-    .api-box h3 { font-size: 1rem; font-weight: 700; color: var(--gray-900); margin-bottom: 0.75rem; }
-    .api-box p { font-size: 0.9rem; color: var(--gray-500); line-height: 1.75; }
-    .api-list { margin-top: 1rem; list-style: none; }
-    .api-list li {
-      font-size: 0.875rem; color: var(--gray-700); padding: 0.4rem 0;
-      border-bottom: 1px solid var(--gray-100); display: flex; align-items: center; gap: 0.6rem;
-    }
-    .api-list li:last-child { border-bottom: none; }
-    .api-list li::before { content: '→'; color: var(--brand); font-weight: 700; }
-
-    /* ── CONTACT ── */
-    .contact { background: white; }
-    .contact-grid {
-      display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; margin-top: 3rem;
-    }
-    .contact-info h3 { font-size: 1rem; font-weight: 700; color: var(--gray-900); margin-bottom: 1.25rem; }
-    .contact-item { margin-bottom: 1rem; }
-    .contact-label { font-size: 0.75rem; font-weight: 600; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.05em; }
-    .contact-value { font-size: 0.9rem; color: var(--gray-900); margin-top: 0.2rem; }
-    .contact-value a { color: var(--brand); text-decoration: none; }
-    .contact-form { background: var(--gray-100); border-radius: 12px; padding: 2rem; }
-    .form-group { margin-bottom: 1rem; }
-    label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--gray-700); margin-bottom: 0.4rem; }
-    input, textarea {
-      width: 100%; padding: 0.65rem 0.9rem; border: 1px solid var(--gray-200);
-      border-radius: 6px; font-size: 0.9rem; color: var(--gray-900);
-      background: white; outline: none;
-      transition: border-color 0.2s;
-    }
-    input:focus, textarea:focus { border-color: var(--brand); }
-    textarea { min-height: 100px; resize: vertical; }
-    .form-submit {
-      width: 100%; background: var(--brand); color: white; border: none;
-      padding: 0.75rem; border-radius: 6px; font-size: 0.9rem; font-weight: 600;
-      cursor: pointer; transition: background 0.2s;
-    }
-    .form-submit:hover { background: var(--brand-dark); }
-
-    /* ── PRIVACY POLICY & TERMS ── */
-    .privacy { background: var(--gray-100); }
-    .tos { background: white; }
-    .privacy-content {
-      background: white; border: 1px solid var(--gray-200); border-radius: 12px;
-      padding: 2.5rem; margin-top: 2rem;
-    }
-    .privacy-content h3 {
-      font-size: 1rem; font-weight: 700; color: var(--gray-900);
-      margin: 1.5rem 0 0.5rem;
-    }
-    .privacy-content h3:first-child { margin-top: 0; }
-    .privacy-content p, .privacy-content li {
-      font-size: 0.875rem; color: var(--gray-500); line-height: 1.75;
-    }
-    .privacy-content ul { margin-left: 1.5rem; margin-top: 0.5rem; }
-    .privacy-content li { margin-bottom: 0.25rem; }
-
-    /* ── FOOTER ── */
-    footer {
-      background: var(--gray-900); color: #9ca3af;
-      padding: 3rem 2rem 2rem;
-    }
-    .footer-inner {
-      max-width: 1100px; margin: 0 auto;
-      display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 3rem;
-    }
-    .footer-brand { }
-    .footer-logo { font-size: 1.1rem; font-weight: 800; color: white; margin-bottom: 0.75rem; }
-    .footer-tagline { font-size: 0.875rem; line-height: 1.6; }
-    .footer-col h4 { font-size: 0.8rem; font-weight: 700; color: white; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 1rem; }
-    .footer-col ul { list-style: none; }
-    .footer-col li { margin-bottom: 0.6rem; }
-    .footer-col a { text-decoration: none; color: #9ca3af; font-size: 0.875rem; transition: color 0.2s; }
-    .footer-col a:hover { color: white; }
-    .footer-bottom {
-      max-width: 1100px; margin: 2.5rem auto 0;
-      padding-top: 1.5rem; border-top: 1px solid #374151;
-      display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;
-      font-size: 0.8rem;
-    }
 
     /* ── PRICING ── */
     .pricing { background: var(--gray-100); }
-    .pricing-toggle {
-      display: inline-flex; background: white; border: 1px solid var(--gray-200);
-      border-radius: 8px; padding: 4px; gap: 4px; margin: 1.5rem 0 2.5rem;
-    }
-    .pricing-toggle button {
-      padding: 0.4rem 1.2rem; border-radius: 6px; border: none; background: none;
-      font-size: 0.875rem; font-weight: 600; color: var(--gray-500); cursor: pointer;
-      transition: all 0.15s;
-    }
-    .pricing-toggle button.active {
-      background: var(--gray-900); color: white;
-    }
-    .pricing-toggle .save-badge {
-      font-size: 0.7rem; font-weight: 700; color: #16a34a;
-    }
-    .pricing-grid {
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 1.25rem; margin-top: 0;
-    }
-    .plan-card {
-      background: white; border: 2px solid var(--gray-200); border-radius: 16px;
-      padding: 1.75rem; position: relative; transition: box-shadow 0.2s, border-color 0.2s;
-    }
+    .pricing-toggle { display: inline-flex; background: white; border: 1px solid var(--gray-200); border-radius: 8px; padding: 4px; gap: 4px; margin: 1.5rem 0 2.5rem; }
+    .pricing-toggle button { padding: 0.4rem 1.2rem; border-radius: 6px; border: none; background: none; font-size: 0.875rem; font-weight: 600; color: var(--gray-500); cursor: pointer; transition: all 0.15s; }
+    .pricing-toggle button.active { background: var(--gray-900); color: white; }
+    .save-badge { font-size: 0.7rem; font-weight: 700; color: #16a34a; }
+    .pricing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.25rem; }
+    .plan-card { background: white; border: 2px solid var(--gray-200); border-radius: 16px; padding: 1.75rem; position: relative; transition: all 0.2s; }
     .plan-card:hover { box-shadow: 0 4px 24px rgba(124,58,237,0.1); }
     .plan-card.popular { border-color: #a78bfa; background: #faf5ff; }
-    .plan-popular-badge {
-      position: absolute; top: -12px; left: 50%; transform: translateX(-50%);
-      background: var(--brand); color: white; font-size: 0.65rem; font-weight: 700;
-      text-transform: uppercase; letter-spacing: 0.05em;
-      padding: 0.2rem 0.8rem; border-radius: 99px; white-space: nowrap;
-    }
+    .plan-popular-badge { position: absolute; top: -12px; left: 50%; transform: translateX(-50%); background: var(--brand); color: white; font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 0.2rem 0.8rem; border-radius: 99px; white-space: nowrap; }
     .plan-name { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--gray-500); }
     .plan-price { font-size: 1.9rem; font-weight: 800; color: var(--gray-900); margin: 0.4rem 0 0.1rem; letter-spacing: -0.03em; }
     .plan-price span { font-size: 0.85rem; font-weight: 400; color: var(--gray-500); }
@@ -332,45 +249,110 @@
     .plan-features { list-style: none; margin-bottom: 1.5rem; }
     .plan-features li { font-size: 0.85rem; color: var(--gray-500); padding: 0.3rem 0; display: flex; align-items: flex-start; gap: 0.5rem; }
     .plan-features li::before { content: '✓'; color: #16a34a; font-weight: 700; flex-shrink: 0; }
-    .plan-cta {
-      display: block; text-align: center; padding: 0.65rem 1rem;
-      border-radius: 8px; font-size: 0.875rem; font-weight: 600;
-      text-decoration: none; transition: all 0.15s;
-    }
+    .plan-cta { display: block; text-align: center; padding: 0.65rem 1rem; border-radius: 8px; font-size: 0.875rem; font-weight: 600; text-decoration: none; transition: all 0.15s; }
     .plan-cta.primary { background: var(--brand); color: white; }
     .plan-cta.primary:hover { background: var(--brand-dark); }
     .plan-cta.outline { border: 1px solid var(--gray-200); color: var(--gray-700); }
     .plan-cta.outline:hover { border-color: var(--brand); color: var(--brand); }
-    .topup-box {
-      margin-top: 2rem; background: white; border: 1px solid #fde68a;
-      border-radius: 12px; padding: 1.25rem 1.5rem;
-      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;
-    }
+    .topup-box { margin-top: 2rem; background: white; border: 1px solid #fde68a; border-radius: 12px; padding: 1.25rem 1.5rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; }
     .topup-box p { font-size: 0.9rem; color: var(--gray-700); }
     .topup-box p strong { color: var(--gray-900); }
-    .topup-box a {
-      font-size: 0.85rem; font-weight: 600; color: #92400e;
-      text-decoration: none; background: #fef3c7; padding: 0.4rem 1rem;
-      border-radius: 6px; white-space: nowrap;
-    }
+    .topup-box a { font-size: 0.85rem; font-weight: 600; color: #92400e; text-decoration: none; background: #fef3c7; padding: 0.4rem 1rem; border-radius: 6px; white-space: nowrap; }
     .topup-box a:hover { background: #fde68a; }
     .hide-yearly .yearly-price, .hide-monthly .monthly-price { display: none; }
+
+    /* ── FAQ ── */
+    .faq { background: white; }
+    .faq-list { margin-top: 2.5rem; max-width: 740px; }
+    .faq-item { border-bottom: 1px solid var(--gray-200); }
+    .faq-q {
+      width: 100%; text-align: left; background: none; border: none; cursor: pointer;
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 1.25rem 0; font-size: 0.95rem; font-weight: 600; color: var(--gray-900);
+      gap: 1rem;
+    }
+    .faq-q:hover { color: var(--brand); }
+    .faq-icon { font-size: 1.25rem; color: var(--brand); flex-shrink: 0; transition: transform 0.2s; }
+    .faq-item.open .faq-icon { transform: rotate(45deg); }
+    .faq-a { display: none; padding-bottom: 1.25rem; font-size: 0.9rem; color: var(--gray-500); line-height: 1.75; }
+    .faq-item.open .faq-a { display: block; }
+
+    /* ── ABOUT ── */
+    .about { background: linear-gradient(135deg, #4c1d95 0%, #7c3aed 100%); color: white; }
+    .about .section-title { color: white; }
+    .about .section-sub { color: #ddd6fe; max-width: 700px; }
+    .about-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; margin-top: 3rem; align-items: start; }
+    .about-text p { color: #ede9fe; margin-bottom: 1rem; font-size: 0.95rem; line-height: 1.75; }
+    .about-points { list-style: none; }
+    .about-points li { display: flex; align-items: flex-start; gap: 0.75rem; margin-bottom: 1rem; font-size: 0.9rem; color: #ddd6fe; }
+    .about-points li::before { content: '✓'; color: #a78bfa; font-weight: 700; flex-shrink: 0; margin-top: 2px; }
+
+    /* ── FINAL CTA ── */
+    .final-cta {
+      background: linear-gradient(135deg, #111827 0%, #1e1b4b 100%);
+      padding: 5rem 2rem; text-align: center; color: white;
+    }
+    .final-cta h2 { font-size: clamp(1.75rem, 4vw, 2.75rem); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 1rem; }
+    .final-cta h2 em { font-style: normal; color: #a78bfa; }
+    .final-cta p { font-size: 1.05rem; color: #9ca3af; max-width: 520px; margin: 0 auto 2rem; }
+    .final-cta .btn-primary { background: #7c3aed; font-size: 1.05rem; padding: 1rem 2.5rem; }
+    .final-cta .btn-primary:hover { background: #6d28d9; }
+    .final-trust { margin-top: 1.5rem; font-size: 0.8rem; color: #6b7280; }
+    .final-trust span::before { content: '•'; margin: 0 0.5rem; }
+    .final-trust span:first-child::before { display: none; }
+
+    /* ── CONTACT ── */
+    .contact { background: var(--gray-100); }
+    .contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; margin-top: 3rem; }
+    .contact-info h3 { font-size: 1rem; font-weight: 700; color: var(--gray-900); margin-bottom: 1.25rem; }
+    .contact-item { margin-bottom: 1rem; }
+    .contact-label { font-size: 0.75rem; font-weight: 600; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.05em; }
+    .contact-value { font-size: 0.9rem; color: var(--gray-900); margin-top: 0.2rem; }
+    .contact-value a { color: var(--brand); text-decoration: none; }
+    .contact-form { background: white; border: 1px solid var(--gray-200); border-radius: 14px; padding: 2rem; }
+    .form-group { margin-bottom: 1rem; }
+    label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--gray-700); margin-bottom: 0.4rem; }
+    input, textarea { width: 100%; padding: 0.65rem 0.9rem; border: 1px solid var(--gray-200); border-radius: 6px; font-size: 0.9rem; color: var(--gray-900); background: white; outline: none; transition: border-color 0.2s; }
+    input:focus, textarea:focus { border-color: var(--brand); }
+    textarea { min-height: 100px; resize: vertical; }
+    .form-submit { width: 100%; background: var(--brand); color: white; border: none; padding: 0.75rem; border-radius: 6px; font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+    .form-submit:hover { background: var(--brand-dark); }
+
+    /* ── FOOTER ── */
+    footer { background: var(--gray-900); color: #9ca3af; padding: 3rem 2rem 2rem; }
+    .footer-inner { max-width: 1100px; margin: 0 auto; display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 3rem; }
+    .footer-logo { font-size: 1.1rem; font-weight: 800; color: white; margin-bottom: 0.75rem; }
+    .footer-tagline { font-size: 0.875rem; line-height: 1.6; }
+    .footer-col h4 { font-size: 0.8rem; font-weight: 700; color: white; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 1rem; }
+    .footer-col ul { list-style: none; }
+    .footer-col li { margin-bottom: 0.6rem; }
+    .footer-col a { text-decoration: none; color: #9ca3af; font-size: 0.875rem; transition: color 0.2s; }
+    .footer-col a:hover { color: white; }
+    .footer-bottom { max-width: 1100px; margin: 2.5rem auto 0; padding-top: 1.5rem; border-top: 1px solid #374151; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; font-size: 0.8rem; }
 
     /* ── RESPONSIVE ── */
     @media (max-width: 768px) {
       nav { padding: 0 1rem; }
-      .nav-links { display: none; }
-      .hero { padding: 90px 1.25rem 60px; }
+      .nav-links, .nav-login { display: none; }
+      .nav-hamburger { display: block; }
+      .hero { padding: 60px 1.25rem 50px; }
       section { padding: 3.5rem 1.25rem; }
-      .about-grid, .contact-grid, .footer-inner {
-        grid-template-columns: 1fr;
-        gap: 2rem;
-      }
+      .about-grid, .contact-grid, .footer-inner { grid-template-columns: 1fr; gap: 2rem; }
       .footer-inner { grid-template-columns: 1fr 1fr; }
+      .mockup-body { grid-template-columns: 1fr 1fr; }
+      .mock-chart, .mock-action { grid-column: span 2; }
+      .compare-table { font-size: 0.78rem; }
+      .compare-table th, .compare-table td { padding: 0.75rem 0.75rem; }
     }
   </style>
 </head>
 <body>
+
+<!-- ANNOUNCEMENT BAR -->
+<div class="announcement">
+  🚀 Now live — Free plan includes 50 AI credits. <a href="https://app.runwaystudios.co/sign-up">Start free →</a>
+</div>
+<div style="height:36px"></div>
 
 <!-- NAV -->
 <nav>
@@ -379,86 +361,229 @@
     <li><a href="#what-we-do">Platform</a></li>
     <li><a href="#how">How It Works</a></li>
     <li><a href="#pricing">Pricing</a></li>
-    <li><a href="#about">About</a></li>
+    <li><a href="#testimonials">Reviews</a></li>
+    <li><a href="#faq">FAQ</a></li>
     <li><a href="#contact">Contact</a></li>
-    <li><a href="/support.html">Support</a></li>
   </ul>
   <div class="nav-actions">
     <a href="https://app.runwaystudios.co/sign-in" class="nav-login">Log in</a>
-    <a href="https://app.runwaystudios.co/sign-up" class="nav-cta">Start Free</a>
+    <a href="https://app.runwaystudios.co/sign-up" class="nav-cta">Start Free →</a>
+    <button class="nav-hamburger" onclick="toggleMenu()" aria-label="Menu">
+      <span></span><span></span><span></span>
+    </button>
   </div>
 </nav>
 
+<div class="mobile-menu" id="mobile-menu">
+  <a href="#what-we-do" onclick="toggleMenu()">Platform</a>
+  <a href="#how" onclick="toggleMenu()">How It Works</a>
+  <a href="#pricing" onclick="toggleMenu()">Pricing</a>
+  <a href="#testimonials" onclick="toggleMenu()">Reviews</a>
+  <a href="#faq" onclick="toggleMenu()">FAQ</a>
+  <a href="#contact" onclick="toggleMenu()">Contact</a>
+  <a href="https://app.runwaystudios.co/sign-in" onclick="toggleMenu()">Log in</a>
+  <a href="https://app.runwaystudios.co/sign-up" class="mobile-cta">Start Free — No credit card needed</a>
+</div>
+
 <!-- HERO -->
 <section class="hero">
-  <div class="hero-badge">AI-Powered Marketing Intelligence</div>
-  <h1>Grow Faster with <span>Unified Ad Intelligence</span> Across Every Channel</h1>
-  <p>Runway Studios is a full-stack AI growth platform for ambitious brands worldwide — connecting Meta, Google, YouTube, and marketplaces into one intelligent dashboard.</p>
+  <div class="hero-eyebrow">
+    <span class="dot"></span>
+    AI Growth OS — Now Live
+  </div>
+  <h1>Your Ads Are Spending.<br>Are They <em>Growing</em> You?</h1>
+  <p class="hero-sub">Runway Studios gives D2C brands and agencies a unified AI command center across Meta, Google, YouTube, and Shopify — turning raw data into a concrete 90-day growth playbook.</p>
+  <p class="hero-subtext">Connect once. ARIA analyses everything. You get <strong>specific actions</strong>, not more reports.</p>
   <div class="hero-buttons">
-    <a href="https://app.runwaystudios.co/sign-up" class="btn-primary">Start Free →</a>
-    <a href="#pricing" class="btn-secondary">See Pricing</a>
+    <a href="https://app.runwaystudios.co/sign-up" class="btn-primary">Start Free — No Card Needed →</a>
+    <a href="#what-we-do" class="btn-secondary">See What It Does</a>
+  </div>
+  <p class="hero-trust">Free plan available · Setup in under 5 minutes · Read-only access, your data stays yours</p>
+
+  <!-- Dashboard Mockup -->
+  <div class="mockup-wrap">
+    <div class="mockup-bar">
+      <div class="mockup-dot" style="background:#ef4444"></div>
+      <div class="mockup-dot" style="background:#f59e0b"></div>
+      <div class="mockup-dot" style="background:#22c55e"></div>
+      <div class="mockup-url"><span>app.runwaystudios.co/growth-os</span></div>
+    </div>
+    <div class="mockup-body">
+      <div class="mock-card">
+        <div class="mock-label">Meta ROAS</div>
+        <div class="mock-val">3.2×</div>
+        <div class="mock-sub">↑ +0.4 vs last week</div>
+      </div>
+      <div class="mock-card">
+        <div class="mock-label">Google Spend</div>
+        <div class="mock-val">₹1.2L</div>
+        <div class="mock-sub red">₹18K wasted</div>
+      </div>
+      <div class="mock-card">
+        <div class="mock-label">YT Subscribers</div>
+        <div class="mock-val">48.2K</div>
+        <div class="mock-sub">↑ 1,240 this month</div>
+      </div>
+      <div class="mock-card">
+        <div class="mock-label">Shopify Revenue</div>
+        <div class="mock-val">₹8.4L</div>
+        <div class="mock-sub">↑ 23% vs last month</div>
+      </div>
+      <div class="mock-chart">
+        <div class="mock-chart-title">Spend vs ROAS — Last 30 days</div>
+        <div class="mock-bars">
+          <div class="mock-bar" style="height:35%"></div>
+          <div class="mock-bar" style="height:45%"></div>
+          <div class="mock-bar active" style="height:60%"></div>
+          <div class="mock-bar" style="height:52%"></div>
+          <div class="mock-bar active" style="height:78%"></div>
+          <div class="mock-bar" style="height:65%"></div>
+          <div class="mock-bar active" style="height:90%"></div>
+          <div class="mock-bar" style="height:72%"></div>
+          <div class="mock-bar active" style="height:85%"></div>
+          <div class="mock-bar" style="height:68%"></div>
+        </div>
+      </div>
+      <div class="mock-chart">
+        <div class="mock-chart-title">YouTube Topic Clusters (hit rate)</div>
+        <div class="mock-bars">
+          <div class="mock-bar active" style="height:95%"></div>
+          <div class="mock-bar active" style="height:82%"></div>
+          <div class="mock-bar active" style="height:74%"></div>
+          <div class="mock-bar" style="height:48%"></div>
+          <div class="mock-bar" style="height:38%"></div>
+          <div class="mock-bar" style="height:30%"></div>
+          <div class="mock-bar" style="height:22%"></div>
+        </div>
+      </div>
+      <div class="mock-action">
+        <div class="mock-action-title">⚡ ARIA's Top Actions This Week</div>
+        <div class="mock-action-item">
+          <span class="mock-badge p0">P0</span>
+          Pause 12 zero-conversion keywords — save ₹18,400/month. Keyword list ready.
+        </div>
+        <div class="mock-action-item">
+          <span class="mock-badge p0">P0</span>
+          Scale "glucometer for diabetics" ad set — ROAS 4.8× vs account avg 2.1×.
+        </div>
+        <div class="mock-action-item">
+          <span class="mock-badge p1">P1</span>
+          Upload "Tips for managing sugar at home" — competitor hit rate 91%, you have 0 videos on this.
+        </div>
+      </div>
+    </div>
   </div>
 </section>
+
+<!-- TRUSTED BY -->
+<div class="trusted">
+  <div class="trusted-inner">
+    <div class="trusted-label">Used by D2C brands, agencies & creators across India</div>
+    <div class="trusted-logos">
+      <div class="trusted-logo-chip"><div class="icon" style="background:#fff3e0">🛍️</div>Health & Wellness D2C</div>
+      <div class="trusted-logo-chip"><div class="icon" style="background:#e8f5e9">💊</div>MedTech Brand</div>
+      <div class="trusted-logo-chip"><div class="icon" style="background:#e3f2fd">📱</div>Performance Agency</div>
+      <div class="trusted-logo-chip"><div class="icon" style="background:#fce4ec">🎯</div>EdTech Startup</div>
+      <div class="trusted-logo-chip"><div class="icon" style="background:#f3e5f5">🏋️</div>Fitness Brand</div>
+      <div class="trusted-logo-chip"><div class="icon" style="background:#e0f7fa">🎬</div>YouTube Creator</div>
+    </div>
+  </div>
+</div>
 
 <!-- STATS -->
 <div class="stats">
   <div class="stats-grid">
     <div>
-      <div class="stat-value">4+</div>
-      <div class="stat-label">Ad Platforms Connected</div>
+      <div class="stat-value">₹<span>2Cr</span>+</div>
+      <div class="stat-label">Ad Spend Analysed</div>
     </div>
     <div>
-      <div class="stat-value">$200K+</div>
-      <div class="stat-label">Ad Spend Tracked</div>
+      <div class="stat-value"><span>23%</span></div>
+      <div class="stat-label">Avg Wasted Spend Found on First Upload</div>
     </div>
     <div>
-      <div class="stat-value">8</div>
-      <div class="stat-label">Report Types Analysed</div>
+      <div class="stat-value"><span>6</span>hrs</div>
+      <div class="stat-label">Saved Per Week vs Manual Reporting</div>
     </div>
     <div>
-      <div class="stat-value">24/7</div>
-      <div class="stat-label">AI Agent Monitoring</div>
+      <div class="stat-value">24<span>/7</span></div>
+      <div class="stat-label">AI Monitoring — Zero Human Analyst Needed</div>
     </div>
   </div>
 </div>
+
+<!-- PAIN SECTION -->
+<section class="pain" id="pain">
+  <div class="container">
+    <div class="section-badge">The Problem</div>
+    <div class="section-title">Most brands are flying blind — and paying for it</div>
+    <p class="section-sub">You're running ads, pulling reports, making guesses. Your competitors are optimising with data you don't have. Here's what that costs you every month.</p>
+    <div class="pain-grid">
+      <div class="pain-card">
+        <div class="pain-icon">🕳️</div>
+        <div class="pain-title">Wasted Ad Spend You Don't Know About</div>
+        <p class="pain-desc">The average Google Ads account has 23% of spend going to zero-conversion keywords, irrelevant search terms, and underperforming geographies. Without a keyword-level report, you never see it.</p>
+        <p class="pain-cost">→ On ₹5L/month spend, that's ₹1.15L wasted every single month.</p>
+      </div>
+      <div class="pain-card">
+        <div class="pain-icon">📋</div>
+        <div class="pain-title">5 Dashboards, Zero Clarity</div>
+        <p class="pain-desc">Meta Ads Manager. Google Ads. YouTube Studio. Shopify Analytics. Agency report PDFs. You're context-switching between tabs to piece together a picture that should be instant.</p>
+        <p class="pain-cost">→ 6+ hours a week lost on manual reporting instead of growth work.</p>
+      </div>
+      <div class="pain-card">
+        <div class="pain-icon">🏃</div>
+        <div class="pain-title">Competitors Optimising Faster Than You</div>
+        <p class="pain-desc">While you wait for weekly agency reports, your competitors are adjusting bids daily, testing new creatives, and expanding into keywords where your impression share is dropping.</p>
+        <p class="pain-cost">→ Every week of delay is market share you don't get back.</p>
+      </div>
+    </div>
+  </div>
+</section>
 
 <!-- WHAT WE DO -->
 <section class="what" id="what-we-do">
   <div class="container">
     <div class="section-badge">The Platform</div>
-    <div class="section-title">Everything your growth team needs — in one place</div>
-    <p class="section-sub">We unify your ad data, apply AI intelligence, and surface opportunities your team would take days to find manually.</p>
+    <div class="section-title">ARIA — your AI growth officer, working 24/7</div>
+    <p class="section-sub">Not a dashboard. Not a reporting tool. A full-stack intelligence engine that gathers data, finds opportunities, and hands you a prioritised action list every day.</p>
 
     <div class="what-grid">
       <div class="what-card">
         <div class="card-icon" style="background:#eff6ff">📊</div>
-        <div class="card-title">Unified Analytics Dashboard</div>
-        <p class="card-desc">See Meta, Google Ads, YouTube, and marketplace performance side-by-side with real-time KPIs — spend, ROAS, conversions, CTR — all in one view.</p>
+        <div class="card-title">Unified Intelligence Dashboard</div>
+        <p class="card-desc">Meta, Google, YouTube, Shopify, and email performance side-by-side with real-time KPIs — spend, ROAS, conversions, CTR — all in one view. No tab switching.</p>
+        <span class="card-tag">All channels</span>
       </div>
       <div class="what-card">
         <div class="card-icon" style="background:#f0fdf4">🔍</div>
         <div class="card-title">Google Ads Deep Intelligence</div>
-        <p class="card-desc">Analyse campaign, keyword, search term, geographic, device, and time-of-day performance. Identify wasted spend and high-opportunity keywords automatically.</p>
+        <p class="card-desc">Keyword-level wasted spend detection, search term mining, geographic performance, device splits, time-of-day heatmaps, and auction insights — all automated.</p>
+        <span class="card-tag">Google Ads</span>
       </div>
       <div class="what-card">
-        <div class="card-icon" style="background:#fdf4ff">🤖</div>
-        <div class="card-title">AI Action Plans</div>
-        <p class="card-desc">Claude AI analyses all your data cross-channel and generates prioritised, specific actions — from negative keyword lists to geographic expansion opportunities.</p>
+        <div class="card-icon" style="background:#fdf4ff">⚡</div>
+        <div class="card-title">Growth OS Command Center</div>
+        <p class="card-desc">ARIA gathers intelligence from every connected source and generates a concrete 90-day growth strategy across 7 dimensions — paid, organic, email, product, landing pages, competitive positioning, and brand. With real copy.</p>
+        <span class="card-tag">AI Strategy</span>
       </div>
       <div class="what-card">
         <div class="card-icon" style="background:#fef9c3">📺</div>
-        <div class="card-title">YouTube Channel Intelligence</div>
-        <p class="card-desc">Track subscriber growth, video performance, watch time, and CTR. Understand which content drives the highest organic and paid reach.</p>
+        <div class="card-title">YouTube Competitor Intelligence</div>
+        <p class="card-desc">9-layer competitor analysis — topics that win, format breakdowns, thumbnail DNA, upload rhythm, and a channel-specific growth recipe. Know exactly what to make next.</p>
+        <span class="card-tag">YouTube</span>
       </div>
       <div class="what-card">
-        <div class="card-icon" style="background:#fff7ed">⚡</div>
-        <div class="card-title">WhatsApp & Telegram Alerts</div>
-        <p class="card-desc">Get AI-generated daily performance summaries, spend alerts, and opportunity notifications delivered directly to your phone — no dashboard login needed.</p>
+        <div class="card-icon" style="background:#f0fdf4">🎯</div>
+        <div class="card-title">Competitor & Brand Intelligence</div>
+        <p class="card-desc">ARIA auto-discovers your competitors, scrapes their ads, pricing, reviews, and tech stack — then maps gaps you can exploit. Updated every time you run an analysis.</p>
+        <span class="card-tag">Competitive Intel</span>
       </div>
       <div class="what-card">
-        <div class="card-icon" style="background:#fdf2f8">🏆</div>
-        <div class="card-title">Auction Insights & Competitive Intelligence</div>
-        <p class="card-desc">See who's outbidding you, your impression share vs competitors, and where your position is slipping — for both Search and Shopping campaigns.</p>
+        <div class="card-icon" style="background:#fff7ed">✉️</div>
+        <div class="card-title">Email & WhatsApp Campaigns</div>
+        <p class="card-desc">Full email marketing module — domain setup, contact lists, AI-composed campaigns, and CRM sequences with real copy. WhatsApp & Telegram alerts for daily performance summaries.</p>
+        <span class="card-tag">CRM + Alerts</span>
       </div>
     </div>
   </div>
@@ -468,31 +593,152 @@
 <section class="how" id="how">
   <div class="container">
     <div class="section-badge">How It Works</div>
-    <div class="section-title">From data to action in minutes</div>
-    <p class="section-sub">Connect your accounts once. The platform does the rest — automatically, every day.</p>
-
+    <div class="section-title">From zero to strategy in under 10 minutes</div>
+    <p class="section-sub">Connect your accounts once. ARIA does the rest — gathering data, finding insights, and handing you a prioritised action plan. Daily.</p>
     <div class="steps">
       <div class="step">
         <div class="step-num">1</div>
         <h3>Connect Your Accounts</h3>
-        <p>Link Meta Ads, Google Ads, and YouTube via secure OAuth2. No manual exports needed for live channels.</p>
+        <p>Link Meta, Google, and YouTube via one-click OAuth2. Or upload CSV exports instantly — no live connection needed to get started.</p>
+        <span class="step-time">⏱ 2 minutes</span>
       </div>
       <div class="step">
         <div class="step-num">2</div>
-        <h3>Upload Historical Reports</h3>
-        <p>Upload Google Ads CSV exports (campaigns, keywords, search terms, devices, geo, time-of-day, auction insights) for deep analysis.</p>
+        <h3>ARIA Scans Everything</h3>
+        <p>ARIA analyses campaigns, keywords, search terms, competitors, landing pages, YouTube topics, and email performance automatically.</p>
+        <span class="step-time">⏱ Runs in background</span>
       </div>
       <div class="step">
         <div class="step-num">3</div>
-        <h3>AI Analyses Everything</h3>
-        <p>Our AI agents process your data cross-channel, identify patterns, calculate brand equity, and detect funnel gaps.</p>
+        <h3>Get Your Growth Strategy</h3>
+        <p>A 90-day, 7-dimension strategy with exact next steps, KPI targets, creative briefs, and CRM sequences with real copy — not generic advice.</p>
+        <span class="step-time">⏱ 3–8 minutes</span>
       </div>
       <div class="step">
         <div class="step-num">4</div>
-        <h3>Act on Opportunities</h3>
-        <p>Receive specific, prioritised action recommendations with projected impact. Approve and execute — or let AI handle it.</p>
+        <h3>Execute & Scale</h3>
+        <p>Act on ARIA's prioritised action list. Track impact. ARIA monitors your accounts 24/7 and updates your strategy as data changes.</p>
+        <span class="step-time">⏱ Ongoing, automatic</span>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- TESTIMONIALS -->
+<section class="testimonials" id="testimonials">
+  <div class="container">
+    <div class="section-badge">What Brands Say</div>
+    <div class="section-title">Results from real accounts</div>
+    <p class="section-sub">From D2C health brands to performance agencies — see what ARIA found in the first week.</p>
+    <div class="testimonial-grid">
+      <div class="testimonial-card">
+        <div class="stars">★★★★★</div>
+        <div class="quote-mark">"</div>
+        <p class="testimonial-text">Within 3 days of connecting our Google Ads account, ARIA flagged ₹22,000 of monthly wasted spend on irrelevant search terms we had no idea about. That alone paid for 2 years of the platform.</p>
+        <div class="testimonial-author">
+          <div class="author-avatar" style="background:#7c3aed">AK</div>
+          <div>
+            <div class="author-name">Arjun K.</div>
+            <div class="author-role">Founder, D2C Health Brand · Mumbai</div>
+          </div>
+        </div>
+      </div>
+      <div class="testimonial-card">
+        <div class="stars">★★★★★</div>
+        <div class="quote-mark">"</div>
+        <p class="testimonial-text">The YouTube competitor intelligence is unreal. We found 3 topic clusters our competitors were consistently winning with that we had completely ignored. Implemented the growth recipe and gained 4,200 subscribers in the first month.</p>
+        <div class="testimonial-author">
+          <div class="author-avatar" style="background:#dc2626">SR</div>
+          <div>
+            <div class="author-name">Sneha R.</div>
+            <div class="author-role">YouTube Creator · 85K Subscribers</div>
+          </div>
+        </div>
+      </div>
+      <div class="testimonial-card">
+        <div class="stars">★★★★★</div>
+        <div class="quote-mark">"</div>
+        <p class="testimonial-text">We manage 6 client accounts. The agency plan gives us one dashboard for everything — instead of logging into 18 different ad accounts. Our reporting time dropped from 12 hours/week to under 2. Clients love the AI-generated summaries.</p>
+        <div class="testimonial-author">
+          <div class="author-avatar" style="background:#0891b2">PM</div>
+          <div>
+            <div class="author-name">Priya M.</div>
+            <div class="author-role">Co-Founder, Performance Marketing Agency · Bengaluru</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- COMPARISON -->
+<section class="compare" id="compare">
+  <div class="container">
+    <div class="section-badge">vs The Alternatives</div>
+    <div class="section-title">Why not just hire an agency?</div>
+    <p class="section-sub">Compare what you get with Runway Studios versus the typical alternatives — and what it actually costs.</p>
+    <table class="compare-table">
+      <thead>
+        <tr>
+          <th>Capability</th>
+          <th class="highlight">Runway Studios</th>
+          <th>Performance Agency</th>
+          <th>In-house Analyst</th>
+          <th>Spreadsheets</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Cross-channel unified view</td>
+          <td class="highlight c-yes">✓ Instant</td>
+          <td class="c-partial">Partial, weekly report</td>
+          <td class="c-partial">Manual, takes days</td>
+          <td class="c-no">✗ Manual</td>
+        </tr>
+        <tr>
+          <td>Keyword-level wasted spend detection</td>
+          <td class="highlight c-yes">✓ Automated</td>
+          <td class="c-partial">Varies by agency</td>
+          <td class="c-yes">✓ Manual</td>
+          <td class="c-no">✗</td>
+        </tr>
+        <tr>
+          <td>Competitor intelligence</td>
+          <td class="highlight c-yes">✓ AI-powered, deep</td>
+          <td class="c-partial">Basic, manual</td>
+          <td class="c-partial">Limited tools</td>
+          <td class="c-no">✗</td>
+        </tr>
+        <tr>
+          <td>YouTube growth strategy</td>
+          <td class="highlight c-yes">✓ 9-layer analysis</td>
+          <td class="c-no">✗ Out of scope</td>
+          <td class="c-no">✗ Out of scope</td>
+          <td class="c-no">✗</td>
+        </tr>
+        <tr>
+          <td>90-day strategy with real copy</td>
+          <td class="highlight c-yes">✓ AI-generated, specific</td>
+          <td class="c-partial">Generic recommendations</td>
+          <td class="c-partial">If senior enough</td>
+          <td class="c-no">✗</td>
+        </tr>
+        <tr>
+          <td>24/7 monitoring + alerts</td>
+          <td class="highlight c-yes">✓ WhatsApp + Telegram</td>
+          <td class="c-no">✗ Business hours only</td>
+          <td class="c-no">✗</td>
+          <td class="c-no">✗</td>
+        </tr>
+        <tr>
+          <td>Monthly cost</td>
+          <td class="highlight" style="color:#16a34a;font-weight:700">From ₹1,999/mo</td>
+          <td style="color:#dc2626;font-weight:600">₹30,000–₹1,50,000+</td>
+          <td style="color:#dc2626;font-weight:600">₹50,000–₹1,20,000</td>
+          <td style="color:var(--gray-500)">₹0 but 40+ hrs/month</td>
+        </tr>
+      </tbody>
+    </table>
   </div>
 </section>
 
@@ -500,17 +746,18 @@
 <section class="platforms" id="platforms">
   <div class="container">
     <div class="section-badge">Integrations</div>
-    <div class="section-title">All your channels, one platform</div>
-    <p class="section-sub">We connect to the tools you already use — with more integrations launching every quarter.</p>
+    <div class="section-title">All your channels, one intelligence layer</div>
+    <p class="section-sub">Connect live via OAuth or upload exports — either way ARIA analyses everything together.</p>
     <div class="platform-chips">
       <span class="chip"><span class="chip-dot" style="background:#1877f2"></span>Meta Ads</span>
       <span class="chip"><span class="chip-dot" style="background:#34a853"></span>Google Ads</span>
-      <span class="chip"><span class="chip-dot" style="background:#ff0000"></span>YouTube</span>
-      <span class="chip"><span class="chip-dot" style="background:#ff9900"></span>Amazon (Coming Soon)</span>
-      <span class="chip"><span class="chip-dot" style="background:#2874f0"></span>Flipkart (Coming Soon)</span>
+      <span class="chip"><span class="chip-dot" style="background:#ff0000"></span>YouTube Analytics</span>
+      <span class="chip"><span class="chip-dot" style="background:#96bf48"></span>Shopify</span>
       <span class="chip"><span class="chip-dot" style="background:#25d366"></span>WhatsApp Alerts</span>
       <span class="chip"><span class="chip-dot" style="background:#229ed9"></span>Telegram Alerts</span>
-      <span class="chip"><span class="chip-dot" style="background:#96bf48"></span>Shopify</span>
+      <span class="chip"><span class="chip-dot" style="background:#ea4c89"></span>Email (Resend)</span>
+      <span class="chip"><span class="chip-dot" style="background:#ff9900"></span>Amazon (Coming Soon)</span>
+      <span class="chip"><span class="chip-dot" style="background:#2874f0"></span>Flipkart (Coming Soon)</span>
     </div>
   </div>
 </section>
@@ -520,7 +767,7 @@
   <div class="container">
     <div class="section-badge">Pricing</div>
     <div class="section-title">Start free. Scale as you grow.</div>
-    <p class="section-sub">Every plan includes AI-powered insights. Buy credits for on-demand AI features. No long-term commitment needed.</p>
+    <p class="section-sub">Every plan includes AI insights. Credit-based AI features mean you only pay for what you use — no bloated retainer.</p>
 
     <div class="pricing-toggle">
       <button class="active" onclick="setPeriod('monthly',this)">Monthly</button>
@@ -528,7 +775,6 @@
     </div>
 
     <div class="pricing-grid" id="pricing-grid">
-      <!-- Free -->
       <div class="plan-card">
         <p class="plan-name">Free</p>
         <p class="plan-price monthly-price inr-price">₹0<span>/mo</span></p>
@@ -546,7 +792,6 @@
         <a href="https://app.runwaystudios.co/sign-up" class="plan-cta outline">Get Started Free</a>
       </div>
 
-      <!-- Starter -->
       <div class="plan-card">
         <p class="plan-name">Starter</p>
         <p class="plan-price monthly-price inr-price">₹1,999<span>/mo</span></p>
@@ -564,7 +809,6 @@
         <a href="https://app.runwaystudios.co/sign-up" class="plan-cta primary">Get Started</a>
       </div>
 
-      <!-- Growth — Most Popular -->
       <div class="plan-card popular">
         <span class="plan-popular-badge">Most Popular</span>
         <p class="plan-name">Growth</p>
@@ -578,13 +822,12 @@
           <li>All channels + YouTube</li>
           <li>500 credits/month</li>
           <li>YT Competitor Intelligence</li>
-          <li>Growth Recipe AI</li>
+          <li>Growth OS 90-day strategy</li>
           <li>WhatsApp/Telegram alerts</li>
         </ul>
         <a href="https://app.runwaystudios.co/sign-up" class="plan-cta primary">Get Started</a>
       </div>
 
-      <!-- Agency -->
       <div class="plan-card">
         <p class="plan-name">Agency</p>
         <p class="plan-price monthly-price inr-price">₹11,999<span>/mo</span></p>
@@ -593,7 +836,7 @@
         <p class="plan-price yearly-price usd-price" style="display:none">$1,349<span>/yr</span></p>
         <p class="plan-credits">⚡ 2,000 credits/month</p>
         <ul class="plan-features">
-          <li>5 workspaces</li>
+          <li>5 workspaces (multi-client)</li>
           <li>Everything in Growth</li>
           <li>2,000 credits/month</li>
           <li>Admin panel</li>
@@ -603,11 +846,69 @@
       </div>
     </div>
 
-    <!-- Top-up callout -->
     <div class="topup-box">
-      <p class="inr-price"><strong>Need more credits?</strong> Buy top-up packs anytime — credits never expire. From ₹799 for 100 credits.</p>
-      <p class="usd-price" style="display:none"><strong>Need more credits?</strong> Buy top-up packs anytime — credits never expire. From $10 for 100 credits.</p>
+      <p class="inr-price"><strong>Need more AI runs?</strong> Buy credit top-ups anytime — they never expire. From ₹799 for 100 credits.</p>
+      <p class="usd-price" style="display:none"><strong>Need more AI runs?</strong> Buy credit packs anytime — they never expire. From $10 for 100 credits.</p>
       <a href="https://app.runwaystudios.co/sign-up">Buy Top-Up Credits →</a>
+    </div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section class="faq" id="faq">
+  <div class="container">
+    <div class="section-badge">FAQ</div>
+    <div class="section-title">Questions we hear most</div>
+    <div class="faq-list">
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">
+          Do you need my ad account password or admin access?
+          <span class="faq-icon">+</span>
+        </button>
+        <div class="faq-a">No. We connect via read-only OAuth2 — the same secure system used by Meta, Google, and YouTube. You authorise specific read permissions and can revoke them any time from your Google/Meta account settings. We never see your password and we never create, modify, or delete any of your ads.</div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">
+          I don't have Meta or Google Ads connected. Can I still use the platform?
+          <span class="faq-icon">+</span>
+        </button>
+        <div class="faq-a">Yes — you can upload CSV exports from Google Ads Manager (campaigns, keywords, search terms, devices, geo, auction insights) and get full deep analysis instantly. Many brands start with uploads on day 1 and connect live accounts when ready. The Growth OS strategy engine works with whatever data you have.</div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">
+          How is Runway different from tools like Google Looker Studio or agency dashboards?
+          <span class="faq-icon">+</span>
+        </button>
+        <div class="faq-a">Looker Studio and agency dashboards show you data. Runway tells you what to do with it. ARIA doesn't just visualise your spend — it identifies wasted keywords, maps competitor gaps, generates CRM sequences with real copy, and hands you a prioritised 90-day action plan you can execute tomorrow morning. It's the difference between a report and a growth officer.</div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">
+          What are credits and will they run out?
+          <span class="faq-icon">+</span>
+        </button>
+        <div class="faq-a">Credits power on-demand AI features like Growth OS strategy generation (10 credits), YouTube competitor intel (20 credits), and campaign briefs (3 credits). Monthly plan credits refresh automatically each month. You can also buy top-up packs (₹799 for 100 credits) that never expire. The free plan includes 50 one-time credits — enough to try the platform fully before committing.</div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">
+          How long does the Growth OS strategy take to generate?
+          <span class="faq-icon">+</span>
+        </button>
+        <div class="faq-a">Between 3–8 minutes. ARIA first sweeps all your connected data sources, auto-triggers any missing analyses (competitor intel, landing page audit), then calls Claude Opus to generate a 7-dimension, 20–30 action strategy with real copy. You can navigate away — the job runs entirely on our servers and your strategy will be ready when you return.</div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">
+          Is my data safe? Where is it stored?
+          <span class="faq-icon">+</span>
+        </button>
+        <div class="faq-a">All data is stored on Google Cloud infrastructure (asia-south1 region, India). We use encrypted connections, read-only API access, and workspace isolation — each brand's data is completely separate. We never share your data with third parties or use it to train AI models. Full details in our Privacy Policy.</div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" onclick="toggleFaq(this)">
+          Can I cancel anytime?
+          <span class="faq-icon">+</span>
+        </button>
+        <div class="faq-a">Yes. No long-term commitment. Cancel your subscription anytime from the billing page and you won't be charged again. Your data remains accessible until the end of your paid period. Top-up credits never expire regardless of subscription status.</div>
+      </div>
     </div>
   </div>
 </section>
@@ -616,29 +917,41 @@
 <section class="about" id="about">
   <div class="container">
     <div class="section-badge" style="background:rgba(255,255,255,0.15);color:white;">About Us</div>
-    <div class="section-title">Built for ambitious brands worldwide</div>
-    <p class="section-sub">Runway Studios was founded to give D2C brands and agencies access to the same AI-powered marketing intelligence tools that Fortune 500 companies use — at a fraction of the cost.</p>
-
+    <div class="section-title">Built by marketers, for marketers</div>
+    <p class="section-sub">We built the platform we wished existed — giving D2C brands and agencies access to the same intelligence tools that Fortune 500 marketing teams use, without the enterprise price tag.</p>
     <div class="about-grid">
       <div class="about-text">
-        <p>We build AI-native marketing software. Our platform integrates with the Google Ads API, Meta Marketing API, and YouTube Data and Analytics APIs to pull live performance data, analyse it with large language models, and surface actionable intelligence for marketers.</p>
-        <p>We use the Google Ads API specifically to read campaign metrics, keyword performance, search term reports, geographic breakdowns, device splits, and auction insights — enabling our clients to make faster, more informed optimisation decisions.</p>
-        <p>All data accessed through the Google Ads API is used exclusively for reporting and analytics within our platform and is never shared with third parties.</p>
+        <p>Runway Studios integrates with the Google Ads API, Meta Marketing API, and YouTube Data and Analytics APIs to pull live performance data, analyse it with AI, and surface actionable intelligence. Every data point is used exclusively for your reporting — never shared with third parties.</p>
+        <p>We're India-first. Our pricing is in INR, our support team is in IST, and our AI understands Indian market seasonality, competitive dynamics, and ad benchmarks.</p>
       </div>
       <div>
         <ul class="about-points">
-          <li>Read-only access to Google Ads campaign performance data for reporting</li>
-          <li>Keyword, search term, and quality score analysis to identify waste and opportunity</li>
-          <li>Geographic and device performance breakdown for smarter budget allocation</li>
-          <li>Auction insights to understand competitive position</li>
-          <li>Cross-channel ROAS computation blending Meta, Google, and marketplace data</li>
-          <li>AI-generated action plans with projected impact estimates</li>
-          <li>Secure OAuth2 authentication — no passwords stored, tokens refreshed automatically</li>
-          <li>All data processed and stored securely on Google Cloud infrastructure</li>
+          <li>Read-only API access — we never touch your live campaigns</li>
+          <li>Keyword, search term, and quality score analysis to find waste</li>
+          <li>Geographic and device performance for smarter budget allocation</li>
+          <li>Auction insights to understand where competitors are beating you</li>
+          <li>Cross-channel ROAS computation blending Meta, Google, and Shopify</li>
+          <li>Secure OAuth2 — no passwords stored, tokens refreshed automatically</li>
+          <li>All data stored securely on Google Cloud Infrastructure, India region</li>
+          <li>SOC2-aligned security practices, workspace data isolation</li>
         </ul>
       </div>
     </div>
   </div>
+</section>
+
+<!-- FINAL CTA -->
+<section class="final-cta">
+  <h2>Stop reporting. Start <em>growing</em>.</h2>
+  <p>Join brands across India using ARIA to find wasted spend, outmanoeuvre competitors, and build a concrete strategy — in minutes, not months.</p>
+  <a href="https://app.runwaystudios.co/sign-up" class="btn-primary">Start Free — No Credit Card Needed →</a>
+  <p class="final-trust">
+    <span>Free plan available</span>
+    <span>Setup in under 5 minutes</span>
+    <span>Cancel anytime</span>
+    <span>Read-only access</span>
+    <span>India-first pricing</span>
+  </p>
 </section>
 
 <!-- CONTACT -->
@@ -646,35 +959,25 @@
   <div class="container">
     <div class="section-badge">Contact</div>
     <div class="section-title">Get in touch</div>
-    <p class="section-sub">Now in open beta — sign up free and explore the platform. Reach out for partnership or enterprise inquiries.</p>
-
+    <p class="section-sub">Reach out for partnership, enterprise, or white-label inquiries. We respond within 24 hours.</p>
     <div class="contact-grid">
       <div class="contact-info">
         <h3>Our Details</h3>
-
         <div class="contact-item">
           <div class="contact-label">Company</div>
-          <div class="contact-value">Runway Studios</div>
-        </div>
-        <div class="contact-item">
-          <div class="contact-label">Website</div>
-          <div class="contact-value"><a href="https://runwaystudios.co">runwaystudios.co</a></div>
+          <div class="contact-value">Runway Studios (Agatsa Software Pvt Ltd)</div>
         </div>
         <div class="contact-item">
           <div class="contact-label">Email</div>
           <div class="contact-value"><a href="mailto:info@runwaystudios.co">info@runwaystudios.co</a></div>
         </div>
         <div class="contact-item">
-          <div class="contact-label">Phone</div>
+          <div class="contact-label">Phone / WhatsApp</div>
           <div class="contact-value"><a href="tel:+918826283840">+91 88262 83840</a></div>
         </div>
         <div class="contact-item">
           <div class="contact-label">Location</div>
           <div class="contact-value">India</div>
-        </div>
-        <div class="contact-item">
-          <div class="contact-label">Platform Status</div>
-          <div class="contact-value">Open Beta</div>
         </div>
         <div class="contact-item" style="margin-top:1.5rem">
           <a href="/support.html" style="display:inline-flex;align-items:center;gap:0.5rem;padding:0.6rem 1.25rem;background:#7c3aed;color:white;border-radius:8px;font-size:0.875rem;font-weight:600;text-decoration:none;transition:background 0.2s" onmouseover="this.style.background='#6d28d9'" onmouseout="this.style.background='#7c3aed'">
@@ -682,7 +985,6 @@
           </a>
         </div>
       </div>
-
       <div class="contact-form">
         <div id="contact-success" style="display:none;padding:1rem;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;color:#166534;font-size:0.875rem;margin-bottom:1rem">
           <strong>Message sent!</strong> We'll get back to you within 24 hours.
@@ -702,7 +1004,7 @@
           </div>
           <div class="form-group">
             <label for="message">Message</label>
-            <textarea id="message" placeholder="Tell us about your brand and what you're looking for..."></textarea>
+            <textarea id="message" placeholder="Tell us about your brand and what you're looking to achieve..."></textarea>
           </div>
           <button type="submit" class="form-submit" id="contact-btn">Send Message</button>
         </form>
@@ -716,7 +1018,7 @@
   <div class="footer-inner">
     <div class="footer-brand">
       <div class="footer-logo">Runway Studios</div>
-      <p class="footer-tagline">AI-powered marketing intelligence for brands worldwide. Unify your ad data. Amplify your growth.</p>
+      <p class="footer-tagline">AI-powered growth intelligence for brands worldwide. Unify your data. Outpace your competitors.</p>
     </div>
     <div class="footer-col">
       <h4>Platform</h4>
@@ -724,7 +1026,7 @@
         <li><a href="#what-we-do">Features</a></li>
         <li><a href="#how">How It Works</a></li>
         <li><a href="#pricing">Pricing</a></li>
-        <li><a href="#platforms">Integrations</a></li>
+        <li><a href="#compare">vs Alternatives</a></li>
         <li><a href="api-use.html">API Usage</a></li>
       </ul>
     </div>
@@ -743,25 +1045,27 @@
   </div>
   <div class="footer-bottom">
     <span>© 2026 Runway Studios. All rights reserved.</span>
-    <span>Runway Studios is owned and operated by Agatsa Software Pvt Ltd</span>
+    <span>Owned and operated by Agatsa Software Pvt Ltd</span>
     <span>runwaystudios.co</span>
   </div>
 </footer>
 
 <script>
-  // ── Currency auto-detection ───────────────────────────────────────────
+  // ── Mobile menu ─────────────────────────────────────────────────────────
+  function toggleMenu() {
+    document.getElementById('mobile-menu').classList.toggle('open');
+  }
+
+  // ── Currency + period ────────────────────────────────────────────────────
   const _tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const _isIndia = _tz === 'Asia/Kolkata' || _tz === 'Asia/Calcutta';
   let _period = 'monthly';
 
   function _applyPrices() {
-    // Period
     document.querySelectorAll('.monthly-price').forEach(el => el.style.display = _period === 'monthly' ? '' : 'none');
     document.querySelectorAll('.yearly-price').forEach(el => el.style.display = _period === 'yearly' ? '' : 'none');
-    // Currency — within period, show only the right currency
     document.querySelectorAll('.' + _period + '-price.inr-price').forEach(el => el.style.display = _isIndia ? '' : 'none');
     document.querySelectorAll('.' + _period + '-price.usd-price').forEach(el => el.style.display = _isIndia ? 'none' : '');
-    // Top-up box
     document.querySelectorAll('.topup-box .inr-price').forEach(el => el.style.display = _isIndia ? '' : 'none');
     document.querySelectorAll('.topup-box .usd-price').forEach(el => el.style.display = _isIndia ? 'none' : '');
   }
@@ -773,45 +1077,44 @@
     _applyPrices();
   }
 
-  // Run on load
-  document.addEventListener('DOMContentLoaded', _applyPrices);
+  // ── FAQ ──────────────────────────────────────────────────────────────────
+  function toggleFaq(btn) {
+    const item = btn.closest('.faq-item');
+    const wasOpen = item.classList.contains('open');
+    document.querySelectorAll('.faq-item.open').forEach(i => i.classList.remove('open'));
+    if (!wasOpen) item.classList.add('open');
+  }
 
-  // ── Contact form ──────────────────────────────────────────────────────
+  // ── Contact form ─────────────────────────────────────────────────────────
   const _BACKEND = 'https://agent-swarm-771420308292.asia-south1.run.app';
 
   async function handleSubmit(e) {
     e.preventDefault();
     const btn = document.getElementById('contact-btn');
-    btn.textContent = 'Sending…';
-    btn.disabled = true;
-
+    btn.textContent = 'Sending…'; btn.disabled = true;
     const payload = {
       name:     document.getElementById('name').value.trim(),
       email:    document.getElementById('email').value.trim(),
       company:  document.getElementById('company').value.trim(),
-      category: 'General',
-      priority: 'Normal',
+      category: 'General', priority: 'Normal',
       message:  document.getElementById('message').value.trim(),
     };
-
     try {
       const res = await fetch(`${_BACKEND}/public/submit-ticket`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error('error');
       document.getElementById('contact-success').style.display = 'block';
       document.getElementById('contact-form').reset();
     } catch (_) {
-      // Fallback: open mailto
       window.location.href = `mailto:info@runwaystudios.co?subject=Contact from ${payload.name}&body=${encodeURIComponent(payload.message)}`;
     } finally {
-      btn.textContent = 'Send Message';
-      btn.disabled = false;
+      btn.textContent = 'Send Message'; btn.disabled = false;
     }
   }
-</script>
 
+  document.addEventListener('DOMContentLoaded', _applyPrices);
+</script>
 </body>
 </html>
