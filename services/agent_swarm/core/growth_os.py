@@ -46,6 +46,19 @@ def _log(job_id: str, msg: str, phase: str = "intel", type_: str = "info", sourc
         print(f"[growth_os] _log failed: {e}")
 
 
+def _is_cancelled(job_id: str) -> bool:
+    """Return True if the job has been force-cancelled via the DB flag."""
+    from services.agent_swarm.db import get_conn
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT status FROM growth_os_jobs WHERE id=%s::uuid", (job_id,))
+                row = cur.fetchone()
+                return row is not None and row[0] == "cancelled"
+    except Exception:
+        return False
+
+
 def _set_job_status(job_id: str, status: str, plan_json: dict = None, credits_charged: int = None):
     """Update job status and optionally save plan."""
     from services.agent_swarm.db import get_conn
@@ -1046,6 +1059,11 @@ def run_full_strategy_job(
              f"Intelligence complete — {len(sources_found)}/{len(intel_map)} sources active",
              "intel", "summary")
 
+        # ── Cancellation checkpoint after intel sweep ──────────────────────────
+        if _is_cancelled(job_id):
+            _log(job_id, "⛔ Job cancelled by user.", "cancelled", "cancelled")
+            return
+
         # Auto-trigger missing critical analyses
         # Use explicitly-passed brand_url if provided, otherwise fall back to workspace setting
         if brand_url:
@@ -1061,8 +1079,11 @@ def run_full_strategy_job(
                 total_credits += 20
                 try:
                     _trigger_brand_intel(job_id, workspace_id, brand_url)
-                    # Wait for it to run (max 3 mins)
+                    # Wait for it to run (max 3 mins), checking for cancellation each tick
                     for _ in range(36):
+                        if _is_cancelled(job_id):
+                            _log(job_id, "⛔ Job cancelled by user.", "cancelled", "cancelled")
+                            return
                         time.sleep(5)
                         with get_conn() as conn:
                             brand_intel = _check_brand_intel_silent(workspace_id, conn)
@@ -1077,6 +1098,9 @@ def run_full_strategy_job(
                     _log(job_id, f"   ↳ Could not auto-trigger competitor intel: {e}", "trigger", "warning")
 
             if not lp_audit and brand_url:
+                if _is_cancelled(job_id):
+                    _log(job_id, "⛔ Job cancelled by user.", "cancelled", "cancelled")
+                    return
                 _log(job_id,
                      f"⚡ Auto-triggering Landing Page Audit for {brand_url} (+5 credits)...",
                      "trigger", "auto_trigger", source="lp_audit")
@@ -1084,6 +1108,9 @@ def run_full_strategy_job(
                 try:
                     _trigger_lp_audit(job_id, workspace_id, brand_url)
                     for _ in range(18):
+                        if _is_cancelled(job_id):
+                            _log(job_id, "⛔ Job cancelled by user.", "cancelled", "cancelled")
+                            return
                         time.sleep(5)
                         with get_conn() as conn:
                             lp_audit = _check_lp_audit_silent(workspace_id, conn)
@@ -1096,6 +1123,11 @@ def run_full_strategy_job(
                         _log(job_id, "   ↳ LP audit in progress...", "trigger", "progress")
                 except Exception as e:
                     _log(job_id, f"   ↳ Could not auto-trigger LP audit: {e}", "trigger", "warning")
+
+        # ── Cancellation checkpoint before strategy generation ─────────────────
+        if _is_cancelled(job_id):
+            _log(job_id, "⛔ Job cancelled by user.", "cancelled", "cancelled")
+            return
 
         # Build intel dict for prompt
         intel = {

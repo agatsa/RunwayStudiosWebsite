@@ -14673,6 +14673,21 @@ async def growth_os_job_status(job_id: str, request: Request):
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
     status, logs, plan_json, credits, created_at, completed_at = row
+
+    # Auto-fail stale running jobs (backend crashed / pod restarted)
+    import datetime as _dt
+    if status in ("running", "pending") and created_at:
+        age_minutes = (_dt.datetime.utcnow() - created_at.replace(tzinfo=None)).total_seconds() / 60
+        if age_minutes > 20:
+            status = "failed"
+            with get_conn() as conn2:
+                with conn2.cursor() as cur2:
+                    cur2.execute(
+                        """UPDATE growth_os_jobs SET status='failed', completed_at=NOW()
+                           WHERE id=%s::uuid AND status IN ('running','pending')""",
+                        (job_id,),
+                    )
+
     logs_list = logs if isinstance(logs, list) else []
     plan = plan_json if isinstance(plan_json, dict) else {}
     return {
@@ -14705,6 +14720,21 @@ async def growth_os_active_job(request: Request, workspace_id: str = None):
     if not row:
         return {"job_id": None, "status": "none"}
     job_id, status, logs, plan_json, credits, created_at, completed_at = row
+
+    # Auto-fail stale running jobs (backend crashed / pod restarted)
+    import datetime as _dt
+    if status in ("running", "pending") and created_at:
+        age_minutes = (_dt.datetime.utcnow() - created_at.replace(tzinfo=None)).total_seconds() / 60
+        if age_minutes > 20:
+            status = "failed"
+            with get_conn() as conn2:
+                with conn2.cursor() as cur2:
+                    cur2.execute(
+                        """UPDATE growth_os_jobs SET status='failed', completed_at=NOW()
+                           WHERE id=%s::uuid AND status IN ('running','pending')""",
+                        (str(job_id),),
+                    )
+
     logs_list = logs if isinstance(logs, list) else []
     plan = plan_json if isinstance(plan_json, dict) else {}
     return {
@@ -14716,6 +14746,25 @@ async def growth_os_active_job(request: Request, workspace_id: str = None):
         "created_at": created_at.isoformat() if created_at else None,
         "completed_at": completed_at.isoformat() if completed_at else None,
     }
+
+
+@app.post("/growth-os/cancel-job/{job_id}")
+async def growth_os_cancel_job(job_id: str, request: Request):
+    """Force-cancel a running Growth OS job."""
+    _auth(request)
+    workspace_id = request.query_params.get("workspace_id", "")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE growth_os_jobs SET status='cancelled', completed_at=NOW()
+                   WHERE id=%s::uuid AND status IN ('pending','running')
+                   AND (%s = '' OR workspace_id = %s::uuid)""",
+                (job_id, workspace_id, workspace_id if workspace_id else job_id),
+            )
+            updated = cur.rowcount
+    if updated == 0:
+        raise HTTPException(status_code=404, detail="Job not found or already finished")
+    return {"ok": True, "job_id": job_id, "status": "cancelled"}
 
 
 @app.post("/growth-os/send-to-approvals")

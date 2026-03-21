@@ -85,7 +85,7 @@ interface GrowthPlan {
 
 interface JobState {
   job_id: string | null
-  status: 'none' | 'pending' | 'running' | 'completed' | 'failed'
+  status: 'none' | 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   logs: LogEntry[]
   plan: GrowthPlan
   credits_charged: number
@@ -482,8 +482,8 @@ export default function GrowthOSPanel({ workspaceId }: Props) {
       }, 3000)
     } else {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
-      // Clear localStorage when job is done/failed
-      if ((job.status === 'completed' || job.status === 'failed') && job.job_id) {
+      // Clear localStorage when job is done/failed/cancelled
+      if ((job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') && job.job_id) {
         if (typeof window !== 'undefined') localStorage.removeItem(localKey)
       }
     }
@@ -538,6 +538,27 @@ export default function GrowthOSPanel({ workspaceId }: Props) {
       alert(e instanceof Error ? e.message : 'Failed to start strategy generation')
     } finally {
       setStarting(false)
+    }
+  }
+
+  // ── Cancel / force-stop running job ────────────────────────────────────────
+
+  const [cancelling, setCancelling] = useState(false)
+
+  const cancelJob = async () => {
+    if (!job.job_id) return
+    setCancelling(true)
+    try {
+      const res = await fetch(
+        `/api/growth-os/cancel-job/${job.job_id}?workspace_id=${workspaceId}`,
+        { method: 'POST' },
+      )
+      if (res.ok) {
+        setJob(prev => ({ ...prev, status: 'cancelled' }))
+        if (typeof window !== 'undefined') localStorage.removeItem(localKey)
+      }
+    } catch { /* ignore */ } finally {
+      setCancelling(false)
     }
   }
 
@@ -616,6 +637,16 @@ export default function GrowthOSPanel({ workspaceId }: Props) {
             >
               <History className="h-3.5 w-3.5" />
               History
+            </button>
+          )}
+          {isRunning && (
+            <button
+              onClick={cancelJob}
+              disabled={cancelling}
+              className="flex items-center gap-2 rounded-xl bg-red-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-600 disabled:opacity-50 transition-colors shadow-sm"
+            >
+              {cancelling ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+              Force Stop
             </button>
           )}
           {!isRunning && (
@@ -984,6 +1015,17 @@ export default function GrowthOSPanel({ workspaceId }: Props) {
           <div>
             <p className="text-sm font-semibold text-red-800">Strategy generation failed</p>
             <p className="text-xs text-red-600 mt-0.5">Check the terminal log above for details. You can try again.</p>
+          </div>
+        </div>
+      )}
+
+      {/* ── Cancelled state ── */}
+      {job.status === 'cancelled' && (
+        <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 flex items-start gap-3">
+          <X className="h-5 w-5 text-gray-400 mt-0.5 shrink-0" />
+          <div>
+            <p className="text-sm font-semibold text-gray-700">Strategy generation stopped</p>
+            <p className="text-xs text-gray-500 mt-0.5">Job was cancelled. Click Generate Strategy to start a new run.</p>
           </div>
         </div>
       )}
