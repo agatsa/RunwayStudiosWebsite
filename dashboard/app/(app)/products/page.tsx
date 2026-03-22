@@ -254,7 +254,7 @@ export default function ProductsPage() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Product Intelligence</h1>
         <p className="mt-1 text-sm text-gray-500 max-w-2xl">
-          Paste any product URL — AI (Jina + Claude) reads the page, extracts name, price, features and images.
+          Paste any product URL — ARIA reads the page and extracts name, price, features and images.
           Product data feeds into email campaigns, campaign briefs, ARIA, and Growth OS.
         </p>
       </div>

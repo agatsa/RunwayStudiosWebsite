@@ -96,9 +96,19 @@ function Terminal({ logs }: { logs: LogEntry[] }) {
   )
 }
 
+// ── Extended competitor type (includes topic_space from backend) ──────────────
+interface CompetitorCandidate {
+  name?: string
+  domain?: string
+  confidence_pct?: number
+  reason?: string
+  topic_space?: string[]
+  hit_count?: number
+}
+
 // ── Preview Results Component ─────────────────────────────────────────────────
 
-function PreviewResults({ data }: { data: PreviewData }) {
+function PreviewResults({ data }: { data: PreviewData & { competitors?: CompetitorCandidate[] } }) {
   if (data.url_type === 'youtube') {
     return (
       <div className="space-y-4">
@@ -132,36 +142,77 @@ function PreviewResults({ data }: { data: PreviewData }) {
             ))}
           </div>
         )}
-        <div className="p-3 bg-amber-950/30 border border-amber-800/40 rounded-lg">
-          <p className="text-xs text-amber-300">
-            <strong>What you unlock after payment:</strong> Full 9-layer competitor analysis,
-            format intelligence, thumbnail DNA, breakout recipe, 15-day growth sprint + 30-day roadmap.
-          </p>
+
+        {/* What you unlock — YouTube */}
+        <div className="p-4 bg-gray-900 border border-gray-700 rounded-xl space-y-3">
+          <p className="text-xs font-bold text-white uppercase tracking-wide">After payment, ARIA will:</p>
+          {[
+            { icon: '🔍', title: 'Find your 5 closest YouTube competitors', detail: 'Channels making similar content — by topic, format, and audience size' },
+            { icon: '📊', title: 'Show you exactly what\'s working for them', detail: 'Which video styles get the most views, which titles hook people, what thumbnails they use' },
+            { icon: '⚡', title: 'Write your 15-day sprint plan', detail: 'Specific video ideas with hooks, titles, and thumbnail direction — ready to shoot' },
+            { icon: '🗺️', title: 'Build your 30-day growth roadmap', detail: 'A step-by-step plan to grow subscribers, increase watch time, and beat the algorithm' },
+          ].map(({ icon, title, detail }) => (
+            <div key={title} className="flex items-start gap-3">
+              <span className="text-base shrink-0">{icon}</span>
+              <div>
+                <p className="text-sm font-medium text-white">{title}</p>
+                <p className="text-xs text-gray-400 mt-0.5">{detail}</p>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     )
   }
 
   // website
+  const competitors = (data.competitors || []) as CompetitorCandidate[]
   return (
     <div className="space-y-4">
-      {data.competitors && data.competitors.length > 0 && (
+      {competitors.length > 0 && (
         <div>
-          <p className="text-xs font-semibold text-gray-400 mb-2">COMPETITORS DETECTED</p>
-          {data.competitors.slice(0, 5).map((c, i) => (
-            <div key={i} className="flex items-center justify-between py-1.5 border-b border-gray-800 last:border-0">
-              <div className="flex items-center gap-2">
-                <CheckCircle className="h-3.5 w-3.5 text-green-400" />
-                <span className="text-sm text-gray-200">{c.name || c.domain}</span>
+          <p className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wide">
+            Direct competitors ARIA found
+          </p>
+          {competitors.slice(0, 5).map((c, i) => {
+            const domain = c.domain || ''
+            const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=32` : null
+            const sharedKw = (c.topic_space || []).slice(0, 3)
+            const strength = (c.confidence_pct || 0) >= 80 ? 'Strong match' : (c.confidence_pct || 0) >= 60 ? 'Good match' : 'Possible match'
+            const strengthColor = (c.confidence_pct || 0) >= 80 ? 'text-red-400' : (c.confidence_pct || 0) >= 60 ? 'text-amber-400' : 'text-gray-400'
+            return (
+              <div key={i} className="p-3 bg-gray-800/50 border border-gray-700/50 rounded-xl mb-2 last:mb-0">
+                <div className="flex items-center gap-2.5 mb-1.5">
+                  {faviconUrl && (
+                    <img src={faviconUrl} alt="" className="w-4 h-4 rounded shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                  )}
+                  <span className="font-semibold text-sm text-white">{c.name || domain}</span>
+                  <span className={`ml-auto text-xs font-medium ${strengthColor}`}>{strength}</span>
+                </div>
+                {c.reason && (
+                  <p className="text-xs text-gray-400 mb-1.5 leading-relaxed">{c.reason}</p>
+                )}
+                {sharedKw.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    <span className="text-xs text-gray-600 mr-0.5">Competes on:</span>
+                    {sharedKw.map((kw, j) => (
+                      <span key={j} className="px-1.5 py-0.5 bg-brand-900/40 border border-brand-800/40 rounded text-xs text-brand-400">
+                        {kw}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
-              <span className="text-xs text-gray-500">{c.confidence_pct}% match</span>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
+
       {data.own_keywords && data.own_keywords.length > 0 && (
         <div>
-          <p className="text-xs font-semibold text-gray-400 mb-2">YOUR TOPIC SPACE</p>
+          <p className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wide">
+            What your brand is known for
+          </p>
           <div className="flex flex-wrap gap-1.5">
             {data.own_keywords.slice(0, 10).map((kw, i) => (
               <span key={i} className="px-2 py-0.5 bg-brand-900/40 border border-brand-700/40 rounded-full text-xs text-brand-300">
@@ -171,11 +222,24 @@ function PreviewResults({ data }: { data: PreviewData }) {
           </div>
         </div>
       )}
-      <div className="p-3 bg-amber-950/30 border border-amber-800/40 rounded-lg">
-        <p className="text-xs text-amber-300">
-          <strong>What you unlock after payment:</strong> Full 9-layer competitor deep-dive,
-          LP Audit with conversion score, and a 90-day AI Growth OS strategy.
-        </p>
+
+      {/* What you unlock — website */}
+      <div className="p-4 bg-gray-900 border border-gray-700 rounded-xl space-y-3">
+        <p className="text-xs font-bold text-white uppercase tracking-wide">After payment, ARIA will:</p>
+        {[
+          { icon: '🔬', title: 'Study each competitor in detail', detail: 'What ads they\'re running, what messaging is working, what their customers love and hate — all in one report' },
+          { icon: '🚪', title: 'Tell you why people are leaving your site without buying', detail: 'ARIA checks your website like a real buyer would — load speed, pricing, trust signals, buttons, and more — then gives you a fix for each problem' },
+          { icon: '📋', title: 'Write your 90-day step-by-step growth plan', detail: 'Exactly which ads to run, which pages to fix, which offers to test — in order of what will make the most money first' },
+          { icon: '💡', title: 'Find the gaps your competitors are missing', detail: 'The audience they\'re ignoring, the messages they haven\'t tried, the products they haven\'t built — yours to capture' },
+        ].map(({ icon, title, detail }) => (
+          <div key={title} className="flex items-start gap-3">
+            <span className="text-base shrink-0">{icon}</span>
+            <div>
+              <p className="text-sm font-medium text-white">{title}</p>
+              <p className="text-xs text-gray-400 mt-0.5">{detail}</p>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -671,25 +735,30 @@ function OnboardPageInner() {
             <div className="p-4 bg-gradient-to-br from-brand-900/40 to-purple-900/40 border border-brand-700/40 rounded-xl space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="font-bold text-white">Full Analysis Report</p>
-                  <p className="text-xs text-gray-400">Brand Intel + LP Audit + 90-day Growth OS</p>
+                  <p className="font-bold text-white">Get the Full Report</p>
+                  <p className="text-xs text-gray-400 mt-0.5">Competitor deep-dive · Website fix list · 90-day growth plan</p>
                 </div>
                 <div className="text-right">
                   <p className="text-2xl font-bold text-white">₹499</p>
                   <p className="text-xs text-gray-400 line-through">₹4,999</p>
                 </div>
               </div>
+              <ul className="text-xs text-gray-300 space-y-1">
+                <li className="flex items-center gap-1.5"><CheckCircle className="h-3 w-3 text-green-400 shrink-0" />What each competitor is doing — and what you should steal from them</li>
+                <li className="flex items-center gap-1.5"><CheckCircle className="h-3 w-3 text-green-400 shrink-0" />Why people leave your site without buying, and how to fix it</li>
+                <li className="flex items-center gap-1.5"><CheckCircle className="h-3 w-3 text-green-400 shrink-0" />A 90-day plan with specific ads, pages, and offers — written for your brand</li>
+              </ul>
               <button
                 onClick={handlePay}
                 className="w-full flex items-center justify-center gap-2 px-6 py-3.5 bg-brand-600 hover:bg-brand-700 rounded-xl font-semibold text-sm transition-colors"
               >
                 <CreditCard className="h-4 w-4" />
-                Unlock Full Analysis — ₹499
+                Get My Full Report — ₹499
                 <ArrowRight className="h-4 w-4" />
               </button>
               <div className="flex items-center justify-center gap-4 text-xs text-gray-500">
                 <span className="flex items-center gap-1"><Lock className="h-3 w-3" /> Secured by Razorpay</span>
-                <span className="flex items-center gap-1"><Shield className="h-3 w-3 text-green-400" /> One-time payment</span>
+                <span className="flex items-center gap-1"><Shield className="h-3 w-3 text-green-400" /> Pay once, results ready in ~5 min</span>
               </div>
             </div>
           </div>

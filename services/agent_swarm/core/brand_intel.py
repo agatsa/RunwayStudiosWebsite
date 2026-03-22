@@ -157,17 +157,41 @@ async def run_discovery_phase(
 
     candidate_urls: dict[str, dict] = {}   # domain → {url, title, hit_count}
 
+    # Domains that are NOT direct competitors — marketplaces, aggregators, platforms, social, search
     skip_domains = {
+        # Social / search / content
         "reddit.com", "quora.com", "trustpilot.com", "g2.com",
         "capterra.com", "producthunt.com", "techcrunch.com",
         "wikipedia.org", "youtube.com", "twitter.com", "x.com",
         "linkedin.com", "facebook.com", "instagram.com",
-        "medium.com", "substack.com", "amazon.com", "flipkart.com",
-        "google.com", "bing.com", "duckduckgo.com",
+        "medium.com", "substack.com", "google.com", "bing.com", "duckduckgo.com",
+        # Global marketplaces & retailer giants
+        "amazon.com", "amazon.in", "flipkart.com", "ebay.com",
+        "walmart.com", "alibaba.com", "aliexpress.com", "temu.com",
+        # Indian horizontal marketplaces
+        "meesho.com", "snapdeal.com", "tatacliq.com", "jiomart.com",
+        "paytmmall.com", "shopclues.com", "naaptol.com",
+        # Fashion / beauty marketplaces
+        "myntra.com", "ajio.com", "nykaa.com", "purplle.com",
+        "bewakoof.com",
+        # Indian pharma / health aggregators (NOT product brands)
+        "1mg.com", "netmeds.com", "pharmeasy.in", "medplusmart.com",
+        "apollopharmacy.in", "apollocare.in", "reliancewellness.com",
+        "healthkart.com", "tatahealth.com", "smytten.com",
+        # Doctor / clinic / review aggregators
+        "practo.com", "lybrate.com", "justdial.com", "sulekha.com",
+        "healthifyme.com",
+        # B2B / directory
+        "indiamart.com", "tradeindia.com", "exportersindia.com",
+        # Comparison / review sites
+        "91mobiles.com", "gadgets360.com", "digit.in", "gsmarena.com",
+        # Grocery / quick commerce
+        "bigbasket.com", "blinkit.com", "swiggy.com", "zomato.com",
+        "zepto.com", "dunzo.com",
     }
 
-    # Primary: Ask Claude Haiku to directly name competitor domains using its world knowledge
-    claude_competitors = []
+    # Primary: Ask ARIA to directly name competitor domains using world knowledge
+    aria_competitors = []
     if own_text or brand_url:
         try:
             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -181,29 +205,35 @@ async def run_discovery_phase(
                         f"Website: {brand_url}\n"
                         f"Type: {type_label}\n"
                         f"Brand page content:\n{own_text[:2000]}\n\n"
-                        "Based on the brand page content and your world knowledge, "
-                        "list the 6 most direct competitors to this brand "
-                        "(same product category, similar price range, similar target audience).\n\n"
+                        "List the 6 most DIRECT competitors to this brand — meaning companies that "
+                        "make and sell the SAME type of product under their OWN brand name.\n\n"
+                        "STRICT RULES — exclude these completely:\n"
+                        "- Marketplaces (Amazon, Flipkart, 1MG, Netmeds, Nykaa, Meesho, etc.)\n"
+                        "- Pharma or health aggregators/platforms (PharmaEasy, Apollo Pharmacy, HealthKart, Practo, etc.)\n"
+                        "- Grocery or quick-commerce apps (BigBasket, Blinkit, Swiggy, Zepto, etc.)\n"
+                        "- Retailers who stock many brands (not a single-brand company)\n"
+                        "- Review sites, news sites, comparison sites, social media\n\n"
+                        "ONLY include: companies that manufacture or own a brand in the same product category, "
+                        "sell direct-to-consumer at a similar price point, and target the same buyer.\n\n"
                         "Return ONLY a valid JSON array, no explanation:\n"
-                        '[{"domain": "competitor.com", "name": "Brand Name", "reason": "same category + audience"}]\n\n'
-                        "Use real, verifiable competitor domains. "
-                        "If this is an Indian brand, prioritise Indian competitors first."
+                        '[{"domain": "competitor.com", "name": "Brand Name", "reason": "one line: what product they make + why they compete"}]\n\n'
+                        "Use real, verifiable domains. If this is an Indian brand, prioritise Indian D2C brands first."
                     ),
                 }],
             )
             raw = msg.content[0].text.strip()
             start = raw.find("[")
             if start != -1:
-                claude_competitors = json.loads(raw[start:raw.rfind("]") + 1])
+                aria_competitors = json.loads(raw[start:raw.rfind("]") + 1])
                 _log(conn, job_id, {
                     "type": "info",
-                    "msg": f"ARIA identified {len(claude_competitors)} competitor candidates",
+                    "msg": f"ARIA identified {len(aria_competitors)} direct brand competitors",
                 })
         except Exception as e:
-            print(f"[brand_intel] claude competitor discovery failed: {e}")
+            print(f"[brand_intel] ARIA competitor discovery failed: {e}")
 
-    # Add Claude's suggestions to candidate pool (high initial hit_count = high priority)
-    for item in claude_competitors:
+    # Add ARIA's suggestions to candidate pool (high initial hit_count = high priority)
+    for item in aria_competitors:
         dom = extract_domain(item.get("domain", ""))
         if not dom or dom == own_domain or any(s in dom for s in skip_domains):
             continue
@@ -213,7 +243,7 @@ async def run_discovery_phase(
                 "domain": dom,
                 "title": item.get("name", dom),
                 "reason": item.get("reason", ""),
-                "hit_count": 3,  # Claude-suggested gets priority score
+                "hit_count": 3,  # ARIA-suggested gets priority score
             }
 
     # ── Step 3: Web search (DDG) as secondary signal ──────────────────────────
@@ -279,6 +309,17 @@ async def run_discovery_phase(
         reverse=True,
     )[:MAX_COMPETITORS + 3]
 
+    # Marketplace/aggregator keywords — if a page's text is dominated by these, it's not a brand
+    _MARKETPLACE_SIGNALS = {
+        "add to cart", "seller", "sold by", "marketplace", "crore products",
+        "all categories", "electronics", "fashion", "grocery", "pharmacy",
+        "search products", "shop by category", "top brands", "new arrivals",
+        "best sellers", "free delivery on orders", "millions of products",
+        "buy from thousands", "verified sellers", "third-party sellers",
+        "doctor consultation", "book appointment", "find doctors near",
+        "upload prescription", "order medicines", "online pharmacy",
+    }
+
     validated = []
     for cand in sorted_candidates:
         if len(validated) >= MAX_COMPETITORS:
@@ -288,9 +329,19 @@ async def run_discovery_phase(
         root = f"https://{cand['domain']}"
         text = await jina_read(root, max_chars=1500)
         html, _ = await fetch_page(root)  # also need raw HTML for tech stack
-        # Claude-suggested competitors (hit_count=3) are accepted even if page fetch fails
-        is_claude_suggested = cand.get("hit_count", 0) >= 3
-        if not text and not html and not is_claude_suggested:
+        # ARIA-suggested competitors (hit_count=3) are accepted even if page fetch fails
+        is_aria_suggested = cand.get("hit_count", 0) >= 3
+        if not text and not html and not is_aria_suggested:
+            continue
+
+        # Post-filter: reject pages that look like marketplaces/aggregators
+        check_text = (text or "").lower()
+        marketplace_hits = sum(1 for sig in _MARKETPLACE_SIGNALS if sig in check_text)
+        if marketplace_hits >= 3:
+            _log(conn, job_id, {
+                "type": "info",
+                "msg": f"Skipping {cand['domain']} — looks like a marketplace/aggregator, not a direct brand",
+            })
             continue
         if not text:
             text = strip_html(html)[:1500] if html else cand.get("reason", "")[:400]
@@ -986,8 +1037,9 @@ def gather_brand_intel(workspace_id: str, conn) -> dict:
 # ── Utilities ───────────────────────────────────────────────────────────────────
 
 def _extract_keywords(text: str, n: int = 10) -> list:
-    """Simple TF-IDF-lite keyword extraction using word frequency."""
+    """TF-IDF-lite keyword extraction — filters e-commerce/marketplace noise to surface real topic terms."""
     stop = {
+        # Standard English
         "the","a","an","and","or","but","in","on","at","to","for","of","with",
         "is","are","was","were","be","been","have","has","had","will","would",
         "can","could","should","may","might","this","that","these","those",
@@ -996,6 +1048,27 @@ def _extract_keywords(text: str, n: int = 10) -> list:
         "get","use","also","just","how","what","when","which","who","about",
         "new","one","two","free","best","top","help","need","want","like",
         "com","www","https","http","page",
+        # E-commerce / marketplace noise — terms that appear on ANY e-commerce site
+        "buy","shop","order","price","offer","sale","deal","discount","cart",
+        "checkout","delivery","shipping","return","refund","payment","cash",
+        "online","india","india's","indian","delhi","mumbai","bangalore",
+        "store","product","products","item","items","brand","brands",
+        "quality","service","customer","support","contact","about","home",
+        "click","here","read","more","view","search","filter","sort",
+        "review","reviews","rating","ratings","star","stars","verified",
+        "sold","seller","sellers","stock","instock","availability",
+        "register","login","signup","account","profile","wishlist",
+        "category","categories","collection","collections",
+        "offer","offers","coupon","coupons","code","codes","flat","upto",
+        "percent","percent","rs","inr","mrp","emi","emi",
+        "fast","quick","same","next","day","days","hour","hours",
+        "secure","safe","original","genuine","authentic","trusted",
+        "policy","privacy","terms","conditions","cookie",
+        # Marketplace / aggregator brand names as words
+        "amazon","flipkart","nykaa","meesho","snapdeal","myntra",
+        "netmeds","pharmeasy","practo","healthkart","lybrate",
+        "bigbasket","blinkit","zepto","swiggy","zomato",
+        "indiamart","justdial",
     }
     words = re.findall(r"[a-z]{4,}", text.lower())
     freq: dict = {}

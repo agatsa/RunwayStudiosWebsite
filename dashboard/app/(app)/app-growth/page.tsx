@@ -574,7 +574,7 @@ function AsoTab({ wsId, status }: { wsId: string; status: AppStatus | null }) {
           <div>
             <h3 className="text-sm font-semibold text-gray-800">AI Metadata Optimizer</h3>
             <p className="text-xs text-gray-500 mt-0.5">
-              Paste your current App Store / Play Store metadata — Claude scores it and rewrites optimized title, subtitle, keywords, and description
+              Paste your current App Store / Play Store metadata — ARIA scores it and rewrites optimized title, subtitle, keywords, and description
             </p>
           </div>
           {analyzeOpen ? <ChevronUp className="h-4 w-4 text-gray-400" /> : <ChevronDown className="h-4 w-4 text-gray-400" />}

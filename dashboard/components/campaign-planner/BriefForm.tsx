@@ -206,7 +206,7 @@ export default function BriefForm({ workspaceId }: BriefFormProps) {
                 <p className="text-base font-semibold text-sky-900">AI Auto-Plan</p>
               </div>
               <p className="text-sm text-sky-700">
-                Claude reads your product catalog, recent spend, ROAS, conversions and best-performing
+                ARIA reads your product catalog, recent spend, ROAS, conversions and best-performing
                 campaigns — then recommends a complete multi-channel growth plan. No manual input needed.
               </p>
               <ul className="mt-3 space-y-1 text-sm text-sky-600">
@@ -217,7 +217,7 @@ export default function BriefForm({ workspaceId }: BriefFormProps) {
             </div>
 
             {loading ? (
-              <AiThinkingLoader message="Claude is analysing your workspace data…" />
+              <AiThinkingLoader message="ARIA is analysing your workspace data…" />
             ) : (
               <button
                 onClick={handleAutoGenerate}
@@ -341,7 +341,7 @@ export default function BriefForm({ workspaceId }: BriefFormProps) {
             </div>
 
             {loading ? (
-              <AiThinkingLoader message="Claude is generating your campaign brief…" />
+              <AiThinkingLoader message="ARIA is generating your campaign brief…" />
             ) : (
               <button
                 onClick={handleGenerate}

@@ -384,7 +384,7 @@ export default function LandingPagesPage() {
         </div>
         <div className="flex items-center justify-between">
           <p className="text-xs text-gray-400">
-            ARIA checks load speed, CTA placement, price visibility, trust signals, and competitor comparison using Claude AI.
+            ARIA checks load speed, CTA placement, price visibility, trust signals, and competitor comparison.
           </p>
           <button
             onClick={handleStartAudit}
@@ -409,7 +409,7 @@ export default function LandingPagesPage() {
             </div>
           </div>
           <div className="grid grid-cols-4 gap-2 text-xs text-indigo-700">
-            {['Fetching page content', 'Analysing CTAs & pricing', 'Auditing competitors', 'Claude recommendations'].map((s, i) => (
+            {['Fetching page content', 'Analysing CTAs & pricing', 'Auditing competitors', 'ARIA recommendations'].map((s, i) => (
               <div key={i} className="flex items-center gap-1.5 rounded-lg bg-indigo-100 px-2.5 py-1.5">
                 <div className="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse" style={{ animationDelay: `${i * 0.3}s` }} />
                 {s}
@@ -527,7 +527,7 @@ export default function LandingPagesPage() {
           <h3 className="text-base font-semibold text-gray-700 mb-2">Audit your landing page</h3>
           <p className="text-sm text-gray-400 max-w-md mx-auto">
             Enter your landing page URL above. ARIA will score it on 6 conversion signals, compare it against competitors,
-            and give Claude-powered recommendations to improve conversion rate from paid ads.
+            and give ARIA-powered recommendations to improve conversion rate from paid ads.
           </p>
           <div className="mt-6 grid grid-cols-3 gap-3 max-w-lg mx-auto text-xs text-left">
             {[
