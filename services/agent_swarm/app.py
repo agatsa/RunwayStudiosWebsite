@@ -4,6 +4,22 @@ Agent Swarm FastAPI service — multi-tenant edition.
 All endpoints accept an optional phone_number_id in the request body
 to route to the correct client account. Falls back to env-var defaults
 for backward compatibility.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BACKGROUND TASK RULE — READ BEFORE ADDING background_tasks.add_task()
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FastAPI BackgroundTasks:
+  - `def task():`       → runs in a thread pool (non-blocking ✅)
+  - `async def task():` → runs in the EVENT LOOP (blocks ALL requests ❌)
+
+If your task calls ANY of: time.sleep(), DB queries, Claude API, HTTP requests,
+or ANY synchronous library — it MUST be `def`, not `async def`.
+
+Only use `async def` if the task body exclusively `await`s true async coroutines
+(e.g. `await httpx.AsyncClient().get(...)` or `await run_full_audit(...)`).
+
+Violation = stuck jobs, no logs, 100% event loop blocked, users see spinner forever.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 import os
 import time
@@ -11429,6 +11445,26 @@ async def admin_migrate(request: Request):
         )""",
         "CREATE INDEX IF NOT EXISTS idx_gos_jobs_ws ON growth_os_jobs(workspace_id, created_at DESC)",
         "ALTER TABLE growth_os_plans ADD COLUMN IF NOT EXISTS sources_used JSONB",
+        # v43 — Onboarding funnel: visitor → preview → payment → chain
+        """CREATE TABLE IF NOT EXISTS onboard_jobs (
+            id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id      UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            url               TEXT NOT NULL DEFAULT '',
+            url_type          TEXT NOT NULL DEFAULT 'website',
+            status            TEXT NOT NULL DEFAULT 'pending',
+            preview_data      JSONB,
+            bi_job_id         UUID,
+            yt_job_id         UUID,
+            gos_job_id        UUID,
+            lp_audit          JSONB,
+            chain_log         JSONB NOT NULL DEFAULT '[]',
+            razorpay_order_id TEXT,
+            paid_at           TIMESTAMPTZ,
+            created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_onboard_jobs_ws ON onboard_jobs(workspace_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_onboard_jobs_order ON onboard_jobs(razorpay_order_id) WHERE razorpay_order_id IS NOT NULL",
     ]
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -14087,7 +14123,10 @@ async def yt_ci_regenerate_recipe(request: Request, background_tasks: Background
         _check_and_deduct_credits(conn, org_id, workspace_id,
                                   FEATURE_COSTS["growth_recipe_regen"], "growth_recipe_regen")
 
-    async def _regen():
+    # RULE: background tasks that call blocking/sync functions MUST be `def`, not `async def`.
+    # `async def` runs in the event loop and will block all incoming requests (including polls).
+    # Only use `async def` if the inner function itself does `await` on a true coroutine.
+    def _regen():
         from services.agent_swarm.db import get_conn as _gc
         from services.agent_swarm.core.yt_intelligence import generate_growth_recipe as _gen
         try:
@@ -14227,7 +14266,10 @@ async def growth_os_generate(request: Request, background_tasks: BackgroundTasks
 
     plan_id = str(_uuid.uuid4())
 
-    async def _gen():
+    # RULE: background tasks that call blocking/sync functions MUST be `def`, not `async def`.
+    # `async def` runs in the event loop and will block all incoming requests (including polls).
+    # Only use `async def` if the inner function itself does `await` on a true coroutine.
+    def _gen():
         from services.agent_swarm.db import get_conn as _gc
         from services.agent_swarm.core.growth_os import generate_action_plan as _gen_plan
         try:
@@ -14639,7 +14681,7 @@ async def growth_os_run_v2(request: Request, background_tasks: BackgroundTasks):
                 (job_id, workspace_id, directive or "", strategy_mode or ""),
             )
 
-    async def _run():
+    def _run():
         from services.agent_swarm.core.growth_os import run_full_strategy_job
         try:
             run_full_strategy_job(
@@ -17860,3 +17902,255 @@ async def brand_intel_rediscover(request: Request, background_tasks: BackgroundT
         job_id, workspace_id, brand_url, workspace_type,
     )
     return {"ok": True, "job_id": job_id}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ONBOARDING FUNNEL
+# visitor → URL input → free preview → ₹499 payment → auto-chain → dashboard
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ONBOARD_PRICE_PAISE = 49900  # ₹499 in paise
+
+
+@app.post("/onboard/detect-url")
+async def onboard_detect_url(request: Request):
+    """Detect URL type without authentication. Returns url_type: website|youtube."""
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url required")
+    from services.agent_swarm.core.onboard_chain import detect_url_type
+    url_type = detect_url_type(url)
+    return {"url": url, "url_type": url_type}
+
+
+@app.post("/onboard/free-preview")
+async def onboard_free_preview(request: Request, background_tasks: BackgroundTasks):
+    """
+    Start a free preview analysis for the given URL.
+    Creates onboard_job row + kicks off Brand Intel Phase 1 (website)
+    or YouTube channel detection (youtube) in background.
+    Body: {workspace_id, url}
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = (body.get("workspace_id") or "").strip()
+    url = (body.get("url") or "").strip()
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    if not url:
+        raise HTTPException(status_code=400, detail="url required")
+
+    from services.agent_swarm.core.onboard_chain import detect_url_type
+    url_type = detect_url_type(url)
+
+    import uuid as _uuid_ob
+    job_id = str(_uuid_ob.uuid4())
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO onboard_jobs (id, workspace_id, url, url_type, status)
+                   VALUES (%s::uuid, %s::uuid, %s, %s, 'pending')""",
+                (job_id, workspace_id, url, url_type),
+            )
+        conn.commit()
+
+    def _run_preview():
+        import asyncio as _asyncio
+        from services.agent_swarm.core.onboard_chain import run_free_preview as _rfp
+        from services.agent_swarm.db import get_conn as _gc
+        with _gc() as _conn:
+            _asyncio.run(_rfp(job_id, workspace_id, url, url_type, _conn))
+
+    background_tasks.add_task(_run_preview)
+    return {"ok": True, "job_id": job_id, "url_type": url_type}
+
+
+@app.get("/onboard/preview-status/{job_id}")
+async def onboard_preview_status(job_id: str, request: Request):
+    """Poll status + logs for an onboard job. Works during preview AND chain phases."""
+    _auth(request)
+    workspace_id = request.query_params.get("workspace_id", "")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT status, chain_log, preview_data, bi_job_id, yt_job_id, gos_job_id,
+                          url, url_type, paid_at, created_at
+                   FROM onboard_jobs
+                   WHERE id = %s::uuid AND (%s = '' OR workspace_id = %s::uuid)""",
+                (job_id, workspace_id, workspace_id if workspace_id else job_id),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    status, logs, preview_data, bi_job_id, yt_job_id, gos_job_id, url, url_type, paid_at, created_at = row
+
+    import datetime as _dt_ob
+    if status in ("previewing", "chain_running") and created_at:
+        age_minutes = (_dt_ob.datetime.utcnow() - created_at.replace(tzinfo=None)).total_seconds() / 60
+        if age_minutes > 30:
+            status = "failed"
+            with get_conn() as conn2:
+                with conn2.cursor() as cur2:
+                    cur2.execute(
+                        "UPDATE onboard_jobs SET status='failed', updated_at=NOW() WHERE id=%s::uuid AND status NOT IN ('complete','failed')",
+                        (job_id,),
+                    )
+
+    logs_list = logs if isinstance(logs, list) else []
+    preview = preview_data if isinstance(preview_data, dict) else (
+        json.loads(preview_data) if preview_data else None
+    )
+
+    return {
+        "job_id": job_id,
+        "status": status,
+        "logs": logs_list,
+        "preview_data": preview,
+        "url": url,
+        "url_type": url_type,
+        "bi_job_id": str(bi_job_id) if bi_job_id else None,
+        "yt_job_id": str(yt_job_id) if yt_job_id else None,
+        "gos_job_id": str(gos_job_id) if gos_job_id else None,
+        "paid": paid_at is not None,
+    }
+
+
+@app.post("/onboard/create-order")
+async def onboard_create_order(request: Request):
+    """
+    Create a Razorpay order for the onboard flat package (499 INR).
+    Body: {workspace_id, job_id}
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = (body.get("workspace_id") or "").strip()
+    job_id = (body.get("job_id") or "").strip()
+    if not workspace_id or not job_id:
+        raise HTTPException(status_code=400, detail="workspace_id and job_id required")
+
+    from services.agent_swarm.config import RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET
+
+    if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET:
+        import httpx as _httpx_ob
+        import base64 as _b64_ob
+        auth = _b64_ob.b64encode(f"{RAZORPAY_KEY_ID}:{RAZORPAY_KEY_SECRET}".encode()).decode()
+        resp = _httpx_ob.post(
+            "https://api.razorpay.com/v1/orders",
+            headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"},
+            json={
+                "amount": ONBOARD_PRICE_PAISE,
+                "currency": "INR",
+                "receipt": f"onboard_{job_id[:8]}",
+                "notes": {"workspace_id": workspace_id, "job_id": job_id, "type": "onboard"},
+            },
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Razorpay error: {resp.text}")
+        rzp_order_id = resp.json()["id"]
+    else:
+        import uuid as _uuid_rzp
+        rzp_order_id = f"stub_onboard_{_uuid_rzp.uuid4().hex[:12]}"
+
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO billing_orders
+                   (org_id, razorpay_order_id, type, credits, amount_paise, status)
+                   VALUES (%s, %s, 'onboard', 0, %s, 'pending')
+                   ON CONFLICT (razorpay_order_id) DO NOTHING""",
+                (org_id, rzp_order_id, ONBOARD_PRICE_PAISE),
+            )
+            cur.execute(
+                "UPDATE onboard_jobs SET razorpay_order_id=%s, updated_at=NOW() WHERE id=%s::uuid",
+                (rzp_order_id, job_id),
+            )
+        conn.commit()
+
+    return {
+        "order_id": rzp_order_id,
+        "amount_paise": ONBOARD_PRICE_PAISE,
+        "razorpay_key_id": RAZORPAY_KEY_ID or "TEST_MODE",
+        "currency": "INR",
+        "job_id": job_id,
+    }
+
+
+@app.post("/onboard/confirm-purchase")
+async def onboard_confirm_purchase(request: Request, background_tasks: BackgroundTasks):
+    """
+    Verify Razorpay payment and start the post-payment analysis chain.
+    Body: {workspace_id, job_id, razorpay_order_id, razorpay_payment_id, razorpay_signature, directive?}
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id        = (body.get("workspace_id") or "").strip()
+    job_id              = (body.get("job_id") or "").strip()
+    razorpay_order_id   = (body.get("razorpay_order_id") or "").strip()
+    razorpay_payment_id = (body.get("razorpay_payment_id") or "").strip()
+    razorpay_signature  = (body.get("razorpay_signature") or "").strip()
+    directive           = (body.get("directive") or "").strip()
+    if not workspace_id or not job_id or not razorpay_order_id:
+        raise HTTPException(status_code=400, detail="workspace_id, job_id, razorpay_order_id required")
+
+    import hmac as _hmac_ob, hashlib as _hs_ob
+    from services.agent_swarm.config import RAZORPAY_KEY_SECRET
+
+    if RAZORPAY_KEY_SECRET and not razorpay_order_id.startswith("stub_"):
+        expected = _hmac_ob.new(
+            RAZORPAY_KEY_SECRET.encode(),
+            f"{razorpay_order_id}|{razorpay_payment_id}".encode(),
+            _hs_ob.sha256,
+        ).hexdigest()
+        if not _hmac_ob.compare_digest(expected, razorpay_signature):
+            raise HTTPException(status_code=400, detail="Invalid payment signature")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT url, url_type, bi_job_id, paid_at FROM onboard_jobs WHERE id=%s::uuid AND workspace_id=%s::uuid",
+                (job_id, workspace_id),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Onboard job not found")
+    url, url_type, bi_job_id, paid_at = row
+    if paid_at:
+        return {"ok": True, "already_paid": True, "job_id": job_id}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE onboard_jobs SET paid_at=NOW(), updated_at=NOW() WHERE id=%s::uuid",
+                (job_id,),
+            )
+            cur.execute(
+                """UPDATE billing_orders SET status='paid', razorpay_payment_id=%s, updated_at=NOW()
+                   WHERE razorpay_order_id=%s""",
+                (razorpay_payment_id, razorpay_order_id),
+            )
+        conn.commit()
+
+    def _run_chain():
+        from services.agent_swarm.core.onboard_chain import run_paid_chain as _rpc
+        _rpc(
+            job_id=job_id,
+            workspace_id=workspace_id,
+            url=url,
+            url_type=url_type,
+            bi_job_id=str(bi_job_id) if bi_job_id else None,
+            directive=directive or None,
+        )
+
+    background_tasks.add_task(_run_chain)
+    return {"ok": True, "job_id": job_id, "status": "chain_running"}
+
+
+@app.get("/onboard/chain-status/{job_id}")
+async def onboard_chain_status(job_id: str, request: Request):
+    """Poll chain progress — delegates to preview-status."""
+    _auth(request)
+    return await onboard_preview_status(job_id, request)

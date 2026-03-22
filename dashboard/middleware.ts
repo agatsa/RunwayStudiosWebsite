@@ -12,6 +12,9 @@ const isPublicRoute = createRouteMatcher([
   '/unsubscribe(.*)',
   // Internal debug route for email domain diagnosis
   '/api/email/domain/debug(.*)',
+  // Onboarding funnel — publicly accessible, auth handled inside page
+  '/onboard(.*)',
+  '/api/onboard(.*)',
 ])
 
 export default clerkMiddleware((auth, request) => {
