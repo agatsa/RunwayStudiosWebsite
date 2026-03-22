@@ -68,7 +68,10 @@ def _get_search_queries(product_context: str, landing_page_url: str = None) -> l
             return [str(q).strip() for q in queries[:4] if q]
     except Exception as e:
         print(f"competitor_monitor: query generation failed: {e}")
-    return ["health wearable smartband India buy", "wellness smart band India official site"]
+    # Generic fallback — Claude generates better queries from actual product_context
+    brand_kw = (product_context or "").split()[:3]
+    base = " ".join(brand_kw) if brand_kw else "Indian D2C brand"
+    return [f"{base} buy India", f"{base} official site India"]
 
 
 # ── Step 2: DuckDuckGo web search ──────────────────────────
@@ -308,8 +311,59 @@ def run_competitor_monitor(
     4. Claude analyses each + produces gap analysis vs our current performance
     """
     tenant_id = (tenant or {}).get("id") or _DEFAULT_TENANT_ID
-    product_ctx = (tenant or {}).get("product_context") or PRODUCT_CONTEXT
+    workspace_id = (tenant or {}).get("workspace_id") or None
+
+    # Try to build product_ctx from DB products catalog first (workspace-aware)
+    product_ctx = None
+    if workspace_id:
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT name, description, price_inr
+                        FROM products
+                        WHERE workspace_id = %s AND is_active = TRUE
+                        ORDER BY created_at DESC LIMIT 6
+                        """,
+                        (workspace_id,),
+                    )
+                    rows = cur.fetchall()
+                    if rows:
+                        lines = [
+                            f"- {r[0]}" + (f" (₹{float(r[2]):,.0f})" if r[2] else "") + (f": {r[1][:120]}" if r[1] else "")
+                            for r in rows
+                        ]
+                        # Also fetch workspace type + brand URL for richer context
+                        cur.execute(
+                            "SELECT name, workspace_type, brand_url FROM workspaces WHERE id = %s",
+                            (workspace_id,),
+                        )
+                        ws = cur.fetchone()
+                        ws_brand = f"{ws[0]} ({ws[1]}) — {ws[2]}" if ws else ""
+                        product_ctx = (f"Brand: {ws_brand}\nProducts:\n" if ws_brand else "Products:\n") + "\n".join(lines)
+        except Exception as e:
+            print(f"competitor_monitor: DB product_ctx fetch failed: {e}")
+
+    # Fall back to tenant product_context or env var
+    if not product_ctx:
+        product_ctx = (tenant or {}).get("product_context") or PRODUCT_CONTEXT
+
     lp_url = (tenant or {}).get("landing_page_url") or ""
+    # Try brand_url from DB if no landing_page_url in tenant
+    if not lp_url and workspace_id:
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT brand_url, store_url FROM workspaces WHERE id = %s",
+                        (workspace_id,),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        lp_url = row[0] or row[1] or ""
+        except Exception:
+            pass
 
     # Step 1: Generate search queries
     print("competitor_monitor: generating search queries...")

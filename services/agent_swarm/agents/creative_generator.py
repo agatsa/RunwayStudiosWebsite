@@ -76,7 +76,7 @@ def _scrape_page_content(url: str, max_chars: int = 4000) -> str | None:
 
 # ── Fetch context ──────────────────────────────────────────
 
-def _fetch_creative_context(platform: str, account_id: str) -> dict:
+def _fetch_creative_context(platform: str, account_id: str, workspace_id: str = None) -> dict:
     now = datetime.now(timezone.utc)
     t7d = now - timedelta(days=7)
 
@@ -157,6 +157,77 @@ def _fetch_creative_context(platform: str, account_id: str) -> dict:
             row = cur.fetchone()
             weekly_digest = row[0] if row else "No prior weekly data."
 
+            # ── Workspace-level intel (requires workspace_id) ──────────────────
+            search_terms = []
+            competitors = []
+            products = []
+            if workspace_id:
+                # Top converting search terms (last 30d)
+                try:
+                    cur.execute(
+                        """
+                        SELECT entity_name, COALESCE(SUM(clicks),0) AS clicks,
+                               COALESCE(SUM(conversions),0) AS conv
+                        FROM kpi_hourly
+                        WHERE workspace_id = %s AND entity_level = 'search_term'
+                          AND hour_ts >= NOW() - INTERVAL '30 days'
+                          AND entity_name IS NOT NULL AND entity_name != ''
+                        GROUP BY entity_name
+                        ORDER BY conv DESC, clicks DESC
+                        LIMIT 10
+                        """,
+                        (workspace_id,),
+                    )
+                    search_terms = [
+                        {"term": r[0], "clicks": int(r[1] or 0), "conversions": int(r[2] or 0)}
+                        for r in cur.fetchall()
+                    ]
+                except Exception as e:
+                    print(f"_fetch_creative_context search_terms error: {e}")
+
+                # Competitor names + positioning from brand intel
+                try:
+                    cur.execute(
+                        """
+                        SELECT c.name, c.website, c.positioning, c.pricing_tier,
+                               c.pain_points_exploited, c.ad_angles
+                        FROM brand_intel_profiles c
+                        WHERE c.workspace_id = %s
+                        ORDER BY c.created_at DESC
+                        LIMIT 4
+                        """,
+                        (workspace_id,),
+                    )
+                    for r in cur.fetchall():
+                        comp = {"name": r[0] or "", "website": r[1] or ""}
+                        if r[2]: comp["positioning"] = r[2]
+                        if r[3]: comp["pricing_tier"] = r[3]
+                        if r[4]: comp["pain_points"] = r[4][:200] if r[4] else ""
+                        if r[5]: comp["ad_angles"] = r[5][:200] if r[5] else ""
+                        competitors.append(comp)
+                except Exception as e:
+                    print(f"_fetch_creative_context competitors error: {e}")
+
+                # Products from catalog
+                try:
+                    cur.execute(
+                        """
+                        SELECT name, description, price_inr, sku
+                        FROM products
+                        WHERE workspace_id = %s AND is_active = TRUE
+                        ORDER BY created_at DESC
+                        LIMIT 6
+                        """,
+                        (workspace_id,),
+                    )
+                    products = [
+                        {"name": r[0] or "", "description": (r[1] or "")[:150],
+                         "price_inr": float(r[2] or 0), "sku": r[3] or ""}
+                        for r in cur.fetchall()
+                    ]
+                except Exception as e:
+                    print(f"_fetch_creative_context products error: {e}")
+
     return {
         "last_7d": {
             "spend": round(spend7, 2), "revenue": round(rev7, 2), "roas": roas7,
@@ -167,6 +238,9 @@ def _fetch_creative_context(platform: str, account_id: str) -> dict:
         "landing_page": lp_data,
         "fatigue_ads": fatigue,
         "weekly_digest": weekly_digest[:800],
+        "search_terms": search_terms,
+        "competitors": competitors,
+        "products_catalog": products,
     }
 
 
@@ -188,21 +262,51 @@ def _generate_concepts(
 {page_content}
 """
 
-    prompt = f"""You are a senior performance marketing strategist for Indian D2C brands.
-Your job: create 2 high-converting Facebook/Instagram ad concepts for the product below.
+    # Build cross-module sections
+    search_terms_section = ""
+    if context.get("search_terms"):
+        terms_str = "\n".join(
+            f"  • \"{t['term']}\" — {t['clicks']} clicks, {t['conversions']} conversions"
+            for t in context["search_terms"]
+        )
+        search_terms_section = f"\n=== TOP SEARCH TERMS (use these exact phrases in ad copy) ===\n{terms_str}"
 
-=== PRODUCT ===
+    competitor_section = ""
+    if context.get("competitors"):
+        comp_lines = []
+        for c in context["competitors"]:
+            line = f"  • {c['name']}"
+            if c.get("positioning"): line += f" — {c['positioning']}"
+            if c.get("pricing_tier"): line += f" (price tier: {c['pricing_tier']})"
+            if c.get("ad_angles"): line += f"\n    Ad angles: {c['ad_angles']}"
+            comp_lines.append(line)
+        competitor_section = f"\n=== COMPETITOR INTELLIGENCE (differentiate — don't copy) ===\n" + "\n".join(comp_lines)
+
+    products_section = ""
+    if context.get("products_catalog"):
+        prod_lines = "\n".join(
+            f"  • {p['name']}" + (f" — ₹{p['price_inr']:,.0f}" if p['price_inr'] > 0 else "") + (f" | {p['description']}" if p['description'] else "")
+            for p in context["products_catalog"]
+        )
+        products_section = f"\n=== PRODUCTS CATALOG (create ads for these specific products) ===\n{prod_lines}"
+
+    prompt = f"""You are a senior performance marketing strategist for Indian D2C brands.
+Your job: create 2 high-converting Facebook/Instagram ad concepts for the brand below.
+
+=== BRAND / PRODUCT CONTEXT ===
 {ctx}
 {live_section}
+{products_section}
 === ACCOUNT PERFORMANCE (last 7 days) ===
 {json.dumps(context['last_7d'], indent=2)}
 
 === TOP CUSTOMER OBJECTIONS ===
-{json.dumps(context['top_objections'], indent=2) if context['top_objections'] else 'No data yet — use common health-product objections: price, trust, "does it really work?"'}
+{json.dumps(context['top_objections'], indent=2) if context['top_objections'] else 'No data yet — use common Indian D2C objections: price, trust, quality, delivery time, "does it really work?"'}
 
 === LANDING PAGE AUDIT ===
 {json.dumps(context['landing_page'], indent=2) if context['landing_page'] else 'Not audited yet. Assume standard e-commerce page.'}
-
+{search_terms_section}
+{competitor_section}
 === TRIGGER REASON ===
 {trigger_reason}
 
@@ -210,10 +314,13 @@ Your job: create 2 high-converting Facebook/Instagram ad concepts for the produc
 Generate 2 completely different ad concepts. Use proven high-converting frameworks for Indian D2C:
 - Framework options: PAS (Problem-Agitate-Solution), Social Proof + Authority, Before/After,
   Specificity + Curiosity, Price Anchor + Urgency, UGC/Testimonial style, Fear + Relief
-- Target: health-conscious Indians 28-55, working professionals, people with diabetes/BP concerns
+- Target: infer the right audience from the product context above — do NOT assume health/medical audience unless the product is health-related
 - Tone: trustworthy, simple, proudly Made in India
 - Address the top objections if data is available
 - Landing page issues (if score < 7): compensate in ad copy (add trust, urgency, social proof)
+- If search terms are provided: weave the top converting search phrases naturally into headline or primary text
+- If competitor intel is provided: position against competitors — highlight differentiated benefits, address gaps they leave open
+- If products catalog is provided: reference specific product names and prices from the catalog
 
 For each concept return EXACTLY this JSON structure (no markdown, just JSON array):
 [
@@ -226,7 +333,7 @@ For each concept return EXACTLY this JSON structure (no markdown, just JSON arra
     "headline": "bold text below image (40 chars max). Clear benefit or curiosity.",
     "description": "smaller text below headline (30 chars max). Supporting detail.",
     "cta": "one of: Shop Now, Learn More, Get Offer, Order Now",
-    "image_prompt": "detailed Flux image generation prompt (no text in image). Describe scene, subject, lighting, style. Include: Indian person, product clearly visible on wrist, specific emotional state or setting. Aim for high-quality product lifestyle photography.",
+    "image_prompt": "detailed Flux image generation prompt (no text in image). Describe scene, subject, lighting, style. Include: Indian person, product clearly visible in use, specific emotional state or setting. Aim for high-quality product lifestyle photography.",
     "use_product_image": true,
     "product_image_type": "physical"
   }},
@@ -239,7 +346,7 @@ For each concept return EXACTLY this JSON structure (no markdown, just JSON arra
     "headline": "bold text below image (40 chars max). Clear benefit or curiosity.",
     "description": "smaller text below headline (30 chars max). Supporting detail.",
     "cta": "one of: Shop Now, Learn More, Get Offer, Order Now",
-    "image_prompt": "detailed Flux image generation prompt (no text in image). Describe scene, subject, lighting, style. Include: Indian person, product clearly visible on wrist, specific emotional state or setting. Aim for high-quality product lifestyle photography.",
+    "image_prompt": "detailed Flux image generation prompt (no text in image). Describe scene, subject, lighting, style. Include: Indian person, product clearly visible in use, specific emotional state or setting. Aim for high-quality product lifestyle photography.",
     "use_product_image": true,
     "product_image_type": "physical"
   }}
@@ -732,8 +839,9 @@ def run_creative_generator(
         else:
             print(f"Scrape returned nothing for {scrape_url} — continuing without")
 
+    ws_id = (tenant or {}).get("workspace_id") or (tenant or {}).get("id") or None
     try:
-        context = _fetch_creative_context(platform, account_id)
+        context = _fetch_creative_context(platform, account_id, workspace_id=ws_id)
     except Exception as e:
         return {"ok": False, "error": f"Context fetch failed: {e}"}
 
@@ -963,7 +1071,7 @@ def train_product_lora(
 
 def _edit_copy_with_claude(concept: dict, instructions: str) -> dict:
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    prompt = f"""You are editing an ad creative for an Indian health/wellness product.
+    prompt = f"""You are editing an ad creative for an Indian brand.
 
 Current ad copy:
 Angle: {concept['angle']}

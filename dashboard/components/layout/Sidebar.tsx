@@ -4,11 +4,9 @@ import Link from 'next/link'
 import { usePathname, useSearchParams, useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import {
-  LayoutDashboard, CheckSquare, Package, Megaphone, BarChart2,
-  PlayCircle, Zap, Settings, ShoppingBag, TrendingUp, Crosshair,
-  MessageSquare, ClipboardList, Layout, Layers, Send, Mail,
-  Sparkles, CreditCard, LifeBuoy, Search, Smartphone,
-  ChevronDown, Check, Plus, Trash2,
+  Home, BarChart2, Zap, Settings,
+  Sparkles, ChevronDown, Check, Plus, Trash2,
+  Target, Brain,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useWorkspace } from '@/components/layout/WorkspaceProvider'
@@ -19,106 +17,52 @@ interface NavItem {
   label: string
   href: string
   icon: React.ElementType
-  soon?: boolean
-  limited?: boolean   // amber "API Soon" badge — partial functionality
-  badge?: boolean
-  highlight?: boolean
-  moduleKey?: string   // maps to relevant_modules from Growth OS plan
+  // Routes that count as "active" for this item
+  activeRoutes?: string[]
 }
 
-interface NavSection {
-  title?: string
-  items: NavItem[]
-}
-
-const navSections: NavSection[] = [
+const NAV_ITEMS: NavItem[] = [
   {
-    items: [
-      { label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-    ],
+    label: 'Home',
+    href: '/home',
+    icon: Home,
+    activeRoutes: ['/home', '/dashboard'],
   },
   {
-    title: 'CHANNELS',
-    items: [
-      { label: 'Meta Ads',    href: '/campaigns',       icon: Megaphone },
-      { label: 'Google Ads',  href: '/google-ads',      icon: BarChart2,    limited: true },
-      { label: 'YouTube',     href: '/youtube',         icon: PlayCircle },
-      { label: 'Marketplace', href: '/marketplace',     icon: ShoppingBag },
-    ],
+    label: 'Data',
+    href: '/data',
+    icon: BarChart2,
+    activeRoutes: ['/data', '/campaigns', '/google-ads', '/youtube', '/marketplace', '/analytics'],
   },
   {
-    title: 'GROWTH OS',
-    items: [
-      { label: 'Command Center', href: '/growth-os', icon: Sparkles, highlight: true },
-      { label: 'App Growth',     href: '/app-growth', icon: Smartphone, moduleKey: 'app_growth' },
-    ],
+    label: 'Plan',
+    href: '/plan',
+    icon: Target,
+    activeRoutes: ['/plan', '/growth-os', '/campaign-planner', '/approvals', '/organic-posts'],
   },
   {
-    title: 'INTELLIGENCE',
-    items: [
-      { label: 'Search Trends',      href: '/search-trends',    icon: TrendingUp,   soon: true, moduleKey: 'search_trends' },
-      { label: 'Competitor Intel',   href: '/competitor-intel', icon: Crosshair,    moduleKey: 'competitor_intel' },
-      { label: 'Comments & Reviews', href: '/comments',         icon: MessageSquare },
-      { label: 'SEO',                href: '/seo',              icon: Search,       moduleKey: 'seo' },
-    ],
+    label: 'Intel',
+    href: '/intel',
+    icon: Brain,
+    activeRoutes: ['/intel', '/competitor-intel', '/landing-pages', '/comments', '/search-trends', '/seo', '/app-growth'],
   },
   {
-    title: 'PLANNING',
-    items: [
-      { label: 'Campaign Planner', href: '/campaign-planner', icon: ClipboardList, moduleKey: 'campaign_planner' },
-      { label: 'Landing Pages',    href: '/landing-pages',    icon: Layout },
-      { label: 'Awareness Funnel', href: '/awareness',        icon: Layers,       soon: true },
-    ],
-  },
-  {
-    title: 'OPERATIONS',
-    items: [
-      { label: 'Organic Posts', href: '/organic-posts', icon: Send,       moduleKey: 'organic_posts' },
-      { label: 'Products',      href: '/products',      icon: Package,    moduleKey: 'products' },
-      { label: 'Email',         href: '/email-intel',   icon: Mail,       moduleKey: 'email' },
-      { label: 'Billing',       href: '/billing',       icon: CreditCard },
-      { label: 'Support',       href: '/support',       icon: LifeBuoy },
-    ],
+    label: 'Setup',
+    href: '/setup',
+    icon: Settings,
+    activeRoutes: ['/setup', '/settings', '/billing', '/products', '/email-intel', '/support'],
   },
 ]
-
-const settingsItem: NavItem = { label: 'Settings', href: '/settings', icon: Settings }
-
-const CHANNEL_ORDER: Record<string, string[]> = {
-  d2c:     ['Meta Ads', 'Google Ads', 'Marketplace', 'YouTube'],
-  creator: ['YouTube', 'Competitor Intel', 'Meta Ads', 'Google Ads', 'Marketplace'],
-  agency:  ['Meta Ads', 'Google Ads', 'YouTube', 'Marketplace'],
-  saas:    ['Meta Ads', 'Google Ads', 'YouTube', 'Marketplace'],
-  media:   ['YouTube', 'Meta Ads', 'Google Ads', 'Marketplace'],
-}
-
-function sortedChannels(items: NavItem[], wsType: string): NavItem[] {
-  const order = CHANNEL_ORDER[wsType] ?? CHANNEL_ORDER['d2c']
-  return [...items].sort((a, b) => {
-    const ai = order.indexOf(a.label)
-    const bi = order.indexOf(b.label)
-    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
-  })
-}
-
-function isItemVisible(item: NavItem, relevantModules: string[] | null): boolean {
-  if (!item.moduleKey) return true  // always-visible items
-  if (!relevantModules) return true  // no plan yet — show everything
-  return relevantModules.includes(item.moduleKey)
-}
 
 export default function Sidebar() {
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const router = useRouter()
   const wsId = searchParams.get('ws') ?? ''
-  const [pendingCount, setPendingCount] = useState<number | null>(null)
   const [wsSwitcherOpen, setWsSwitcherOpen] = useState(false)
   const switcherRef = useRef<HTMLDivElement>(null)
   const { current, workspaces, setCurrent, openCreateWorkspace } = useWorkspace()
-  const wsType = current?.workspace_type ?? 'd2c'
   const { setChatOpen } = useChat()
-  const [relevantModules, setRelevantModules] = useState<string[] | null>(null)
 
   // Close switcher on outside click
   useEffect(() => {
@@ -140,78 +84,9 @@ export default function Sidebar() {
     router.replace(`${pathname}?${params.toString()}`)
   }
 
-  useEffect(() => {
-    if (!wsId) return
-    const load = async () => {
-      try {
-        const res = await fetch(`/api/actions/list?workspace_id=${wsId}&status=pending&limit=50`)
-        const data = await res.json()
-        setPendingCount(data.count ?? 0)
-      } catch { /* ignore */ }
-    }
-    load()
-    const id = setInterval(load, 60_000)
-    return () => clearInterval(id)
-  }, [wsId])
-
-  // Fetch relevant_modules from latest Growth OS plan
-  useEffect(() => {
-    if (!wsId) return
-    fetch(`/api/growth-os/latest?workspace_id=${wsId}`, { cache: 'no-store' })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (d?.relevant_modules && Array.isArray(d.relevant_modules) && d.relevant_modules.length > 0) {
-          setRelevantModules(d.relevant_modules)
-        } else {
-          setRelevantModules(null) // null = show all (no plan yet)
-        }
-      })
-      .catch(() => setRelevantModules(null))
-  }, [wsId])
-
-  const renderItem = (item: NavItem) => {
-    const active = pathname.startsWith(item.href)
-    const dest = wsId ? `${item.href}?ws=${wsId}` : item.href
-    const showBadge = item.badge && pendingCount != null && pendingCount > 0
-
-    return (
-      <Link
-        key={item.href}
-        href={dest}
-        className={cn(
-          'flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-          active && item.highlight
-            ? 'bg-amber-50 text-amber-700'
-            : active
-            ? 'bg-brand-50 text-brand-700'
-            : item.highlight
-            ? 'text-amber-600 hover:bg-amber-50 hover:text-amber-700'
-            : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900',
-        )}
-      >
-        <span className="flex items-center gap-2.5 min-w-0">
-          <item.icon className="h-4 w-4 shrink-0" />
-          <span className="truncate">{item.label}</span>
-        </span>
-        <span className="flex items-center gap-1 shrink-0">
-          {item.soon && (
-            <span className="rounded px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide bg-gray-100 text-gray-400">
-              Soon
-            </span>
-          )}
-          {item.limited && (
-            <span className="rounded px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide bg-amber-100 text-amber-600">
-              Soon
-            </span>
-          )}
-          {showBadge && (
-            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white">
-              {pendingCount}
-            </span>
-          )}
-        </span>
-      </Link>
-    )
+  const isActive = (item: NavItem) => {
+    const routes = item.activeRoutes ?? [item.href]
+    return routes.some(r => pathname === r || pathname.startsWith(r + '/') || pathname.startsWith(r + '?'))
   }
 
   return (
@@ -267,7 +142,6 @@ export default function Sidebar() {
                   <span className="text-xs font-medium text-gray-500">New workspace</span>
                 </button>
               </div>
-              {/* Delete current workspace — only if more than 1 exists */}
               {workspaces.length > 1 && current && (
                 <div className="border-t border-gray-100 px-2 py-1.5">
                   <button
@@ -280,13 +154,12 @@ export default function Sidebar() {
                         body: JSON.stringify({ workspace_id: current.id }),
                       }).then(r => r.json()).then(d => {
                         if (d.ok) {
-                          // Switch to first other workspace
                           const other = workspaces.find(w => w.id !== current.id)
                           if (other) {
                             setCurrent(other)
                             const params = new URLSearchParams()
                             params.set('ws', other.id)
-                            window.location.href = `/dashboard?${params.toString()}`
+                            window.location.href = `/home?${params.toString()}`
                           }
                         } else {
                           alert(d.detail ?? 'Failed to delete workspace')
@@ -320,78 +193,38 @@ export default function Sidebar() {
         </button>
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-4">
-        {navSections.map((section, si) => {
-          const items = section.title === 'CHANNELS'
-            ? sortedChannels(section.items, wsType)
-            : section.items
-          if (items.length === 0) return null
-          const topLabel = section.title === 'CHANNELS' ? items[0]?.label : null
-          return (
-            <div key={si}>
-              {section.title && (
-                <p className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-widest text-gray-400">
-                  {section.title}
-                </p>
-              )}
-              <div className="space-y-0.5">
-                {items.map(item => {
-                  const isTop = item.label === topLabel
-                  const active = pathname.startsWith(item.href)
-                  const dest = wsId ? `${item.href}?ws=${wsId}` : item.href
-                  const showBadge = item.badge && pendingCount != null && pendingCount > 0
-                  return (
-                    <Link
-                      key={item.href}
-                      href={dest}
-                      className={cn(
-                        'flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-                        active && item.highlight
-                          ? 'bg-amber-50 text-amber-700'
-                          : active
-                          ? 'bg-brand-50 text-brand-700'
-                          : item.highlight
-                          ? 'text-amber-600 hover:bg-amber-50 hover:text-amber-700'
-                          : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900',
-                      )}
-                    >
-                      <span className="flex items-center gap-2.5 min-w-0">
-                        <item.icon className="h-4 w-4 shrink-0" />
-                        <span className="truncate">{item.label}</span>
-                        {isTop && !active && (
-                          <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" />
-                        )}
-                      </span>
-                      <span className="flex items-center gap-1 shrink-0">
-                        {item.soon && (
-                          <span className="rounded px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide bg-gray-100 text-gray-400">
-                            Soon
-                          </span>
-                        )}
-                        {item.limited && (
-                          <span className="rounded px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide bg-amber-100 text-amber-600">
-                            Soon
-                          </span>
-                        )}
-                        {showBadge && (
-                          <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white">
-                            {pendingCount}
-                          </span>
-                        )}
-                      </span>
-                    </Link>
-                  )
-                })}
-              </div>
-            </div>
-          )
-        })}
+      {/* 5-item nav */}
+      <nav className="flex-1 overflow-y-auto px-2 py-4">
+        <div className="space-y-1">
+          {NAV_ITEMS.map(item => {
+            const active = isActive(item)
+            const dest = wsId ? `${item.href}?ws=${wsId}` : item.href
+            return (
+              <Link
+                key={item.href}
+                href={dest}
+                className={cn(
+                  'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors',
+                  active
+                    ? 'bg-brand-50 text-brand-700'
+                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900',
+                )}
+              >
+                <item.icon className={cn('h-4.5 w-4.5 shrink-0', active ? 'text-brand-600' : 'text-gray-400')} style={{ width: '1.125rem', height: '1.125rem' }} />
+                <span>{item.label}</span>
+                {active && (
+                  <span className="ml-auto h-1.5 w-1.5 rounded-full bg-brand-500 shrink-0" />
+                )}
+              </Link>
+            )
+          })}
+        </div>
       </nav>
 
-      <div className="px-2 pb-2 border-t border-gray-100 pt-2">
+      {/* Footer */}
+      <div className="px-2 pb-3 border-t border-gray-100 pt-2">
         {wsId && <CreditBalance wsId={wsId} />}
-        {renderItem(settingsItem)}
-        <p className="mt-2 px-3 text-xs text-gray-400">AI Growth OS v2.0</p>
+        <p className="mt-2 px-3 text-[10px] text-gray-400">AI Growth OS v2.0</p>
       </div>
     </aside>
   )
