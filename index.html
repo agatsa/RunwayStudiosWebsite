@@ -350,7 +350,7 @@
 
 <!-- ANNOUNCEMENT BAR -->
 <div class="announcement">
-  🚀 Now live — Free plan includes 50 AI credits. <a href="https://app.runwaystudios.co/sign-up">Start free →</a>
+  🚀 Get your 90-day growth plan for ₹499 — free preview, then pay only if you want the full report. <a href="https://app.runwaystudios.co/sign-up">See your preview →</a>
 </div>
 <div style="height:36px"></div>
 
@@ -412,7 +412,7 @@
       Analyse Free →
     </button>
   </div>
-  <p style="font-size:0.8rem;color:#9ca3af;margin-bottom:2rem;">No credit card for preview · ₹499 one-time for full report · Instant results</p>
+  <p style="font-size:0.8rem;color:#9ca3af;margin-bottom:2rem;">No credit card for preview · ₹499 one-time for full plan · ₹1,499/mo if you want ARIA monitoring it daily</p>
 
   <div class="hero-buttons">
     <a href="https://app.runwaystudios.co/sign-up" class="btn-secondary">Sign up &amp; Connect Accounts</a>
@@ -795,90 +795,70 @@
 <section class="pricing" id="pricing">
   <div class="container">
     <div class="section-badge">Pricing</div>
-    <div class="section-title">Start free. Scale as you grow.</div>
-    <p class="section-sub">Every plan includes AI insights. Credit-based AI features mean you only pay for what you use — no bloated retainer.</p>
+    <div class="section-title">Simple pricing. No retainer.</div>
+    <p class="section-sub">Get your 90-day growth plan for a one-time fee. Subscribe only if you want ARIA monitoring it daily.</p>
 
-    <div class="pricing-toggle">
-      <button class="active" onclick="setPeriod('monthly',this)">Monthly</button>
-      <button onclick="setPeriod('yearly',this)">Yearly <span class="save-badge">Save 20%</span></button>
-    </div>
-
-    <div class="pricing-grid" id="pricing-grid">
-      <div class="plan-card">
-        <p class="plan-name">Free</p>
-        <p class="plan-price monthly-price inr-price">₹0<span>/mo</span></p>
-        <p class="plan-price monthly-price usd-price" style="display:none">$0<span>/mo</span></p>
-        <p class="plan-price yearly-price inr-price" style="display:none">₹0<span>/yr</span></p>
-        <p class="plan-price yearly-price usd-price" style="display:none">$0<span>/yr</span></p>
-        <p class="plan-credits">⚡ 50 one-time signup credits</p>
-        <ul class="plan-features">
-          <li>1 workspace</li>
-          <li>CSV upload analytics</li>
-          <li>Growth OS (credits)</li>
-          <li>Campaign Brief (credits)</li>
-          <li>50 free credits to explore</li>
-        </ul>
-        <a href="https://app.runwaystudios.co/sign-up" class="plan-cta outline">Get Started Free</a>
-      </div>
+    <div class="pricing-grid" id="pricing-grid" style="grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); max-width: 700px; margin: 2.5rem auto 0;">
 
       <div class="plan-card">
-        <p class="plan-name">Starter</p>
-        <p class="plan-price monthly-price inr-price">₹1,999<span>/mo</span></p>
-        <p class="plan-price monthly-price usd-price" style="display:none">$25<span>/mo</span></p>
-        <p class="plan-price yearly-price inr-price" style="display:none">₹19,999<span>/yr</span></p>
-        <p class="plan-price yearly-price usd-price" style="display:none">$249<span>/yr</span></p>
-        <p class="plan-credits">⚡ 150 credits/month</p>
+        <p class="plan-name">The Plan</p>
+        <p class="plan-price" style="font-size:2.2rem;">₹499<span style="font-size:0.9rem;font-weight:400;color:#6b7280;"> one-time</span></p>
+        <p class="plan-credits">⚡ 60 credits included · covers one full brand analysis</p>
         <ul class="plan-features">
-          <li>1 workspace</li>
-          <li>Meta + Google live data</li>
-          <li>150 credits/month</li>
-          <li>Competitor Intel AI</li>
-          <li>Basic AI insights</li>
+          <li>Competitor discovery &amp; ad intel</li>
+          <li>Landing page audit (scored)</li>
+          <li>90-day Growth OS strategy</li>
+          <li>3 ready-to-launch campaign briefs</li>
+          <li>Yours to keep — read it, act on it</li>
+          <li>Renew after 90 days for a fresh plan</li>
         </ul>
-        <a href="https://app.runwaystudios.co/sign-up" class="plan-cta primary">Get Started</a>
+        <a href="https://app.runwaystudios.co/sign-up" class="plan-cta outline">Get My Plan →</a>
+        <p style="margin-top:0.75rem;font-size:0.75rem;color:#9ca3af;text-align:center;">No subscription. No recurring charge.</p>
       </div>
 
       <div class="plan-card popular">
-        <span class="plan-popular-badge">Most Popular</span>
-        <p class="plan-name">Growth</p>
-        <p class="plan-price monthly-price inr-price">₹4,999<span>/mo</span></p>
-        <p class="plan-price monthly-price usd-price" style="display:none">$59<span>/mo</span></p>
-        <p class="plan-price yearly-price inr-price" style="display:none">₹47,988<span>/yr</span></p>
-        <p class="plan-price yearly-price usd-price" style="display:none">$569<span>/yr</span></p>
-        <p class="plan-credits">⚡ 500 credits/month</p>
+        <span class="plan-popular-badge">Best Value</span>
+        <p class="plan-name">ARIA Monitors</p>
+        <p class="plan-price" style="font-size:2.2rem;">₹1,499<span style="font-size:0.9rem;font-weight:400;color:#6b7280;"> /month</span></p>
+        <p class="plan-credits">⚡ 200 credits/month · your AI marketing team</p>
         <ul class="plan-features">
-          <li>1 workspace</li>
-          <li>All channels + YouTube</li>
-          <li>500 credits/month</li>
-          <li>YT Competitor Intelligence</li>
-          <li>Growth OS 90-day strategy</li>
-          <li>WhatsApp/Telegram alerts</li>
+          <li>Everything in The Plan</li>
+          <li>Daily AI brief — "do this today"</li>
+          <li>Weekly Growth OS re-run (fresh data)</li>
+          <li>Monthly competitor rescan</li>
+          <li>ROAS drop alerts on WhatsApp &amp; email</li>
+          <li>Campaign approval queue stays active</li>
+          <li>4 campaign briefs/month</li>
         </ul>
-        <a href="https://app.runwaystudios.co/sign-up" class="plan-cta primary">Get Started</a>
+        <a href="https://app.runwaystudios.co/sign-up" class="plan-cta primary">Start Monitoring →</a>
+        <p style="margin-top:0.75rem;font-size:0.75rem;color:#9ca3af;text-align:center;">Cancel anytime. No lock-in.</p>
       </div>
 
-      <div class="plan-card">
-        <p class="plan-name">Agency</p>
-        <p class="plan-price monthly-price inr-price">₹11,999<span>/mo</span></p>
-        <p class="plan-price monthly-price usd-price" style="display:none">$139<span>/mo</span></p>
-        <p class="plan-price yearly-price inr-price" style="display:none">₹1,11,999<span>/yr</span></p>
-        <p class="plan-price yearly-price usd-price" style="display:none">$1,349<span>/yr</span></p>
-        <p class="plan-credits">⚡ 2,000 credits/month</p>
-        <ul class="plan-features">
-          <li>5 workspaces (multi-client)</li>
-          <li>Everything in Growth</li>
-          <li>2,000 credits/month</li>
-          <li>Admin panel</li>
-          <li>Priority support</li>
-        </ul>
-        <a href="https://app.runwaystudios.co/sign-up" class="plan-cta primary">Get Started</a>
+    </div>
+
+    <!-- Add-ons -->
+    <div style="max-width:700px;margin:2rem auto 0;background:white;border:1px solid #e5e7eb;border-radius:16px;padding:1.5rem 2rem;">
+      <p style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#6b7280;margin-bottom:1rem;">Add-ons</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+        <div style="display:flex;align-items:flex-start;gap:0.75rem;">
+          <span style="font-size:1.2rem;line-height:1;">🏢</span>
+          <div>
+            <p style="font-size:0.875rem;font-weight:600;color:#111827;">Extra workspace</p>
+            <p style="font-size:0.8rem;color:#6b7280;">₹499 setup + ₹1,499/mo per workspace</p>
+          </div>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:0.75rem;">
+          <span style="font-size:1.2rem;line-height:1;">👤</span>
+          <div>
+            <p style="font-size:0.875rem;font-weight:600;color:#111827;">Team member seat</p>
+            <p style="font-size:0.8rem;color:#6b7280;">₹299/month per person</p>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div class="topup-box">
-      <p class="inr-price"><strong>Need more AI runs?</strong> Buy credit top-ups anytime — they never expire. From ₹799 for 100 credits.</p>
-      <p class="usd-price" style="display:none"><strong>Need more AI runs?</strong> Buy credit packs anytime — they never expire. From $10 for 100 credits.</p>
-      <a href="https://app.runwaystudios.co/sign-up">Buy Top-Up Credits →</a>
+    <div class="topup-box" style="max-width:700px;margin:1.25rem auto 0;">
+      <p><strong>What does ARIA's plan actually cost us?</strong> API cost per ₹499 plan ≈ ₹120. Monitoring ≈ ₹630/month. We pass most of the value to you.</p>
     </div>
   </div>
 </section>
