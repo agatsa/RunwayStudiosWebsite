@@ -430,9 +430,20 @@ function OnboardPageInner() {
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
 
-  // Handle sign-in complete
+  // Handle sign-in complete (after Clerk redirects back)
   useEffect(() => {
     if (isLoaded && isSignedIn && stage === 'signin') {
+      startPreview()
+    }
+  }, [isLoaded, isSignedIn, stage])
+
+  // Auto-advance: URL in query string + already signed in → skip input stage entirely
+  const autoStartedRef = useRef(false)
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn || autoStartedRef.current) return
+    const urlFromQuery = searchParams.get('url')
+    if (urlFromQuery && stage === 'input') {
+      autoStartedRef.current = true
       startPreview()
     }
   }, [isLoaded, isSignedIn, stage])
