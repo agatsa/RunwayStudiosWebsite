@@ -5,20 +5,17 @@ import Link from 'next/link'
 import { Loader2, ExternalLink, PlayCircle } from 'lucide-react'
 
 interface YouTubeStats {
-  channel_name?: string
+  title?: string
   subscriber_count?: number
-  total_views?: number
+  view_count?: number
   video_count?: number
-  avg_views_per_video?: number
-  avg_ctr?: number
 }
 
 interface Video {
-  id: string
+  video_id: string
   title: string
-  views: number
-  likes: number
-  ctr: number | null
+  view_count: number
+  like_count: number
   published_at: string
   is_short?: boolean
 }
@@ -39,7 +36,7 @@ export default function YouTubeTabContent({ wsId }: { wsId: string }) {
     Promise.all([
       fetch(`/api/youtube/channel-stats?workspace_id=${wsId}&days=30`)
         .then(r => r.ok ? r.json() : null)
-        .then(d => setStats(d)),
+        .then(d => setStats(d?.channel ?? null)),
       fetch(`/api/youtube/videos?workspace_id=${wsId}&limit=8`)
         .then(r => r.ok ? r.json() : null)
         .then(d => setVideos(d?.videos ?? [])),
@@ -56,7 +53,7 @@ export default function YouTubeTabContent({ wsId }: { wsId: string }) {
     )
   }
 
-  if (!stats?.channel_name && videos.length === 0) {
+  if (!stats?.title && videos.length === 0) {
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between">
@@ -83,13 +80,12 @@ export default function YouTubeTabContent({ wsId }: { wsId: string }) {
       </div>
 
       {/* Channel stat strip */}
-      {stats?.channel_name && (
-        <div className="grid grid-cols-4 gap-3">
+      {stats?.title && (
+        <div className="grid grid-cols-3 gap-3">
           {[
             { label: 'Subscribers', value: fmt(stats.subscriber_count ?? 0) },
-            { label: 'Total Views', value: fmt(stats.total_views ?? 0) },
+            { label: 'Total Views', value: fmt(stats.view_count ?? 0) },
             { label: 'Videos', value: stats.video_count?.toString() ?? '—' },
-            { label: 'Avg CTR', value: stats.avg_ctr ? `${(stats.avg_ctr * 100).toFixed(1)}%` : '—' },
           ].map(s => (
             <div key={s.label} className="rounded-xl border border-gray-100 bg-white p-3">
               <p className="text-[10px] font-medium uppercase tracking-wide text-gray-400">{s.label}</p>
@@ -108,12 +104,11 @@ export default function YouTubeTabContent({ wsId }: { wsId: string }) {
                 <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-gray-500">Video</th>
                 <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">Views</th>
                 <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">Likes</th>
-                <th className="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wide text-gray-500">CTR</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {videos.map(v => (
-                <tr key={v.id} className="hover:bg-gray-50 transition-colors">
+                <tr key={v.video_id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2 max-w-xs">
                       {v.is_short && (
@@ -122,11 +117,8 @@ export default function YouTubeTabContent({ wsId }: { wsId: string }) {
                       <span className="truncate text-sm text-gray-800">{v.title}</span>
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-right text-sm text-gray-700">{fmt(v.views)}</td>
-                  <td className="px-4 py-3 text-right text-sm text-gray-700">{fmt(v.likes)}</td>
-                  <td className="px-4 py-3 text-right text-sm text-gray-700">
-                    {v.ctr != null ? `${(v.ctr * 100).toFixed(1)}%` : '—'}
-                  </td>
+                  <td className="px-4 py-3 text-right text-sm text-gray-700">{fmt(v.view_count)}</td>
+                  <td className="px-4 py-3 text-right text-sm text-gray-700">{fmt(v.like_count)}</td>
                 </tr>
               ))}
             </tbody>
