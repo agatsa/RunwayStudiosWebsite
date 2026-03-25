@@ -63,7 +63,8 @@ const PLATFORM_COLORS: Record<string, string> = {
   all: 'bg-violet-100 text-violet-700',
 }
 
-function fmt(n: number, prefix = '') {
+function fmt(n: number | null | undefined, prefix = '') {
+  if (n == null || isNaN(n)) return `${prefix}0`
   if (n >= 100_000) return `${prefix}${(n / 100_000).toFixed(1)}L`
   if (n >= 1_000) return `${prefix}${(n / 1_000).toFixed(1)}K`
   return `${prefix}${n.toLocaleString('en-IN')}`
@@ -93,7 +94,7 @@ export default function HomeContent() {
         .then(d => setBrief(d)),
       fetch(`/api/kpi/summary?workspace_id=${wsId}&days=7`)
         .then(r => r.ok ? r.json() : null)
-        .then(d => setKpi(d)),
+        .then(d => setKpi(d?.summary ?? null)),
       fetch(`/api/growth-os/latest?workspace_id=${wsId}`)
         .then(r => r.ok ? r.json() : null)
         .then(d => setGos(d)),
@@ -152,17 +153,17 @@ export default function HomeContent() {
         <div className="grid grid-cols-3 gap-3">
           <div className="rounded-xl border border-gray-100 bg-white p-4">
             <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">Spend (7d)</p>
-            <p className="mt-1 text-lg font-bold text-gray-900">₹{fmt(kpi.total_spend)}</p>
+            <p className="mt-1 text-lg font-bold text-gray-900">₹{fmt(kpi.spend)}</p>
           </div>
           <div className="rounded-xl border border-gray-100 bg-white p-4">
             <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">ROAS (7d)</p>
-            <p className={cn('mt-1 text-lg font-bold', kpi.avg_roas >= 2.5 ? 'text-green-600' : kpi.avg_roas > 0 ? 'text-yellow-600' : 'text-gray-900')}>
-              {kpi.avg_roas > 0 ? `${kpi.avg_roas.toFixed(2)}x` : '—'}
+            <p className={cn('mt-1 text-lg font-bold', (kpi.roas ?? 0) >= 2.5 ? 'text-green-600' : (kpi.roas ?? 0) > 0 ? 'text-yellow-600' : 'text-gray-900')}>
+              {(kpi.roas ?? 0) > 0 ? `${kpi.roas!.toFixed(2)}x` : '—'}
             </p>
           </div>
           <div className="rounded-xl border border-gray-100 bg-white p-4">
             <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">Clicks (7d)</p>
-            <p className="mt-1 text-lg font-bold text-gray-900">{fmt(kpi.total_clicks)}</p>
+            <p className="mt-1 text-lg font-bold text-gray-900">{fmt(kpi.clicks)}</p>
           </div>
         </div>
       ) : (
@@ -287,12 +288,12 @@ export default function HomeContent() {
             <p className="text-sm font-semibold text-gray-900">Data</p>
           </div>
           <p className="text-xs text-gray-500">
-            {kpi && kpi.total_spend > 0
-              ? `₹${fmt(kpi.total_spend)} spend tracked`
+            {kpi && kpi.spend > 0
+              ? `₹${fmt(kpi.spend)} spend tracked`
               : 'Upload Meta/Google report'}
           </p>
           <div className="mt-2 flex items-center gap-1 text-[11px] font-medium text-brand-600 group-hover:gap-2 transition-all">
-            {kpi && kpi.total_spend > 0 ? 'View reports' : 'Upload now'} <ArrowRight className="h-3 w-3" />
+            {kpi && kpi.spend > 0 ? 'View reports' : 'Upload now'} <ArrowRight className="h-3 w-3" />
           </div>
         </Link>
 
@@ -341,7 +342,7 @@ export default function HomeContent() {
       </div>
 
       {/* ── Upload nudge (if no data) ── */}
-      {kpi && kpi.total_spend === 0 && (
+      {kpi && kpi.spend === 0 && (
         <div className="flex items-start gap-3 rounded-xl border border-dashed border-gray-300 bg-gray-50 p-4">
           <Upload className="h-4 w-4 text-gray-400 mt-0.5 shrink-0" />
           <div>

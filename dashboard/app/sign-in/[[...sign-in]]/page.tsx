@@ -5,7 +5,7 @@ export default function SignInPage() {
     <div className="flex min-h-screen items-center justify-center bg-gray-50">
       <div className="text-center">
         <h1 className="mb-8 text-2xl font-bold text-gray-900">Runway Studios</h1>
-        <SignIn afterSignInUrl="/dashboard" signUpUrl="/sign-up" />
+        <SignIn fallbackRedirectUrl="/dashboard" signUpUrl="/sign-up" />
       </div>
     </div>
   )

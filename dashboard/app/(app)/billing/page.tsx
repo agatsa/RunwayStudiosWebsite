@@ -1,29 +1,38 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { Zap, Crown, CheckCircle2, ArrowRight, TrendingUp } from 'lucide-react'
+import { Zap, CheckCircle2, ArrowRight } from 'lucide-react'
 import type { BillingStatus, PlanName } from '@/lib/types'
 import PlanBadge from '@/components/billing/PlanBadge'
 import TopUpModal from '@/components/billing/TopUpModal'
 import PageLoader from '@/components/ui/PageLoader'
 
-const PLANS: { key: PlanName; label: string; monthly: string; yearly: string; credits: number; features: string[]; highlight?: boolean }[] = [
+const PLANS: { key: PlanName; label: string; price: string; priceNote: string; credits: number; features: string[]; highlight?: boolean; ctaLabel: string }[] = [
   {
-    key: 'free', label: 'Free', monthly: '₹0', yearly: '₹0', credits: 50,
-    features: ['1 workspace', 'CSV upload only', 'Growth OS (credits)', 'Campaign Brief (credits)', '50 one-time signup credits'],
+    key: 'starter', label: 'The Plan', price: '₹499', priceNote: 'one-time setup', credits: 50,
+    ctaLabel: 'Get Started',
+    features: [
+      'Full dashboard access',
+      'Connect Meta + Google + YouTube',
+      'Upload CSV/Excel reports',
+      'Campaign Brief AI',
+      '50 one-time signup credits',
+      'WhatsApp + Telegram alerts',
+    ],
   },
   {
-    key: 'starter', label: 'Starter', monthly: '₹1,999', yearly: '₹19,999', credits: 150,
-    features: ['1 workspace', 'Meta + Google live', '150 credits/month', 'Competitor Intel AI', 'Basic AI insights'],
-  },
-  {
-    key: 'growth', label: 'Growth', monthly: '₹4,999', yearly: '₹47,988', credits: 500, highlight: true,
-    features: ['1 workspace', 'All channels + YouTube', '500 credits/month', 'YT Competitor Intel', 'Growth Recipe', 'WhatsApp/Telegram alerts'],
-  },
-  {
-    key: 'agency', label: 'Agency', monthly: '₹11,999', yearly: '₹1,11,999', credits: 2000,
-    features: ['5 workspaces', 'Everything in Growth', '2,000 credits/month', 'Admin panel', 'Priority support'],
+    key: 'growth', label: 'ARIA Monitors', price: '₹1,499', priceNote: '/month', credits: 300, highlight: true,
+    ctaLabel: 'Start Monitoring',
+    features: [
+      'Everything in The Plan',
+      'ARIA Growth OS (runs weekly)',
+      'Competitor Intel (Meta + YouTube)',
+      'Landing Page Audit',
+      'Automated approval queue',
+      '300 AI credits/month',
+      'Priority support',
+    ],
   },
 ]
 
@@ -40,12 +49,11 @@ const FEATURE_LABELS: Record<string, string> = {
   admin_grant: 'Admin Grant',
 }
 
-export default function BillingPage() {
+function BillingContent() {
   const searchParams = useSearchParams()
   const wsId = searchParams.get('ws') ?? ''
 
   const [billing, setBilling] = useState<BillingStatus | null>(null)
-  const [period, setPeriod] = useState<'monthly' | 'yearly'>('monthly')
   const [showTopUp, setShowTopUp] = useState(false)
   const [upgrading, setUpgrading] = useState<PlanName | null>(null)
 
@@ -66,7 +74,7 @@ export default function BillingPage() {
       const res = await fetch('/api/billing/upgrade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace_id: wsId, plan, period }),
+        body: JSON.stringify({ workspace_id: wsId, plan }),
       })
       const data = await res.json()
       if (data.stub) {
@@ -154,29 +162,12 @@ export default function BillingPage() {
 
       {/* Plan upgrade */}
       <div>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-bold text-gray-900">Plans</h2>
-          <div className="flex items-center gap-1 rounded-lg border border-gray-200 p-1 text-xs">
-            <button
-              onClick={() => setPeriod('monthly')}
-              className={`rounded px-3 py-1.5 font-medium transition-colors ${period === 'monthly' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-700'}`}
-            >
-              Monthly
-            </button>
-            <button
-              onClick={() => setPeriod('yearly')}
-              className={`rounded px-3 py-1.5 font-medium transition-colors ${period === 'yearly' ? 'bg-gray-900 text-white' : 'text-gray-500 hover:text-gray-700'}`}
-            >
-              Yearly <span className="text-green-600 font-bold">-20%</span>
-            </button>
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <h2 className="text-lg font-bold text-gray-900 mb-3">Plans</h2>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {PLANS.map(plan => {
             const isCurrent = billing.plan === plan.key
-            const price = period === 'yearly' ? plan.yearly : plan.monthly
             return (
-              <div key={plan.key} className={`relative rounded-xl border-2 p-4 flex flex-col gap-3 ${
+              <div key={plan.key} className={`relative rounded-xl border-2 p-5 flex flex-col gap-3 ${
                 plan.highlight
                   ? 'border-purple-400 bg-purple-50'
                   : isCurrent
@@ -190,12 +181,16 @@ export default function BillingPage() {
                 )}
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-widest text-gray-400">{plan.label}</p>
-                  <p className="text-xl font-bold text-gray-900 mt-1">{price}<span className="text-xs font-normal text-gray-400">/{period === 'yearly' ? 'yr' : 'mo'}</span></p>
+                  <div className="flex items-baseline gap-1.5 mt-1">
+                    <span className="text-2xl font-bold text-gray-900">{plan.price}</span>
+                    <span className="text-xs font-normal text-gray-400">{plan.priceNote}</span>
+                  </div>
                   <div className="flex items-center gap-1 mt-1 text-xs text-amber-600 font-medium">
-                    <Zap className="h-3 w-3" />{plan.credits === 50 ? '50 one-time' : `${plan.credits}/mo`}
+                    <Zap className="h-3 w-3" />
+                    {plan.key === 'starter' ? '50 one-time credits' : `${plan.credits} credits/month`}
                   </div>
                 </div>
-                <ul className="space-y-1 flex-1">
+                <ul className="space-y-1.5 flex-1">
                   {plan.features.map(f => (
                     <li key={f} className="flex items-start gap-1.5 text-xs text-gray-600">
                       <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0 mt-0.5" />
@@ -207,17 +202,17 @@ export default function BillingPage() {
                   <span className="w-full rounded-lg border border-gray-200 px-3 py-2 text-center text-xs font-semibold text-gray-400">
                     Current plan
                   </span>
-                ) : plan.key === 'free' ? null : (
+                ) : (
                   <button
                     onClick={() => handleUpgrade(plan.key)}
                     disabled={upgrading === plan.key}
-                    className={`w-full flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-white transition-colors ${
+                    className={`w-full flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold text-white transition-colors ${
                       plan.highlight
                         ? 'bg-purple-600 hover:bg-purple-700'
                         : 'bg-gray-900 hover:bg-gray-700'
                     } disabled:opacity-50`}
                   >
-                    {upgrading === plan.key ? 'Redirecting…' : <>Upgrade <ArrowRight className="h-3 w-3" /></>}
+                    {upgrading === plan.key ? 'Redirecting…' : <>{plan.ctaLabel} <ArrowRight className="h-3.5 w-3.5" /></>}
                   </button>
                 )}
               </div>
@@ -297,5 +292,13 @@ export default function BillingPage() {
         />
       )}
     </div>
+  )
+}
+
+export default function BillingPage() {
+  return (
+    <Suspense fallback={<PageLoader section="Billing" />}>
+      <BillingContent />
+    </Suspense>
   )
 }
