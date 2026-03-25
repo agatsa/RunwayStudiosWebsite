@@ -28,10 +28,10 @@ interface DailyBrief {
 }
 
 interface KpiSummary {
-  total_spend: number
-  total_clicks: number
-  avg_roas: number
-  total_impressions: number
+  spend: number
+  clicks: number
+  roas: number
+  impressions: number
 }
 
 interface GrowthOSLatest {
