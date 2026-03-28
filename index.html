@@ -350,7 +350,7 @@
 
 <!-- ANNOUNCEMENT BAR -->
 <div class="announcement">
-  🚀 Now live — Free plan includes 50 AI credits. <a href="https://app.runwaystudios.co/sign-up">Start free →</a>
+  🚀 ARIA is live — drop your URL and get a free competitor analysis in 30 seconds. <a href="https://app.runwaystudios.co/onboard">Try it now →</a>
 </div>
 <div style="height:36px"></div>
 
@@ -366,8 +366,7 @@
     <li><a href="#contact">Contact</a></li>
   </ul>
   <div class="nav-actions">
-    <a href="https://app.runwaystudios.co/sign-in" class="nav-login">Log in</a>
-    <a href="https://app.runwaystudios.co/sign-up" class="nav-cta">Start Free →</a>
+    <a href="https://app.runwaystudios.co/sign-in" class="nav-cta">Log in →</a>
     <button class="nav-hamburger" onclick="toggleMenu()" aria-label="Menu">
       <span></span><span></span><span></span>
     </button>
@@ -382,7 +381,6 @@
   <a href="#faq" onclick="toggleMenu()">FAQ</a>
   <a href="#contact" onclick="toggleMenu()">Contact</a>
   <a href="https://app.runwaystudios.co/sign-in" onclick="toggleMenu()">Log in</a>
-  <a href="https://app.runwaystudios.co/sign-up" class="mobile-cta">Start Free — No credit card needed</a>
 </div>
 
 <!-- HERO -->
@@ -391,14 +389,37 @@
     <span class="dot"></span>
     AI Growth OS — Now Live
   </div>
-  <h1>Your Ads Are Spending.<br>Are They <em>Growing</em> You?</h1>
-  <p class="hero-sub">Runway Studios gives D2C brands and agencies a unified AI command center across Meta, Google, YouTube, and Shopify — turning raw data into a concrete 90-day growth playbook.</p>
-  <p class="hero-subtext">Connect once. ARIA analyses everything. You get <strong>specific actions</strong>, not more reports.</p>
-  <div class="hero-buttons">
-    <a href="https://app.runwaystudios.co/sign-up" class="btn-primary">Start Free — No Card Needed →</a>
-    <a href="#what-we-do" class="btn-secondary">See What It Does</a>
+  <h1>Drop Your URL.<br>Get a <em>Free Competitor Analysis</em> in 30 Seconds.</h1>
+  <p class="hero-sub">YouTube channel, product page, app, or website — ARIA finds your competitors, audits your landing page, and builds a 90-day growth strategy.</p>
+
+  <!-- URL Input Hero Form -->
+  <div style="max-width:580px;margin:2rem auto 1.5rem;display:flex;gap:0;box-shadow:0 4px 24px rgba(124,58,237,0.18);border-radius:14px;overflow:hidden;border:1.5px solid #c4b5fd;background:white;">
+    <input
+      id="heroUrlInput"
+      type="url"
+      placeholder="your-website.com or youtube.com/@channel"
+      style="flex:1;border:none;outline:none;padding:1rem 1.25rem;font-size:1rem;color:#111827;background:transparent;min-width:0;"
+      onkeydown="if(event.key==='Enter')heroAnalyse()"
+    />
+    <button
+      onclick="heroAnalyse()"
+      style="background:#7c3aed;color:white;border:none;padding:1rem 1.75rem;font-weight:700;font-size:0.95rem;cursor:pointer;white-space:nowrap;transition:background 0.2s;"
+      onmouseover="this.style.background='#6d28d9'"
+      onmouseout="this.style.background='#7c3aed'"
+    >
+      Analyse Free →
+    </button>
   </div>
-  <p class="hero-trust">Free plan available · Setup in under 5 minutes · Read-only access, your data stays yours</p>
+  <p class="hero-trust" style="margin-bottom:2rem;">Already have an account? <a href="https://app.runwaystudios.co/sign-in" style="color:var(--brand);font-weight:600;">Log in →</a></p>
+
+  <script>
+  function heroAnalyse() {
+    var url = document.getElementById('heroUrlInput').value.trim();
+    if (!url) return;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) url = 'https://' + url;
+    window.location.href = 'https://app.runwaystudios.co/onboard?url=' + encodeURIComponent(url);
+  }
+  </script>
 
   <!-- Dashboard Mockup -->
   <div class="mockup-wrap">
@@ -766,91 +787,68 @@
 <section class="pricing" id="pricing">
   <div class="container">
     <div class="section-badge">Pricing</div>
-    <div class="section-title">Start free. Scale as you grow.</div>
-    <p class="section-sub">Every plan includes AI insights. Credit-based AI features mean you only pay for what you use — no bloated retainer.</p>
+    <div class="section-title">Simple pricing. No retainer.</div>
+    <p class="section-sub">Get your 90-day growth plan for a one-time fee. Subscribe only if you want ARIA monitoring it daily.</p>
 
-    <div class="pricing-toggle">
-      <button class="active" onclick="setPeriod('monthly',this)">Monthly</button>
-      <button onclick="setPeriod('yearly',this)">Yearly <span class="save-badge">Save 20%</span></button>
-    </div>
-
-    <div class="pricing-grid" id="pricing-grid">
-      <div class="plan-card">
-        <p class="plan-name">Free</p>
-        <p class="plan-price monthly-price inr-price">₹0<span>/mo</span></p>
-        <p class="plan-price monthly-price usd-price" style="display:none">$0<span>/mo</span></p>
-        <p class="plan-price yearly-price inr-price" style="display:none">₹0<span>/yr</span></p>
-        <p class="plan-price yearly-price usd-price" style="display:none">$0<span>/yr</span></p>
-        <p class="plan-credits">⚡ 50 one-time signup credits</p>
-        <ul class="plan-features">
-          <li>1 workspace</li>
-          <li>CSV upload analytics</li>
-          <li>Growth OS (credits)</li>
-          <li>Campaign Brief (credits)</li>
-          <li>50 free credits to explore</li>
-        </ul>
-        <a href="https://app.runwaystudios.co/sign-up" class="plan-cta outline">Get Started Free</a>
-      </div>
+    <div class="pricing-grid" id="pricing-grid" style="grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); max-width: 700px; margin: 2.5rem auto 0;">
 
       <div class="plan-card">
-        <p class="plan-name">Starter</p>
-        <p class="plan-price monthly-price inr-price">₹1,999<span>/mo</span></p>
-        <p class="plan-price monthly-price usd-price" style="display:none">$25<span>/mo</span></p>
-        <p class="plan-price yearly-price inr-price" style="display:none">₹19,999<span>/yr</span></p>
-        <p class="plan-price yearly-price usd-price" style="display:none">$249<span>/yr</span></p>
-        <p class="plan-credits">⚡ 150 credits/month</p>
+        <p class="plan-name">The Plan</p>
+        <p class="plan-price" style="font-size:2.2rem;">₹499<span style="font-size:0.9rem;font-weight:400;color:#6b7280;"> one-time</span></p>
+        <p class="plan-credits">⚡ 60 credits included · covers one full brand analysis</p>
         <ul class="plan-features">
-          <li>1 workspace</li>
-          <li>Meta + Google live data</li>
-          <li>150 credits/month</li>
-          <li>Competitor Intel AI</li>
-          <li>Basic AI insights</li>
+          <li>Competitor discovery &amp; ad intel</li>
+          <li>Landing page audit (scored)</li>
+          <li>90-day Growth OS strategy</li>
+          <li>3 ready-to-launch campaign briefs</li>
+          <li>Yours to keep — read it, act on it</li>
+          <li>Renew after 90 days for a fresh plan</li>
         </ul>
-        <a href="https://app.runwaystudios.co/sign-up" class="plan-cta primary">Get Started</a>
+        <a href="https://app.runwaystudios.co/onboard" class="plan-cta outline">Get My Plan →</a>
+        <p style="margin-top:0.75rem;font-size:0.75rem;color:#9ca3af;text-align:center;">No subscription. No recurring charge.</p>
       </div>
 
       <div class="plan-card popular">
-        <span class="plan-popular-badge">Most Popular</span>
-        <p class="plan-name">Growth</p>
-        <p class="plan-price monthly-price inr-price">₹4,999<span>/mo</span></p>
-        <p class="plan-price monthly-price usd-price" style="display:none">$59<span>/mo</span></p>
-        <p class="plan-price yearly-price inr-price" style="display:none">₹47,988<span>/yr</span></p>
-        <p class="plan-price yearly-price usd-price" style="display:none">$569<span>/yr</span></p>
-        <p class="plan-credits">⚡ 500 credits/month</p>
+        <span class="plan-popular-badge">Best Value</span>
+        <p class="plan-name">ARIA Monitors</p>
+        <p class="plan-price" style="font-size:2.2rem;">₹1,499<span style="font-size:0.9rem;font-weight:400;color:#6b7280;"> /month</span></p>
+        <p class="plan-credits">⚡ 200 credits/month · your AI marketing team</p>
         <ul class="plan-features">
-          <li>1 workspace</li>
-          <li>All channels + YouTube</li>
-          <li>500 credits/month</li>
-          <li>YT Competitor Intelligence</li>
-          <li>Growth OS 90-day strategy</li>
-          <li>WhatsApp/Telegram alerts</li>
+          <li>Everything in The Plan</li>
+          <li>Daily AI brief — "do this today"</li>
+          <li>Weekly Growth OS re-run (fresh data)</li>
+          <li>Monthly competitor rescan</li>
+          <li>ROAS drop alerts on WhatsApp &amp; email</li>
+          <li>Campaign approval queue stays active</li>
+          <li>4 campaign briefs/month</li>
         </ul>
-        <a href="https://app.runwaystudios.co/sign-up" class="plan-cta primary">Get Started</a>
+        <a href="https://app.runwaystudios.co/onboard" class="plan-cta primary">Start Monitoring →</a>
+        <p style="margin-top:0.75rem;font-size:0.75rem;color:#9ca3af;text-align:center;">Cancel anytime. No lock-in.</p>
       </div>
 
-      <div class="plan-card">
-        <p class="plan-name">Agency</p>
-        <p class="plan-price monthly-price inr-price">₹11,999<span>/mo</span></p>
-        <p class="plan-price monthly-price usd-price" style="display:none">$139<span>/mo</span></p>
-        <p class="plan-price yearly-price inr-price" style="display:none">₹1,11,999<span>/yr</span></p>
-        <p class="plan-price yearly-price usd-price" style="display:none">$1,349<span>/yr</span></p>
-        <p class="plan-credits">⚡ 2,000 credits/month</p>
-        <ul class="plan-features">
-          <li>5 workspaces (multi-client)</li>
-          <li>Everything in Growth</li>
-          <li>2,000 credits/month</li>
-          <li>Admin panel</li>
-          <li>Priority support</li>
-        </ul>
-        <a href="https://app.runwaystudios.co/sign-up" class="plan-cta primary">Get Started</a>
+    </div>
+
+    <!-- Add-ons -->
+    <div style="max-width:700px;margin:2rem auto 0;background:white;border:1px solid #e5e7eb;border-radius:16px;padding:1.5rem 2rem;">
+      <p style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#6b7280;margin-bottom:1rem;">Add-ons</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+        <div style="display:flex;align-items:flex-start;gap:0.75rem;">
+          <span style="font-size:1.2rem;line-height:1;">🏢</span>
+          <div>
+            <p style="font-size:0.875rem;font-weight:600;color:#111827;">Extra workspace</p>
+            <p style="font-size:0.8rem;color:#6b7280;">₹499 setup + ₹1,499/mo per workspace</p>
+          </div>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:0.75rem;">
+          <span style="font-size:1.2rem;line-height:1;">👤</span>
+          <div>
+            <p style="font-size:0.875rem;font-weight:600;color:#111827;">Team member seat</p>
+            <p style="font-size:0.8rem;color:#6b7280;">₹299/month per person</p>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div class="topup-box">
-      <p class="inr-price"><strong>Need more AI runs?</strong> Buy credit top-ups anytime — they never expire. From ₹799 for 100 credits.</p>
-      <p class="usd-price" style="display:none"><strong>Need more AI runs?</strong> Buy credit packs anytime — they never expire. From $10 for 100 credits.</p>
-      <a href="https://app.runwaystudios.co/sign-up">Buy Top-Up Credits →</a>
-    </div>
   </div>
 </section>
 
@@ -893,7 +891,7 @@
           How long does the Growth OS strategy take to generate?
           <span class="faq-icon">+</span>
         </button>
-        <div class="faq-a">Between 3–8 minutes. ARIA first sweeps all your connected data sources, auto-triggers any missing analyses (competitor intel, landing page audit), then calls Claude Opus to generate a 7-dimension, 20–30 action strategy with real copy. You can navigate away — the job runs entirely on our servers and your strategy will be ready when you return.</div>
+        <div class="faq-a">Between 3–8 minutes. ARIA first sweeps all your connected data sources, auto-triggers any missing analyses (competitor intel, landing page audit), then generates a 7-dimension, 20–30 action strategy with real copy. You can navigate away — the job runs entirely on our servers and your strategy will be ready when you return.</div>
       </div>
       <div class="faq-item">
         <button class="faq-q" onclick="toggleFaq(this)">
@@ -944,7 +942,7 @@
 <section class="final-cta">
   <h2>Stop reporting. Start <em>growing</em>.</h2>
   <p>Join brands across India using ARIA to find wasted spend, outmanoeuvre competitors, and build a concrete strategy — in minutes, not months.</p>
-  <a href="https://app.runwaystudios.co/sign-up" class="btn-primary">Start Free — No Credit Card Needed →</a>
+  <a href="https://app.runwaystudios.co/onboard" class="btn-primary">Analyse My Brand Free →</a>
   <p class="final-trust">
     <span>Free plan available</span>
     <span>Setup in under 5 minutes</span>
