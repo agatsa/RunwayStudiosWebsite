@@ -19229,7 +19229,21 @@ async def onboard_create_order(request: Request):
 
     from services.agent_swarm.config import RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET
 
-    if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET:
+    # If org is on a paid plan, bypass the payment (internal test / whitelisted user)
+    with get_conn() as _bypass_conn:
+        try:
+            _bypass_org = _get_org_id_for_workspace(_bypass_conn, workspace_id)
+            with _bypass_conn.cursor() as _c:
+                _c.execute("SELECT plan FROM organizations WHERE id=%s", (_bypass_org,))
+                _plan_row = _c.fetchone()
+                _bypass_payment = _plan_row and _plan_row[0] not in ("free", None, "")
+        except Exception:
+            _bypass_payment = False
+
+    if _bypass_payment:
+        import uuid as _uuid_bypass
+        rzp_order_id = f"stub_bypass_{_uuid_bypass.uuid4().hex[:12]}"
+    elif RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET:
         import httpx as _httpx_ob
         import base64 as _b64_ob
         auth = _b64_ob.b64encode(f"{RAZORPAY_KEY_ID}:{RAZORPAY_KEY_SECRET}".encode()).decode()
