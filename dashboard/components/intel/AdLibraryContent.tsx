@@ -6,6 +6,7 @@ import {
   ChevronDown, ChevronUp, Image as ImageIcon, History,
   AlertCircle, Play,
 } from 'lucide-react'
+import { useWorkspace } from '@/components/layout/WorkspaceProvider'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -196,6 +197,8 @@ type Props = {
 }
 
 export default function AdLibraryContent({ wsId, onRunningChange, stopRef }: Props) {
+  const { current: workspace } = useWorkspace()
+  const [suggestions,    setSuggestions]    = useState<{ label: string; query: string; own: boolean }[]>([])
   const [query,      setQuery]      = useState('')
   const [country,    setCountry]    = useState('IN')
   const [activeOnly, setActiveOnly] = useState(true)
@@ -243,6 +246,26 @@ export default function AdLibraryContent({ wsId, onRunningChange, stopRef }: Pro
       .then(d => { if (mountedRef.current) setHistory(d.history || []) })
       .catch(() => {})
   }, [wsId])
+
+  // Load competitor suggestions from brand intel
+  useEffect(() => {
+    if (!wsId) return
+    fetch(`/api/brand-intel/profiles?workspace_id=${wsId}`)
+      .then(r => r.json())
+      .then(d => {
+        if (!mountedRef.current) return
+        const chips: { label: string; query: string; own: boolean }[] = []
+        const brandName = workspace?.name || ''
+        if (brandName) chips.push({ label: brandName, query: brandName, own: true })
+        for (const p of (d.profiles || [])) {
+          if (p.name) chips.push({ label: p.name, query: p.name, own: false })
+        }
+        setSuggestions(chips)
+        // Pre-fill with first competitor name if query is empty
+        if (chips.length > 1 && !query) setQuery(chips[1].query)
+      })
+      .catch(() => {})
+  }, [wsId, workspace?.name])
 
   const startPoll = (jobId: string, credits?: number) => {
     if (pollRef.current) clearInterval(pollRef.current)
@@ -357,6 +380,25 @@ export default function AdLibraryContent({ wsId, onRunningChange, stopRef }: Pro
 
       {/* Search form */}
       <div className="rounded-xl border border-gray-200 bg-white p-4 space-y-3">
+        {suggestions.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            <span className="text-[11px] text-gray-400 self-center mr-1">Search for:</span>
+            {suggestions.map(s => (
+              <button
+                key={s.query}
+                onClick={() => setQuery(s.query)}
+                disabled={loading}
+                className={`rounded-full px-2.5 py-0.5 text-xs font-medium border transition-colors ${
+                  s.own
+                    ? 'border-brand-300 bg-brand-50 text-brand-700 hover:bg-brand-100'
+                    : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                } ${query === s.query ? 'ring-1 ring-offset-1 ring-indigo-400' : ''}`}
+              >
+                {s.own ? '★ ' : ''}{s.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex gap-2">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />

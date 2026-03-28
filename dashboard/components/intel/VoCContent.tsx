@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Search, MessageCircle, TrendingUp, Loader2, ChevronRight, ExternalLink, Clock } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useWorkspace } from '@/components/layout/WorkspaceProvider'
 
 interface RedditPost {
   title: string
@@ -37,13 +38,21 @@ interface Props {
 }
 
 export default function VoCContent({ wsId }: Props) {
+  const { current: workspace } = useWorkspace()
+  const mountedRef = useRef(true)
   const [query, setQuery] = useState('')
+  const [suggestions, setSuggestions] = useState<{ label: string; query: string; own: boolean }[]>([])
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<VoCResult | null>(null)
   const [history, setHistory] = useState<VoCScan[]>([])
   const [historyLoading, setHistoryLoading] = useState(true)
   const [error, setError] = useState('')
   const [activePost, setActivePost] = useState<RedditPost | null>(null)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
 
   useEffect(() => {
     if (!wsId) return
@@ -54,6 +63,26 @@ export default function VoCContent({ wsId }: Props) {
       .catch(() => {})
       .finally(() => setHistoryLoading(false))
   }, [wsId])
+
+  // Load competitor suggestions from brand intel
+  useEffect(() => {
+    if (!wsId) return
+    fetch(`/api/brand-intel/profiles?workspace_id=${wsId}`)
+      .then(r => r.json())
+      .then(d => {
+        if (!mountedRef.current) return
+        const chips: { label: string; query: string; own: boolean }[] = []
+        const brandName = workspace?.name || ''
+        if (brandName) chips.push({ label: brandName, query: brandName, own: true })
+        for (const p of (d.profiles || [])) {
+          if (p.name) chips.push({ label: p.name, query: p.name, own: false })
+        }
+        setSuggestions(chips)
+        // Pre-fill with own brand name for VoC (most natural first search)
+        if (chips.length > 0 && !query) setQuery(chips[0].query)
+      })
+      .catch(() => {})
+  }, [wsId, workspace?.name])
 
   const handleSearch = async () => {
     if (!query.trim() || loading) return
@@ -125,6 +154,25 @@ export default function VoCContent({ wsId }: Props) {
 
       {/* Search bar */}
       <div className="rounded-xl border border-gray-200 bg-white p-4 space-y-3">
+        {suggestions.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            <span className="text-[11px] text-gray-400 self-center mr-1">Search for:</span>
+            {suggestions.map(s => (
+              <button
+                key={s.query}
+                onClick={() => setQuery(s.query)}
+                disabled={loading}
+                className={`rounded-full px-2.5 py-0.5 text-xs font-medium border transition-colors ${
+                  s.own
+                    ? 'border-brand-300 bg-brand-50 text-brand-700 hover:bg-brand-100'
+                    : 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                } ${query === s.query ? 'ring-1 ring-offset-1 ring-indigo-400' : ''}`}
+              >
+                {s.own ? '★ ' : ''}{s.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex gap-2">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
