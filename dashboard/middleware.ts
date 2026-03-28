@@ -13,6 +13,7 @@ const isPublicRoute = createRouteMatcher([
   // Internal debug route for email domain diagnosis
   '/api/email/domain/debug(.*)',
   // Onboarding funnel — publicly accessible, auth handled inside page
+  // /onboard/sso-callback is where Clerk lands after Google OAuth from the embedded <SignIn>
   '/onboard(.*)',
   '/api/onboard(.*)',
 ])

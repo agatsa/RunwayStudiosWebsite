@@ -612,6 +612,7 @@ function OnboardPageInner() {
             <div className="w-full">
               <SignIn
                 forceRedirectUrl={`/onboard?url=${encodeURIComponent(url)}`}
+                signUpForceRedirectUrl={`/onboard?url=${encodeURIComponent(url)}`}
                 appearance={{
                   elements: {
                     rootBox: 'w-full',
