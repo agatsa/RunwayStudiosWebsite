@@ -122,6 +122,23 @@ async def run_discovery_phase(
     own_text = await jina_read(brand_url, max_chars=3000) if brand_url else ""
     own_html, own_headers = await fetch_page(brand_url) if brand_url else ("", {})
 
+    # Auto-detect workspace type from content (overrides hardcoded 'd2c' default)
+    if workspace_type == "d2c" and (own_text or brand_url):
+        detected_type = await _auto_detect_workspace_type(own_name, brand_url, own_text)
+        if detected_type != workspace_type:
+            workspace_type = detected_type
+            _log(conn, job_id, {"type": "info", "msg": f"Business type detected: {workspace_type}"})
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE brand_intel_jobs SET workspace_type=%s, updated_at=NOW() WHERE id=%s::uuid",
+                        (workspace_type, job_id),
+                    )
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+
     # Save own topic space keywords to DB
     own_keywords = _extract_keywords(own_text, n=12) if own_text else []
     try:
@@ -349,8 +366,9 @@ async def run_discovery_phase(
         text = text[:800]
         keywords = _extract_keywords(text, n=8)
         # Confidence: based on keyword overlap + hit count
+        # Base 20 (not 40) — irrelevant ARIA suggestions shouldn't auto-show as "Good match"
         overlap = len(set(own_keywords) & set(keywords)) if own_keywords else 0
-        confidence = min(95, 40 + overlap * 8 + cand["hit_count"] * 10)
+        confidence = min(95, 20 + overlap * 10 + cand["hit_count"] * 10)
 
         name = _extract_brand_name_from_html(html) or extract_brand_name(cand["domain"])
         cand.update({
@@ -1036,6 +1054,35 @@ def gather_brand_intel(workspace_id: str, conn) -> dict:
 
 # ── Utilities ───────────────────────────────────────────────────────────────────
 
+async def _auto_detect_workspace_type(name: str, url: str, text: str) -> str:
+    """Ask Claude Haiku to classify the business type from its content."""
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        msg = client.messages.create(
+            model=CLAUDE_HAIKU,
+            max_tokens=10,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Brand: {name}  URL: {url}\n"
+                    f"Content:\n{text[:1200]}\n\n"
+                    "Classify this business into ONE category:\n"
+                    "- d2c   → sells physical/consumer products (supplements, clothing, food, devices, cosmetics, etc.)\n"
+                    "- saas  → software platform, tool, dashboard, app, or API sold by subscription or license\n"
+                    "- agency → marketing, creative, consulting, or professional services company\n"
+                    "- creator → individual creator, media brand, YouTube channel, blog, newsletter\n"
+                    "Reply with ONE word only (d2c / saas / agency / creator)."
+                ),
+            }],
+        )
+        result = msg.content[0].text.strip().lower().split()[0]
+        if result in ("d2c", "saas", "agency", "creator", "media"):
+            return result
+    except Exception as e:
+        print(f"[brand_intel] workspace type detection failed: {e}")
+    return "d2c"
+
+
 def _extract_keywords(text: str, n: int = 10) -> list:
     """TF-IDF-lite keyword extraction — filters e-commerce/marketplace noise to surface real topic terms."""
     stop = {
@@ -1047,22 +1094,33 @@ def _extract_keywords(text: str, n: int = 10) -> list:
         "not","no","more","all","any","each","from","by","as","so","if","do",
         "get","use","also","just","how","what","when","which","who","about",
         "new","one","two","free","best","top","help","need","want","like",
-        "com","www","https","http","page",
+        "com","www","https","http","page","pages","site","sites","web","website",
+        # Generic time / date noise
+        "time","date","week","month","year","day","days","hour","hours",
+        "sign","next","prev","previous","back","forward",
+        "published","updated","posted","written","created","edited",
+        # HTML / web asset artifacts — words from <img src>, CDN paths, alt text
+        "image","images","icon","icons","logo","logos","photo","photos",
+        "file","files","asset","assets","media","static","thumb","thumbs",
+        "jpeg","webp","avif","html","font","fonts","null","none","true","false",
+        "futurecdn","flexiimages","wordpress","elementor","shopify","woocommerce",
+        "cloudfront","cloudinary","imgix","fastly","jsdelivr","unpkg",
+        "header","footer","sidebar","navbar","menu","nav","hero","banner",
+        "section","container","wrapper","block","row","column","grid",
         # E-commerce / marketplace noise — terms that appear on ANY e-commerce site
         "buy","shop","order","price","offer","sale","deal","discount","cart",
         "checkout","delivery","shipping","return","refund","payment","cash",
         "online","india","india's","indian","delhi","mumbai","bangalore",
         "store","product","products","item","items","brand","brands",
-        "quality","service","customer","support","contact","about","home",
-        "click","here","read","more","view","search","filter","sort",
+        "quality","service","customer","support","contact","home",
+        "click","here","read","view","search","filter","sort",
         "review","reviews","rating","ratings","star","stars","verified",
         "sold","seller","sellers","stock","instock","availability",
         "register","login","signup","account","profile","wishlist",
         "category","categories","collection","collections",
-        "offer","offers","coupon","coupons","code","codes","flat","upto",
-        "percent","percent","rs","inr","mrp","emi","emi",
-        "fast","quick","same","next","day","days","hour","hours",
-        "secure","safe","original","genuine","authentic","trusted",
+        "coupon","coupons","code","codes","flat","upto",
+        "percent","inr","mrp","emi",
+        "fast","quick","same","secure","safe","original","genuine","authentic","trusted",
         "policy","privacy","terms","conditions","cookie",
         # Marketplace / aggregator brand names as words
         "amazon","flipkart","nykaa","meesho","snapdeal","myntra",
