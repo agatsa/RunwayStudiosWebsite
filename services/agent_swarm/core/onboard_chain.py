@@ -382,7 +382,7 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
     import importlib
 
     # ── Step 1: Brand Intel Phase 2 ──────────────────────────────────────────
-    log("Phase 1/3 — Brand Intel: Full 9-layer competitor analysis", "phase", "brand_intel")
+    log("Phase 1/4 — Brand Intel: Full 9-layer competitor analysis", "phase", "brand_intel")
     log("─────────────────────────────────────────────────────────", "divider")
 
     if bi_job_id:
@@ -434,8 +434,84 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
     else:
         log("~ Brand Intel skipped (no Phase 1 job found)", "missing", "brand_intel")
 
-    # ── Step 2: LP Audit ──────────────────────────────────────────────────────
-    log("Phase 2/3 — LP Audit: Analysing landing page conversion score", "phase", "lp_audit")
+    # ── Step 2: Reddit Voice of Customer ─────────────────────────────────────
+    log("Phase 2/4 — Reddit VoC: Mining customer conversations", "phase", "reddit_voc")
+    log("─────────────────────────────────────────────────────────", "divider")
+
+    reddit_posts = []
+    try:
+        from urllib.parse import urlparse as _urlparse
+        import httpx as _httpx_voc
+
+        # Build search query from brand name + own keywords from brand intel DB
+        _domain = _urlparse(url).netloc.replace('www.', '').split('.')[0]
+        _brand_q = _domain.strip().capitalize()
+        _own_kws: list = []
+        if bi_job_id:
+            try:
+                with get_conn() as _kw_conn:
+                    with _kw_conn.cursor() as _kw_cur:
+                        _kw_cur.execute(
+                            "SELECT own_topic_space FROM brand_intel_jobs WHERE id=%s::uuid",
+                            (bi_job_id,),
+                        )
+                        _kw_row = _kw_cur.fetchone()
+                    if _kw_row and _kw_row[0]:
+                        _raw = _kw_row[0]
+                        _own_kws = (_raw if isinstance(_raw, list) else json.loads(_raw))[:3]
+            except Exception:
+                pass
+        _kw_q = " ".join(_own_kws)
+        _reddit_query = f"{_brand_q} {_kw_q}".strip() or _brand_q
+
+        log(f"Searching Reddit for: {_reddit_query}", "info", "reddit_voc")
+
+        async def _do_reddit():
+            async with _httpx_voc.AsyncClient(
+                timeout=10,
+                headers={"User-Agent": "runway-studios-aria/1.0"},
+                follow_redirects=True,
+            ) as _cli:
+                _r = await _cli.get(
+                    "https://www.reddit.com/search.json",
+                    params={"q": _reddit_query, "sort": "relevance", "limit": 25, "type": "link"},
+                )
+                if _r.status_code == 200:
+                    _data = _r.json()
+                    _posts = []
+                    for _child in _data.get("data", {}).get("children", []):
+                        _p = _child.get("data", {})
+                        _posts.append({
+                            "title": _p.get("title", ""),
+                            "subreddit": _p.get("subreddit_name_prefixed", ""),
+                            "score": _p.get("score", 0),
+                            "url": f"https://reddit.com{_p.get('permalink', '')}",
+                            "text_preview": (_p.get("selftext") or "")[:300].strip(),
+                            "num_comments": _p.get("num_comments", 0),
+                        })
+                    return _posts
+            return []
+
+        reddit_posts = asyncio.run(_do_reddit())
+        log(f"✓ Found {len(reddit_posts)} Reddit discussions", "success", "reddit_voc")
+        if reddit_posts:
+            for _rp in reddit_posts[:3]:
+                log(f"  [{_rp['subreddit']}] {_rp['title'][:70]}", "info", "reddit_voc")
+
+        # Persist to onboard_jobs.reddit_voc
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE onboard_jobs SET reddit_voc=%s::jsonb, updated_at=NOW() WHERE id=%s::uuid",
+                    (json.dumps(reddit_posts), job_id),
+                )
+            conn.commit()
+
+    except Exception as e:
+        log(f"⚠ Reddit VoC partial: {e}", "missing", "reddit_voc")
+
+    # ── Step 3: LP Audit ──────────────────────────────────────────────────────
+    log("Phase 3/4 — LP Audit: Analysing landing page conversion score", "phase", "lp_audit")
     log("─────────────────────────────────────────────────────────", "divider")
 
     lp_result = None
@@ -479,8 +555,8 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
     except Exception as e:
         log(f"⚠ LP Audit partial: {e}", "missing", "lp_audit")
 
-    # ── Step 3: Growth OS ─────────────────────────────────────────────────────
-    log("Phase 3/3 — Growth OS: Generating 90-day growth strategy", "phase", "growth_os")
+    # ── Step 4: Growth OS ─────────────────────────────────────────────────────
+    log("Phase 4/4 — Growth OS: Generating 90-day growth strategy", "phase", "growth_os")
     log("─────────────────────────────────────────────────────────", "divider")
 
     try:

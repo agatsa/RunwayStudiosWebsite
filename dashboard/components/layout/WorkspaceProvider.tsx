@@ -32,6 +32,15 @@ export function useWorkspace() {
   return useContext(WorkspaceContext)
 }
 
+/** Redirects new users (no workspace) to the /onboard scan flow. */
+function RedirectToOnboard() {
+  const router = useRouter()
+  useEffect(() => {
+    router.replace('/onboard')
+  }, [router])
+  return null
+}
+
 export default function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [current, setCurrent_] = useState<Workspace | null>(null)
@@ -151,11 +160,15 @@ export default function WorkspaceProvider({ children }: { children: React.ReactN
           <PageLoader section="Dashboard" />
         </div>
       )}
-      {/* New user — no workspace yet, OR manually triggered from switcher */}
-      {!loading && (workspaces.length === 0 || showCreateWorkspace) && (
+      {/* New user — no workspace yet: redirect to /onboard scan flow instead of modal */}
+      {!loading && workspaces.length === 0 && pathname !== '/onboard' && (
+        <RedirectToOnboard />
+      )}
+      {/* Manually triggered from workspace switcher — show modal */}
+      {!loading && workspaces.length > 0 && showCreateWorkspace && (
         <SetupWorkspaceModal
           onCreated={() => { setShowCreateWorkspace(false); load() }}
-          onCancel={workspaces.length > 0 ? () => setShowCreateWorkspace(false) : undefined}
+          onCancel={() => setShowCreateWorkspace(false)}
         />
       )}
       {/* Existing workspace needs onboarding */}

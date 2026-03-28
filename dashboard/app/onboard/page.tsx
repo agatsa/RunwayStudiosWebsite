@@ -250,7 +250,7 @@ function PreviewResults({ data }: { data: PreviewData & { competitors?: Competit
 function ChainProgress({ job, gosJobId }: { job: JobState; gosJobId: string | null }) {
   const steps = job.url_type === 'youtube'
     ? ['YT Competitor Discovery', 'Deep Analysis', 'Growth Recipe']
-    : ['Brand Intel Phase 2', 'LP Audit', 'Growth OS Strategy']
+    : ['Brand Intel Phase 2', 'Reddit VoC', 'LP Audit', 'Growth OS Strategy']
 
   const done = job.status === 'complete'
 
@@ -300,7 +300,13 @@ function OnboardPageInner() {
   const [showDirective, setShowDirective] = useState(false)
   const [error, setError] = useState('')
   const pollRef = useRef<NodeJS.Timeout | null>(null)
+  const timerRef = useRef<NodeJS.Timeout | null>(null)
   const [rzpLoaded, setRzpLoaded] = useState(false)
+  // 90-second countdown timer
+  const [countdown, setCountdown] = useState(90)
+  const [timerDone, setTimerDone] = useState(false)
+  const scanDoneRef = useRef(false)   // preview_ready from API
+  const timerDoneRef = useRef(false)  // timer hit 0
 
   // Load Razorpay script
   useEffect(() => {
@@ -350,6 +356,28 @@ function OnboardPageInner() {
     return wsId
   }, [workspaceId, url, urlType])
 
+  // Start the 90-second countdown
+  const startCountdown = useCallback(() => {
+    scanDoneRef.current = false
+    timerDoneRef.current = false
+    setTimerDone(false)
+    setCountdown(90)
+    if (timerRef.current) clearInterval(timerRef.current)
+    timerRef.current = setInterval(() => {
+      setCountdown(prev => {
+        if (prev <= 1) {
+          clearInterval(timerRef.current!)
+          timerDoneRef.current = true
+          setTimerDone(true)
+          // If scan was already done, advance to preview_ready
+          if (scanDoneRef.current) setStage('preview_ready')
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+  }, [])
+
   // Start free preview
   const startPreview = useCallback(async () => {
     setError('')
@@ -378,11 +406,12 @@ function OnboardPageInner() {
         paid: false,
       })
       setStage('previewing')
+      startCountdown()
       startPolling(data.job_id, wsId)
     } catch (e) {
       setError((e as Error).message)
     }
-  }, [url, ensureWorkspace])
+  }, [url, ensureWorkspace, startCountdown])
 
   // Polling
   const startPolling = (jobId: string, wsId: string) => {
@@ -394,12 +423,14 @@ function OnboardPageInner() {
         const d: JobState = await r.json()
         setJob(d)
         if (d.status === 'preview_ready') {
-          setStage('preview_ready')
+          scanDoneRef.current = true
           clearInterval(pollRef.current!)
+          // Only advance stage if the 90s timer has also finished
+          if (timerDoneRef.current) setStage('preview_ready')
         } else if (d.status === 'complete') {
           setStage('complete')
           clearInterval(pollRef.current!)
-          setTimeout(() => router.push(`/?ws=${wsId}`), 3000)
+          setTimeout(() => router.push(`/growth-os?ws=${wsId}`), 3000)
         } else if (d.status === 'failed') {
           setStage('failed')
           clearInterval(pollRef.current!)
@@ -419,7 +450,7 @@ function OnboardPageInner() {
         if (d.status === 'complete') {
           setStage('complete')
           clearInterval(pollRef.current!)
-          setTimeout(() => router.push(`/?ws=${wsId}`), 4000)
+          setTimeout(() => router.push(`/growth-os?ws=${wsId}`), 4000)
         } else if (d.status === 'failed') {
           setStage('failed')
           clearInterval(pollRef.current!)
@@ -428,7 +459,10 @@ function OnboardPageInner() {
     }, 2000)
   }
 
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
+  useEffect(() => () => {
+    if (pollRef.current) clearInterval(pollRef.current)
+    if (timerRef.current) clearInterval(timerRef.current)
+  }, [])
 
   // Handle sign-in complete (after Clerk redirects back)
   useEffect(() => {
@@ -689,12 +723,28 @@ function OnboardPageInner() {
         {/* ── Stage: previewing ──────────────────────────────────────────────── */}
         {stage === 'previewing' && (
           <div className="space-y-6">
-            <div className="text-center space-y-2">
-              <div className="flex items-center justify-center gap-2 text-brand-400">
-                <Loader2 className="h-5 w-5 animate-spin" />
-                <span className="font-semibold">Scanning {url}</span>
+            <div className="text-center space-y-3">
+              {/* 90-second circular countdown */}
+              <div className="relative inline-flex items-center justify-center">
+                <svg className="h-20 w-20 -rotate-90" viewBox="0 0 80 80">
+                  <circle cx="40" cy="40" r="34" fill="none" stroke="#1f2937" strokeWidth="6" />
+                  <circle
+                    cx="40" cy="40" r="34" fill="none"
+                    stroke="#6366f1" strokeWidth="6" strokeLinecap="round"
+                    strokeDasharray={`${2 * Math.PI * 34}`}
+                    strokeDashoffset={`${2 * Math.PI * 34 * countdown / 90}`}
+                    style={{ transition: 'stroke-dashoffset 1s linear' }}
+                  />
+                </svg>
+                <span className="absolute text-xl font-bold text-white">{countdown}</span>
               </div>
-              <p className="text-sm text-gray-400">ARIA is identifying your competitors — this takes ~30 seconds</p>
+              <div>
+                <div className="flex items-center justify-center gap-2 text-brand-400">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span className="font-semibold">Scanning {url}</span>
+                </div>
+                <p className="text-sm text-gray-400 mt-1">ARIA is building your intelligence profile — sit tight</p>
+              </div>
             </div>
             <Terminal logs={job?.logs ?? []} />
           </div>
@@ -756,6 +806,7 @@ function OnboardPageInner() {
               </div>
               <ul className="text-xs text-gray-300 space-y-1">
                 <li className="flex items-center gap-1.5"><CheckCircle className="h-3 w-3 text-green-400 shrink-0" />What each competitor is doing — and what you should steal from them</li>
+                <li className="flex items-center gap-1.5"><CheckCircle className="h-3 w-3 text-green-400 shrink-0" />What real customers say about your category (mined from Reddit)</li>
                 <li className="flex items-center gap-1.5"><CheckCircle className="h-3 w-3 text-green-400 shrink-0" />Why people leave your site without buying, and how to fix it</li>
                 <li className="flex items-center gap-1.5"><CheckCircle className="h-3 w-3 text-green-400 shrink-0" />A 90-day plan with specific ads, pages, and offers — written for your brand</li>
               </ul>
@@ -808,10 +859,10 @@ function OnboardPageInner() {
               <p className="text-sm text-gray-400 mt-1">Redirecting you to your dashboard…</p>
             </div>
             <button
-              onClick={() => router.push(`/?ws=${workspaceId}`)}
+              onClick={() => router.push(`/growth-os?ws=${workspaceId}`)}
               className="flex items-center gap-2 px-6 py-3 bg-brand-600 hover:bg-brand-700 rounded-xl font-semibold text-sm transition-colors"
             >
-              Go to Dashboard <ArrowRight className="h-4 w-4" />
+              View My Growth Strategy <ArrowRight className="h-4 w-4" />
             </button>
           </div>
         )}

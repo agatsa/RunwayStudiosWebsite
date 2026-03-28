@@ -75,18 +75,27 @@ CREDIT_PACKS = {
     "600": {"credits": 600, "amount_paise": 299900},   # ₹2,999
 }
 FEATURE_COSTS = {
-    "yt_competitor_intel": 20,
-    "growth_os":           10,
-    "video_ai_insights":    2,
-    "campaign_brief":       3,
-    "competitor_ai":        5,
-    "growth_recipe_regen":  5,
-    "ai_chat":              1,
+    "yt_competitor_intel":  20,
+    "growth_os":            10,
+    "app_growth_plan":       5,
+    "lp_audit":              5,
+    "growth_recipe_regen":   5,
+    "competitor_ai":         5,
+    "ad_library_search":     15,   # base (10 ads); scales with max_items: ceil(max_items/10)*15
+    "voc_search":            3,    # Reddit Voice of Customer search + Claude summary
+    "seo_offpage":           3,
+    "campaign_brief":        3,
+    "email_compose":         3,
+    "video_ai_insights":     2,
+    "seo_audit_url":         2,
+    "aso_analyze":           2,
+    "ai_chat":               1,
 }
-PLAN_MONTHLY_CREDITS = {"free": 0, "starter": 150, "growth": 500, "agency": 2000}
-PLAN_PRICES_MONTHLY  = {"starter": 199900, "growth": 499900,  "agency": 1199900}
-PLAN_PRICES_YEARLY   = {"starter": 1999900, "growth": 4798800, "agency": 11199900}
-VALID_PLANS          = {"free", "starter", "growth", "agency"}
+APIFY_API_TOKEN = os.getenv("APIFY_API_TOKEN", "")
+PLAN_MONTHLY_CREDITS = {"free": 0, "starter": 50, "growth": 300}   # starter=one-time grant, growth=monthly
+PLAN_PRICES_MONTHLY  = {"starter": 49900, "growth": 149900}         # ₹499 one-time, ₹1,499/month
+PLAN_PRICES_YEARLY   = {"starter": 49900, "growth": 1498800}        # starter unchanged, growth=₹1,249×12
+VALID_PLANS          = {"free", "starter", "growth"}
 
 # ── Tenant/Workspace resolution ────────────────────────────
 # All resolution now delegates to core.workspace module.
@@ -169,6 +178,42 @@ def _check_and_deduct_credits(conn, org_id: str, workspace_id: str, required: in
             "UPDATE organizations SET credit_balance = %s WHERE id = %s",
             (new_balance, org_id),
         )
+        cur.execute(
+            """INSERT INTO credit_ledger
+               (org_id, workspace_id, amount, balance_after, type, feature, description)
+               VALUES (%s, %s, %s, %s, 'feature_use', %s, %s)""",
+            (org_id, workspace_id, -required, new_balance, feature,
+             f"Used {required} credits for {feature}"),
+        )
+    conn.commit()
+    return new_balance
+
+
+def _check_credits_only(conn, org_id: str, required: int, feature: str):
+    """Check balance only — raises HTTP 402 if insufficient. Does NOT deduct."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT credit_balance FROM organizations WHERE id = %s", (org_id,))
+        row = cur.fetchone()
+        balance = row[0] if row else 0
+        if not row or balance < required:
+            raise HTTPException(status_code=402, detail={
+                "error": "insufficient_credits",
+                "required": required,
+                "balance": balance,
+                "feature": feature,
+                "message": f"You need {required} credits but only have {balance}. Top up to continue.",
+            })
+
+
+def _deduct_credits_only(conn, org_id: str, workspace_id: str, required: int, feature: str) -> int:
+    """Deduct credits after a successful action. Call this only on success."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE organizations SET credit_balance = credit_balance - %s WHERE id = %s RETURNING credit_balance",
+            (required, org_id),
+        )
+        row = cur.fetchone()
+        new_balance = row[0] if row else 0
         cur.execute(
             """INSERT INTO credit_ledger
                (org_id, workspace_id, amount, balance_after, type, feature, description)
@@ -2017,7 +2062,7 @@ def _launch_campaign_on_google(workspace_id: str, new_value: dict) -> dict:
         name=campaign_name,
         product_id="",
         product_name=product_name,
-        product_url=brief.get("product_url") or "https://agatsaone.com",
+        product_url=brief.get("product_url") or workspace_obj.get("brand_url") or workspace_obj.get("store_url") or "",
         daily_budget_inr=budget_daily,
         objective=goal,
         headline=concept.get("headline") or campaign_name,
@@ -2060,7 +2105,24 @@ def _generate_campaign_plan_from_action(workspace_id: str, action_type: str, ctx
     if isinstance(channels, str):
         channels = [channels]
 
-    prompt = f"""You are an expert performance marketing strategist for an Indian health tech brand.
+    # Fetch workspace context for dynamic prompt
+    _gcpa_brand_desc = "an Indian brand"
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT workspace_type, brand_url, store_url FROM workspaces WHERE id = %s",
+                    (workspace_id,),
+                )
+                _gcpa_ws = cur.fetchone()
+        if _gcpa_ws:
+            _gcpa_type = (_gcpa_ws[0] or "").strip() or "brand"
+            _gcpa_domain = (_gcpa_ws[1] or _gcpa_ws[2] or "").replace("https://", "").replace("http://", "").split("/")[0]
+            _gcpa_brand_desc = f"an Indian {_gcpa_type} brand" + (f" ({_gcpa_domain})" if _gcpa_domain else "")
+    except Exception:
+        pass
+
+    prompt = f"""You are an expert performance marketing strategist for {_gcpa_brand_desc}.
 An AI system flagged this opportunity and the team has approved it:
 
 Action type: {action_type.replace('_', ' ')}
@@ -4920,11 +4982,10 @@ async def youtube_video_insights(
     if not workspace_id:
         raise HTTPException(status_code=400, detail="workspace_id required")
 
-    # Deduct credits before AI analysis
+    # Check credits upfront — deduct only after success
     with get_conn() as conn:
         org_id = _get_org_id_for_workspace(conn, workspace_id)
-        _check_and_deduct_credits(conn, org_id, workspace_id,
-                                  FEATURE_COSTS["video_ai_insights"], "video_ai_insights")
+        _check_credits_only(conn, org_id, FEATURE_COSTS["video_ai_insights"], "video_ai_insights")
 
     yc, workspace = _get_youtube_connector(workspace_id)
 
@@ -5062,6 +5123,8 @@ async def youtube_video_insights(
     except Exception as e:
         print(f"YouTube retention fetch skipped: {e}")
 
+    with get_conn() as conn:
+        _deduct_credits_only(conn, org_id, workspace_id, FEATURE_COSTS["video_ai_insights"], "video_ai_insights")
     return {
         "video_id": video_id,
         "is_short": is_short,
@@ -5373,12 +5436,23 @@ async def youtube_growth_plan(request: Request, workspace_id: str = None):
         channel_name = channel_info.get("title", "your channel")
         best_info = f"Best video: \"{best_video['title']}\" ({best_video['view_count']:,} views)" if best_video else "No videos uploaded yet"
         worst_info = f"Needs improvement: \"{worst_video['title']}\" ({worst_video['view_count']:,} views)" if worst_video else ""
+        # Fetch workspace type for prompt
+        _yt_ws_type = "brand"
+        try:
+            with get_conn() as _yt_conn:
+                with _yt_conn.cursor() as _yt_cur:
+                    _yt_cur.execute("SELECT workspace_type FROM workspaces WHERE id=%s", (workspace_id,))
+                    _yt_ws = _yt_cur.fetchone()
+            if _yt_ws and _yt_ws[0]:
+                _yt_ws_type = _yt_ws[0].strip()
+        except Exception:
+            pass
         prompt = (
             f"YouTube channel: {channel_name}\n"
             f"Subscribers: {subs:,} | Total views: {views:,}\n"
             f"{best_info}\n{worst_info}\n\n"
             f"You are a YouTube growth expert. Create an actionable 5-step growth plan "
-            f"to increase views, subscribers, and sales for this health-tech brand. "
+            f"to increase views, subscribers, and sales for this {_yt_ws_type} brand. "
             f"Focus on: CTR optimization, retention hooks, SEO topics, upload schedule, "
             f"and cross-channel amplification to Meta Ads.\n"
             f"Give exactly 5 numbered steps. Each step: 1-2 sentences. Be specific and actionable. "
@@ -7671,11 +7745,10 @@ async def competitor_intel_ai(request: Request):
     import json as _json
     from services.agent_swarm.db import get_conn
 
-    # Deduct credits before calling Claude
+    # Check credits upfront — deduct only on fresh analysis (not cache)
     with get_conn() as conn:
         org_id = _get_org_id_for_workspace(conn, workspace_id)
-        _check_and_deduct_credits(conn, org_id, workspace_id,
-                                  FEATURE_COSTS["competitor_ai"], "competitor_ai")
+        _check_credits_only(conn, org_id, FEATURE_COSTS["competitor_ai"], "competitor_ai")
 
     # Check for today's cached analysis
     with get_conn() as conn:
@@ -7767,6 +7840,8 @@ Return ONLY the JSON array, no other text."""
             )
         conn.commit()
 
+    with get_conn() as conn:
+        _deduct_credits_only(conn, org_id, workspace_id, FEATURE_COSTS["competitor_ai"], "competitor_ai")
     return {"strategies": strategies, "from_cache": False}
 
 
@@ -8198,7 +8273,8 @@ async def sync_youtube_comments(request: Request):
 
     # Classify with Claude Haiku in batches of 20
     CATS = list(_CATEGORY_SENTIMENT.keys())
-    product_ctx = (workspace or {}).get("product_context") or "Health-tech medical device brand"
+    _ws_type_ctx = (workspace or {}).get("workspace_type") or "brand"
+    product_ctx = (workspace or {}).get("product_context") or f"Indian {_ws_type_ctx} brand"
 
     ai = _anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
     classified: list[dict] = []
@@ -8453,11 +8529,10 @@ async def campaign_planner_create_brief(request: Request):
     if not workspace_id:
         raise HTTPException(status_code=400, detail="workspace_id required")
 
-    # Deduct credits before calling Claude
+    # Check credits upfront — deduct only after success
     with get_conn() as conn:
         org_id = _get_org_id_for_workspace(conn, workspace_id)
-        _check_and_deduct_credits(conn, org_id, workspace_id,
-                                  FEATURE_COSTS["campaign_brief"], "campaign_brief")
+        _check_credits_only(conn, org_id, FEATURE_COSTS["campaign_brief"], "campaign_brief")
 
     product_name = body.get("product_name", "")
     product_price = body.get("product_price", "")
@@ -8471,7 +8546,168 @@ async def campaign_planner_create_brief(request: Request):
     import anthropic as _anthropic
     from services.agent_swarm.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 
-    prompt = f"""You are an expert performance marketing strategist for an Indian health tech brand.
+    # Fetch workspace context for dynamic prompt
+    _ws_brand_desc = "an Indian brand"
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT workspace_type, brand_url, store_url FROM workspaces WHERE id = %s",
+                    (workspace_id,),
+                )
+                _ws_row = cur.fetchone()
+        if _ws_row:
+            _ws_type = (_ws_row[0] or "").strip() or "brand"
+            _ws_domain = (_ws_row[1] or _ws_row[2] or "").replace("https://", "").replace("http://", "").split("/")[0]
+            _ws_brand_desc = f"an Indian {_ws_type} brand" + (f" ({_ws_domain})" if _ws_domain else "")
+    except Exception:
+        pass
+
+    # Fetch historical performance data from uploaded reports / connected accounts
+    _hist_parts = []
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # Platform-level totals
+                cur.execute(
+                    """SELECT platform,
+                              ROUND(SUM(COALESCE(spend,0))::numeric,0) AS spend,
+                              ROUND(SUM(COALESCE(conversions,0))::numeric,0) AS convs,
+                              ROUND(SUM(COALESCE(revenue,0))::numeric,0) AS revenue,
+                              ROUND(SUM(COALESCE(clicks,0))::numeric,0) AS clicks,
+                              ROUND(SUM(COALESCE(impressions,0))::numeric,0) AS imps
+                       FROM kpi_hourly
+                       WHERE workspace_id = %s AND entity_level = 'campaign'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'
+                       GROUP BY platform""",
+                    (workspace_id,),
+                )
+                _plat_rows = cur.fetchall()
+                if _plat_rows:
+                    lines = []
+                    for r in _plat_rows:
+                        roas = round(r[3] / r[1], 2) if r[1] and r[1] > 0 else 0
+                        cpa  = round(r[1] / r[2], 0) if r[2] and r[2] > 0 else 0
+                        ctr  = round(r[4] / r[5] * 100, 2) if r[5] and r[5] > 0 else 0
+                        lines.append(
+                            f"  {r[0].upper()}: Spend ₹{r[1]:,.0f} | Conversions {r[2]} "
+                            f"| Revenue ₹{r[3]:,.0f} | ROAS {roas}x | CPA ₹{cpa} | CTR {ctr}%"
+                        )
+                    _hist_parts.append("Platform performance (all time):\n" + "\n".join(lines))
+
+                # Top 5 campaigns by ROAS
+                cur.execute(
+                    """SELECT entity_name, platform,
+                              ROUND(SUM(COALESCE(spend,0))::numeric,0) AS spend,
+                              ROUND(SUM(COALESCE(conversions,0))::numeric,0) AS convs,
+                              ROUND(CASE WHEN SUM(COALESCE(spend,0))>0
+                                    THEN SUM(COALESCE(revenue,0))/SUM(COALESCE(spend,0))
+                                    ELSE 0 END::numeric,2) AS roas
+                       FROM kpi_hourly
+                       WHERE workspace_id = %s AND entity_level = 'campaign'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'
+                       GROUP BY entity_name, platform
+                       HAVING SUM(COALESCE(spend,0)) > 500
+                       ORDER BY roas DESC LIMIT 5""",
+                    (workspace_id,),
+                )
+                _top = cur.fetchall()
+                if _top:
+                    _hist_parts.append(
+                        "Best campaigns by ROAS:\n" + "\n".join(
+                            f"  [{r[1]}] {r[0]}: Spend ₹{r[2]:,.0f} | Conversions {r[3]} | ROAS {r[4]}x"
+                            for r in _top
+                        )
+                    )
+
+                # Worst 3 campaigns (most spend, lowest ROAS)
+                cur.execute(
+                    """SELECT entity_name, platform,
+                              ROUND(SUM(COALESCE(spend,0))::numeric,0) AS spend,
+                              ROUND(SUM(COALESCE(conversions,0))::numeric,0) AS convs,
+                              ROUND(CASE WHEN SUM(COALESCE(spend,0))>0
+                                    THEN SUM(COALESCE(revenue,0))/SUM(COALESCE(spend,0))
+                                    ELSE 0 END::numeric,2) AS roas
+                       FROM kpi_hourly
+                       WHERE workspace_id = %s AND entity_level = 'campaign'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'
+                       GROUP BY entity_name, platform
+                       HAVING SUM(COALESCE(spend,0)) > 500
+                       ORDER BY roas ASC LIMIT 3""",
+                    (workspace_id,),
+                )
+                _worst = cur.fetchall()
+                if _worst:
+                    _hist_parts.append(
+                        "Worst campaigns (avoid repeating these approaches):\n" + "\n".join(
+                            f"  [{r[1]}] {r[0]}: Spend ₹{r[2]:,.0f} | ROAS {r[4]}x"
+                            for r in _worst
+                        )
+                    )
+
+                # Top 10 search terms
+                cur.execute(
+                    """SELECT entity_name,
+                              ROUND(SUM(COALESCE(clicks,0))::numeric,0) AS clicks,
+                              ROUND(SUM(COALESCE(conversions,0))::numeric,0) AS convs
+                       FROM kpi_hourly
+                       WHERE workspace_id = %s AND entity_level = 'search_term'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'
+                       GROUP BY entity_name
+                       HAVING SUM(COALESCE(clicks,0)) > 5
+                       ORDER BY convs DESC, clicks DESC LIMIT 10""",
+                    (workspace_id,),
+                )
+                _terms = cur.fetchall()
+                if _terms:
+                    _hist_parts.append(
+                        "Top converting search terms:\n  " +
+                        ", ".join(f'"{r[0]}"' for r in _terms if r[0])
+                    )
+
+                # Top 10 keywords
+                cur.execute(
+                    """SELECT entity_name,
+                              ROUND(SUM(COALESCE(clicks,0))::numeric,0) AS clicks,
+                              ROUND(SUM(COALESCE(conversions,0))::numeric,0) AS convs
+                       FROM kpi_hourly
+                       WHERE workspace_id = %s AND entity_level = 'keyword'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'
+                       GROUP BY entity_name
+                       HAVING SUM(COALESCE(clicks,0)) > 2
+                       ORDER BY convs DESC, clicks DESC LIMIT 10""",
+                    (workspace_id,),
+                )
+                _kws = cur.fetchall()
+                if _kws:
+                    _hist_parts.append(
+                        "Top keywords:\n  " +
+                        ", ".join(f'"{r[0]}"' for r in _kws if r[0])
+                    )
+    except Exception as _e:
+        print(f"create-brief historical fetch error: {_e}")
+
+    # Add LP audit + competitor intel from shared context block
+    _shared_ctx = _get_workspace_context_block(workspace_id)
+    _lp_section = ""
+    _comp_section = ""
+    for _line in _shared_ctx.splitlines():
+        if _line.startswith("LANDING PAGE:"):
+            _lp_section = f"\n\nLANDING PAGE HEALTH: {_line[len('LANDING PAGE:'):].strip()}"
+        if _line.startswith("COMPETITORS:") or (_comp_section and _line.startswith("  •")):
+            _comp_section += "\n" + _line
+
+    _hist_block = (
+        "\n\nHISTORICAL PERFORMANCE DATA (from uploaded reports / connected accounts):\n"
+        + "\n\n".join(_hist_parts)
+        + "\n\nUse this data to set realistic KPI targets and avoid repeating poor-performing approaches."
+    ) if _hist_parts else ""
+    if _lp_section:
+        _hist_block += _lp_section
+    if _comp_section:
+        _hist_block += f"\n\nCOMPETITOR CONTEXT (use to differentiate):\n{_comp_section.strip()}"
+
+    prompt = f"""You are an expert performance marketing strategist for {_ws_brand_desc}.
 Create a complete campaign concept for the following brief:
 
 Product: {product_name} (Price: ₹{product_price})
@@ -8479,7 +8715,7 @@ Target Audience: {audience}
 Campaign Goal: {goal}
 Daily Budget: ₹{budget_daily}
 Duration: {duration_days} days
-Channels: {', '.join(channels)}
+Channels: {', '.join(channels)}{_hist_block}
 
 Generate a JSON object with exactly these keys:
 - headline: (string) Primary ad headline, max 40 chars
@@ -8488,7 +8724,7 @@ Generate a JSON object with exactly these keys:
 - creative_direction: (string) Visual/creative guidance, 2-3 sentences
 - recommended_format: (string) e.g. "Carousel + Reel" or "Search + Display"
 - kpi_targets: {{expected_roas: number, expected_cpa: number, expected_ctr: number}}
-- rationale: (string) Why this approach for this audience
+- rationale: (string) Why this approach — reference the historical data to justify KPI targets
 
 Return ONLY valid JSON, no markdown."""
 
@@ -8507,12 +8743,12 @@ Return ONLY valid JSON, no markdown."""
     except Exception as e:
         concept = {
             "headline": f"Discover {product_name}",
-            "body_copy": f"Transform your health with {product_name}. Trusted by thousands of Indians.",
-            "hook": "What if you could monitor your health anywhere, anytime?",
-            "creative_direction": "Show the product in use by a relatable Indian family. Focus on ease and peace of mind.",
+            "body_copy": f"See why thousands of Indians love {product_name}. Try it today.",
+            "hook": "Here's why people can't stop talking about this.",
+            "creative_direction": "Show the product in use by a relatable Indian. Focus on the key benefit and ease of use.",
             "recommended_format": "Video + Carousel",
             "kpi_targets": {"expected_roas": 2.5, "expected_cpa": 800, "expected_ctr": 2.0},
-            "rationale": "Benefit-led creative with social proof performs best in health tech category.",
+            "rationale": "Benefit-led creative with social proof consistently drives conversions.",
             "error": str(e),
         }
 
@@ -8551,6 +8787,8 @@ Return ONLY valid JSON, no markdown."""
         conn.commit()
 
     plan_id, ts = row
+    with get_conn() as conn:
+        _deduct_credits_only(conn, org_id, workspace_id, FEATURE_COSTS["campaign_brief"], "campaign_brief")
     return {
         "plan_id": str(plan_id),
         "concept": concept,
@@ -8594,7 +8832,19 @@ async def campaign_planner_generate_image(request: Request):
     brief   = nv.get("brief", {})
 
     creative_direction = concept.get("creative_direction", "")
-    product_name       = brief.get("product_name") or concept.get("headline") or "health tech product"
+    product_name       = brief.get("product_name") or concept.get("headline") or "product"
+
+    # Fetch workspace type for image prompt
+    _img_ws_type = "brand"
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT workspace_type FROM workspaces WHERE id=%s", (workspace_id,))
+                _img_ws = cur.fetchone()
+        if _img_ws and _img_ws[0]:
+            _img_ws_type = _img_ws[0].strip()
+    except Exception:
+        pass
 
     if not creative_direction:
         raise HTTPException(status_code=400, detail="No creative_direction in plan — regenerate the brief first")
@@ -8642,7 +8892,7 @@ async def campaign_planner_generate_image(request: Request):
 
     # ── Build prompt ──────────────────────────────────────────────────────────
     prompt = (
-        f"Professional Indian health tech advertisement creative. "
+        f"Professional Indian {_img_ws_type} advertisement creative. "
         f"Product: {product_name}. "
         f"{creative_direction} "
         f"No text overlays. No watermarks. No logos. "
@@ -8829,6 +9079,171 @@ async def campaign_planner_publish_ad(request: Request):
         raise HTTPException(status_code=500, detail=f"Ad creation failed: {e}")
 
 
+# ── Shared Workspace Intelligence Block ──────────────────────────────────────
+# Used by Campaign Planner, AI Daily Brief, Growth OS pre-brief, and any
+# prompt that needs full cross-module context for one workspace.
+
+def _get_workspace_context_block(workspace_id: str) -> str:
+    """
+    Returns a compact, formatted intelligence summary for a workspace.
+    Pulls from: workspace profile, products, Meta/Google KPIs + campaigns,
+    LP audit, brand/competitor intel, search terms, keywords.
+    Any missing section is silently skipped — always returns a useful string.
+    """
+    parts = []
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+
+                # 1. Workspace profile
+                cur.execute(
+                    "SELECT name, workspace_type, brand_url, store_url FROM workspaces WHERE id=%s",
+                    (workspace_id,),
+                )
+                ws = cur.fetchone()
+                if ws:
+                    ws_type = (ws[1] or "brand").strip()
+                    ws_domain = (ws[2] or ws[3] or "").replace("https://","").replace("http://","").split("/")[0]
+                    parts.append(f"BRAND: {ws[0] or 'Unknown'} | Type: {ws_type}" + (f" | Domain: {ws_domain}" if ws_domain else ""))
+
+                # 2. Products
+                cur.execute(
+                    "SELECT name, price, description FROM products WHERE workspace_id=%s ORDER BY updated_at DESC LIMIT 6",
+                    (workspace_id,),
+                )
+                prods = cur.fetchall()
+                if prods:
+                    prod_lines = [f"  • {p[0]}" + (f" ₹{p[1]:,.0f}" if p[1] else "") + (f" — {(p[2] or '')[:80]}" if p[2] else "") for p in prods]
+                    parts.append("PRODUCTS:\n" + "\n".join(prod_lines))
+
+                # 3. Meta Ads performance + top campaigns
+                cur.execute(
+                    """SELECT ROUND(SUM(COALESCE(spend,0))::numeric,0),
+                              ROUND(SUM(COALESCE(conversions,0))::numeric,0),
+                              ROUND(CASE WHEN SUM(COALESCE(spend,0))>0 THEN SUM(COALESCE(revenue,0))/SUM(COALESCE(spend,0)) ELSE 0 END::numeric,2),
+                              ROUND(CASE WHEN SUM(COALESCE(impressions,0))>0 THEN SUM(COALESCE(clicks,0))/SUM(COALESCE(impressions,0))*100 ELSE 0 END::numeric,2),
+                              COUNT(DISTINCT entity_name)
+                       FROM kpi_hourly WHERE workspace_id=%s AND platform='meta' AND entity_level='campaign'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'""",
+                    (workspace_id,),
+                )
+                m = cur.fetchone()
+                if m and m[4] and int(m[4]) > 0:
+                    parts.append(f"META ADS: Spend ₹{m[0]:,.0f} | Conversions {m[1]} | ROAS {m[2]}x | CTR {m[3]}%")
+                    cur.execute(
+                        """SELECT entity_name, ROUND(SUM(COALESCE(spend,0))::numeric,0),
+                                  ROUND(CASE WHEN SUM(COALESCE(spend,0))>0 THEN SUM(COALESCE(revenue,0))/SUM(COALESCE(spend,0)) ELSE 0 END::numeric,2)
+                           FROM kpi_hourly WHERE workspace_id=%s AND platform='meta' AND entity_level='campaign'
+                             AND hour_ts >= NOW() - INTERVAL '365 days'
+                           GROUP BY entity_name HAVING SUM(COALESCE(spend,0))>0 ORDER BY 2 DESC LIMIT 5""",
+                        (workspace_id,),
+                    )
+                    camps = cur.fetchall()
+                    if camps:
+                        parts.append("  Top Meta campaigns: " + "; ".join(f'"{r[0]}" (₹{r[1]:,.0f}, {r[2]}x)' for r in camps if r[0]))
+
+                # 4. Google Ads performance
+                cur.execute(
+                    """SELECT ROUND(SUM(COALESCE(spend,0))::numeric,0),
+                              ROUND(SUM(COALESCE(conversions,0))::numeric,0),
+                              ROUND(CASE WHEN SUM(COALESCE(spend,0))>0 THEN SUM(COALESCE(revenue,0))/SUM(COALESCE(spend,0)) ELSE 0 END::numeric,2),
+                              COUNT(DISTINCT entity_name)
+                       FROM kpi_hourly WHERE workspace_id=%s AND platform='google' AND entity_level='campaign'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'""",
+                    (workspace_id,),
+                )
+                g = cur.fetchone()
+                if g and g[3] and int(g[3]) > 0:
+                    parts.append(f"GOOGLE ADS: Spend ₹{g[0]:,.0f} | Conversions {g[1]} | ROAS {g[2]}x")
+                    cur.execute(
+                        """SELECT entity_name, ROUND(SUM(COALESCE(spend,0))::numeric,0),
+                                  ROUND(CASE WHEN SUM(COALESCE(spend,0))>0 THEN SUM(COALESCE(revenue,0))/SUM(COALESCE(spend,0)) ELSE 0 END::numeric,2)
+                           FROM kpi_hourly WHERE workspace_id=%s AND platform='google' AND entity_level='campaign'
+                             AND hour_ts >= NOW() - INTERVAL '365 days'
+                           GROUP BY entity_name HAVING SUM(COALESCE(spend,0))>0 ORDER BY 2 DESC LIMIT 5""",
+                        (workspace_id,),
+                    )
+                    gcamps = cur.fetchall()
+                    if gcamps:
+                        parts.append("  Top Google campaigns: " + "; ".join(f'"{r[0]}" (₹{r[1]:,.0f}, {r[2]}x)' for r in gcamps if r[0]))
+
+                # 5. Top search terms
+                cur.execute(
+                    """SELECT entity_name, SUM(COALESCE(clicks,0))::int
+                       FROM kpi_hourly WHERE workspace_id=%s AND entity_level='search_term'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'
+                       GROUP BY entity_name HAVING SUM(COALESCE(clicks,0))>2
+                       ORDER BY 2 DESC LIMIT 12""",
+                    (workspace_id,),
+                )
+                terms = [r[0] for r in cur.fetchall() if r[0]]
+                if terms:
+                    parts.append("TOP SEARCH TERMS: " + ", ".join(f'"{t}"' for t in terms))
+
+                # 6. Top keywords
+                cur.execute(
+                    """SELECT entity_name, SUM(COALESCE(conversions,0))::int
+                       FROM kpi_hourly WHERE workspace_id=%s AND entity_level='keyword'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'
+                       GROUP BY entity_name HAVING SUM(COALESCE(clicks,0))>1
+                       ORDER BY 2 DESC LIMIT 10""",
+                    (workspace_id,),
+                )
+                kws = [r[0] for r in cur.fetchall() if r[0]]
+                if kws:
+                    parts.append("TOP KEYWORDS: " + ", ".join(f'"{k}"' for k in kws))
+
+                # 7. Latest LP audit
+                cur.execute(
+                    """SELECT audit_json->>'brand' FROM lp_audits
+                       WHERE workspace_id=%s AND status='completed'
+                       ORDER BY created_at DESC LIMIT 1""",
+                    (workspace_id,),
+                )
+                lp_row = cur.fetchone()
+                if lp_row and lp_row[0]:
+                    try:
+                        import json as _jlp
+                        lp_brand = _jlp.loads(lp_row[0]) if isinstance(lp_row[0], str) else lp_row[0]
+                        grade = lp_brand.get("grade", "")
+                        score = lp_brand.get("score", 0)
+                        issues = lp_brand.get("issues", [])[:3]
+                        if grade or score:
+                            lp_str = f"LANDING PAGE: Grade {grade} ({score}/100)"
+                            if score and int(score) < 70:
+                                lp_str += " — IMPORTANT: LP needs improvement before scaling ad spend"
+                            if issues:
+                                lp_str += f" | Issues: {'; '.join(issues[:3])}"
+                            parts.append(lp_str)
+                    except Exception:
+                        pass
+
+                # 8. Competitor intel summary
+                cur.execute(
+                    """SELECT bcp.competitor_name, bcp.competitor_url, bcp.brand_dna
+                       FROM brand_competitor_profiles bcp
+                       JOIN brand_intel_jobs bij ON bcp.job_id = bij.id
+                       WHERE bij.workspace_id=%s AND bcp.confirmed=TRUE
+                       ORDER BY bcp.confidence_pct DESC LIMIT 5""",
+                    (workspace_id,),
+                )
+                comps = cur.fetchall()
+                if comps:
+                    comp_lines = []
+                    for c in comps:
+                        dna = (c[2] or {}) if isinstance(c[2], dict) else {}
+                        pos = (dna.get("positioning") or "")[:80]
+                        comp_lines.append(f"  • {c[0]} ({c[1]})" + (f": {pos}" if pos else ""))
+                    parts.append("COMPETITORS:\n" + "\n".join(comp_lines))
+
+    except Exception as e:
+        print(f"_get_workspace_context_block error: {e}")
+
+    if not parts:
+        return ""
+    return "\n\n".join(parts)
+
+
 # ── Campaign Planner — AI Auto-Generate (uses workspace context) ─────────────
 
 @app.post("/campaign-planner/auto-generate")
@@ -8849,6 +9264,23 @@ async def campaign_planner_auto_generate(request: Request):
     import anthropic as _anthropic
     from services.agent_swarm.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
     from services.agent_swarm.db import get_conn
+
+    # Fetch workspace info for dynamic prompt
+    _ag_brand_desc = "an Indian brand"
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT workspace_type, brand_url, store_url FROM workspaces WHERE id = %s",
+                    (workspace_id,),
+                )
+                _ag_ws = cur.fetchone()
+        if _ag_ws:
+            _ag_type = (_ag_ws[0] or "").strip() or "brand"
+            _ag_domain = (_ag_ws[1] or _ag_ws[2] or "").replace("https://", "").replace("http://", "").split("/")[0]
+            _ag_brand_desc = f"an Indian {_ag_type} brand" + (f" ({_ag_domain})" if _ag_domain else "")
+    except Exception:
+        pass
 
     # Gather workspace context
     context_parts = []
@@ -8872,7 +9304,7 @@ async def campaign_planner_auto_generate(request: Request):
     except Exception as e:
         print(f"Auto-generate products fetch error: {e}")
 
-    # 2. Recent KPI performance (last 30 days)
+    # 2. Recent KPI performance (last 365 days)
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
@@ -8886,14 +9318,14 @@ async def campaign_planner_auto_generate(request: Request):
                     FROM kpi_hourly
                     WHERE workspace_id = %s
                       AND entity_level = 'campaign'
-                      AND hour_ts >= NOW() - INTERVAL '30 days'
+                      AND hour_ts >= NOW() - INTERVAL '365 days'
                     GROUP BY platform
                     """,
                     (workspace_id,),
                 )
                 kpis = cur.fetchall()
         if kpis:
-            context_parts.append("RECENT KPI PERFORMANCE (30 days):\n" + "\n".join(
+            context_parts.append("RECENT KPI PERFORMANCE (365 days):\n" + "\n".join(
                 f"- {k[0].upper()}: Spend ₹{k[1]:,.0f} | Conversions {k[2]} | Revenue ₹{k[3]:,.0f} | Clicks {k[4]:,.0f}"
                 for k in kpis
             ))
@@ -8915,7 +9347,7 @@ async def campaign_planner_auto_generate(request: Request):
                     FROM kpi_hourly
                     WHERE workspace_id = %s
                       AND entity_level = 'campaign'
-                      AND hour_ts >= NOW() - INTERVAL '90 days'
+                      AND hour_ts >= NOW() - INTERVAL '365 days'
                     GROUP BY entity_name, platform
                     HAVING SUM(COALESCE(spend,0)) > 100
                     ORDER BY roas DESC LIMIT 5
@@ -8924,16 +9356,137 @@ async def campaign_planner_auto_generate(request: Request):
                 )
                 best = cur.fetchall()
         if best:
-            context_parts.append("TOP PERFORMING CAMPAIGNS (90 days):\n" + "\n".join(
+            context_parts.append("TOP PERFORMING CAMPAIGNS (365 days):\n" + "\n".join(
                 f"- [{b[1]}] {b[0]}: Spend ₹{b[2]:,.0f} | Conversions {b[3]} | ROAS {b[4]}x"
                 for b in best
             ))
     except Exception as e:
         print(f"Auto-generate best campaigns fetch error: {e}")
 
+    # 4. Worst-performing campaigns (most wasted spend)
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT entity_name, platform,
+                              ROUND(SUM(COALESCE(spend,0))::numeric,0) AS spend,
+                              ROUND(CASE WHEN SUM(COALESCE(spend,0))>0
+                                    THEN SUM(COALESCE(revenue,0))/SUM(COALESCE(spend,0))
+                                    ELSE 0 END::numeric,2) AS roas
+                       FROM kpi_hourly
+                       WHERE workspace_id = %s AND entity_level = 'campaign'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'
+                       GROUP BY entity_name, platform
+                       HAVING SUM(COALESCE(spend,0)) > 500
+                       ORDER BY roas ASC LIMIT 3""",
+                    (workspace_id,),
+                )
+                worst = cur.fetchall()
+        if worst:
+            context_parts.append("WORST CAMPAIGNS (avoid repeating these):\n" + "\n".join(
+                f"- [{w[1]}] {w[0]}: Spend ₹{w[2]:,.0f} | ROAS {w[3]}x"
+                for w in worst
+            ))
+    except Exception as e:
+        print(f"Auto-generate worst campaigns fetch error: {e}")
+
+    # 5. Top converting search terms
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT entity_name,
+                              ROUND(SUM(COALESCE(clicks,0))::numeric,0) AS clicks,
+                              ROUND(SUM(COALESCE(conversions,0))::numeric,0) AS convs
+                       FROM kpi_hourly
+                       WHERE workspace_id = %s AND entity_level = 'search_term'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'
+                       GROUP BY entity_name
+                       HAVING SUM(COALESCE(clicks,0)) > 5
+                       ORDER BY convs DESC, clicks DESC LIMIT 15""",
+                    (workspace_id,),
+                )
+                terms = cur.fetchall()
+        if terms:
+            context_parts.append(
+                "TOP SEARCH TERMS (use for ad copy + keyword suggestions):\n  " +
+                ", ".join(f'"{r[0]}"' for r in terms if r[0])
+            )
+    except Exception as e:
+        print(f"Auto-generate search terms fetch error: {e}")
+
+    # 6. Top keywords
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT entity_name,
+                              ROUND(SUM(COALESCE(clicks,0))::numeric,0) AS clicks,
+                              ROUND(SUM(COALESCE(conversions,0))::numeric,0) AS convs,
+                              ROUND(CASE WHEN SUM(COALESCE(clicks,0))>0
+                                    THEN SUM(COALESCE(conversions,0))/SUM(COALESCE(clicks,0))*100
+                                    ELSE 0 END::numeric,1) AS cvr
+                       FROM kpi_hourly
+                       WHERE workspace_id = %s AND entity_level = 'keyword'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'
+                       GROUP BY entity_name
+                       HAVING SUM(COALESCE(clicks,0)) > 2
+                       ORDER BY convs DESC, clicks DESC LIMIT 15""",
+                    (workspace_id,),
+                )
+                kws = cur.fetchall()
+        if kws:
+            context_parts.append(
+                "TOP KEYWORDS:\n  " +
+                ", ".join(f'"{r[0]}" (CVR {r[3]}%)' for r in kws if r[0])
+            )
+    except Exception as e:
+        print(f"Auto-generate keywords fetch error: {e}")
+
+    # 7. Ad group level breakdown (top 5)
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT entity_name, platform,
+                              ROUND(SUM(COALESCE(spend,0))::numeric,0) AS spend,
+                              ROUND(SUM(COALESCE(conversions,0))::numeric,0) AS convs,
+                              ROUND(CASE WHEN SUM(COALESCE(spend,0))>0
+                                    THEN SUM(COALESCE(revenue,0))/SUM(COALESCE(spend,0))
+                                    ELSE 0 END::numeric,2) AS roas
+                       FROM kpi_hourly
+                       WHERE workspace_id = %s AND entity_level = 'ad_group'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'
+                       GROUP BY entity_name, platform
+                       HAVING SUM(COALESCE(spend,0)) > 200
+                       ORDER BY roas DESC LIMIT 5""",
+                    (workspace_id,),
+                )
+                adgroups = cur.fetchall()
+        if adgroups:
+            context_parts.append("TOP AD GROUPS:\n" + "\n".join(
+                f"- [{a[1]}] {a[0]}: Spend ₹{a[2]:,.0f} | Conversions {a[3]} | ROAS {a[4]}x"
+                for a in adgroups
+            ))
+    except Exception as e:
+        print(f"Auto-generate ad groups fetch error: {e}")
+
+    # Enrich with LP audit + competitor intel from shared context block
+    _ag_shared = _get_workspace_context_block(workspace_id)
+    for _ag_line in _ag_shared.splitlines():
+        if _ag_line.startswith("LANDING PAGE:"):
+            context_parts.append(f"LANDING PAGE HEALTH: {_ag_line[len('LANDING PAGE:'):].strip()}")
+        if _ag_line.startswith("COMPETITORS:"):
+            # Grab competitors block
+            _ag_comp_idx = _ag_shared.find("COMPETITORS:")
+            if _ag_comp_idx != -1:
+                _ag_comp_end = _ag_shared.find("\n\n", _ag_comp_idx)
+                context_parts.append(_ag_shared[_ag_comp_idx:_ag_comp_end if _ag_comp_end != -1 else None])
+            break
+
     workspace_context = "\n\n".join(context_parts) if context_parts else "No historical data available yet."
 
-    prompt = f"""You are a senior performance marketing strategist for an Indian health tech brand.
+    prompt = f"""You are a senior performance marketing strategist for {_ag_brand_desc}.
 Based on the workspace data below, generate a COMPLETE AI-recommended campaign plan to maximise growth.
 
 {workspace_context}
@@ -8948,8 +9501,8 @@ Generate a JSON object with exactly these keys:
 - recommended_budget_daily: (number) INR daily budget recommendation based on current spend
 - recommended_duration_days: (number) e.g. 30
 - kpi_targets: {{expected_roas: number, expected_cpa: number, expected_ctr: number}}
-- rationale: (string) Detailed reasoning — what to scale, what to fix, what's the growth lever
-- growth_insights: (array of strings) 3-5 specific actionable insights from the data
+- rationale: (string) Detailed reasoning — what to scale, what to fix, what's the growth lever. Reference actual campaign names and search terms from the data.
+- growth_insights: (array of strings) 5-7 specific actionable insights — reference actual search terms, best/worst campaigns, keyword CVR, and ad group data from the context above
 
 Return ONLY valid JSON, no markdown."""
 
@@ -8970,7 +9523,7 @@ Return ONLY valid JSON, no markdown."""
             "headline": "Scale What's Working",
             "body_copy": "Based on your performance data, focus on increasing budget on top ROAS campaigns while testing new creatives.",
             "hook": "Your data shows a clear growth lever — here's how to unlock it.",
-            "creative_direction": "Benefit-led video content with real user testimonials. Lead with the health outcome, not the product.",
+            "creative_direction": "Benefit-led video content with real user testimonials. Lead with the core benefit, show the product in use.",
             "recommended_format": "Meta Reels + Google Search",
             "recommended_channels": ["meta", "google"],
             "recommended_budget_daily": 5000,
@@ -9730,6 +10283,10 @@ async def seo_audit_url(request: Request):
     if not url.startswith("http"):
         url = "https://" + url
 
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_credits_only(conn, org_id, FEATURE_COSTS["seo_audit_url"], "seo_audit_url")
+
     import requests as _req
     import re as _re
     import anthropic as _anthropic
@@ -9888,6 +10445,8 @@ Be specific — reference the actual title/meta text. Give concrete one-line fix
             "issues": [], "strengths": [], "quick_wins": [],
         }
 
+    with get_conn() as conn:
+        _deduct_credits_only(conn, org_id, workspace_id, FEATURE_COSTS["seo_audit_url"], "seo_audit_url")
     return {"url": url, "signals": signals, "audit": audit}
 
 
@@ -9991,6 +10550,11 @@ async def seo_offpage_analysis(request: Request):
     workspace_id = body.get("workspace_id")
     if not workspace_id:
         raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_credits_only(conn, org_id, FEATURE_COSTS["seo_offpage"], "seo_offpage")
+
     import anthropic as _anthropic, json as _json, re as _re
     from services.agent_swarm.config import ANTHROPIC_API_KEY as _AKEY, CLAUDE_MODEL as _MODEL
     from services.agent_swarm.core.workspace import get_workspace
@@ -10012,7 +10576,7 @@ async def seo_offpage_analysis(request: Request):
 
 Business: {ws_name}
 Type: {ws_type}
-Products: {products_context or "health/consumer products"}
+Products: {products_context or "products sold online"}
 Website: {active_site or "their website"}
 
 Generate a comprehensive off-page SEO strategy. Return ONLY valid JSON:
@@ -10063,6 +10627,8 @@ Name REAL, specific websites relevant to this niche (health devices, India marke
                 cur.execute("INSERT INTO seo_offpage_plans (workspace_id, plan) VALUES (%s, %s::jsonb)", (workspace_id, _json.dumps(plan)))
     except Exception as e:
         print(f"seo_offpage_plans save error: {e}")
+    with get_conn() as conn:
+        _deduct_credits_only(conn, org_id, workspace_id, FEATURE_COSTS["seo_offpage"], "seo_offpage")
     return {"plan": plan, "workspace_id": workspace_id}
 
 
@@ -10232,7 +10798,7 @@ Description: {(p.get('body_html','') or '')[:300]}
 
 Generate concise, descriptive alt text (max 12 words each) for {len(images_missing)} product images.
 Return ONLY a JSON array of strings, one per image, in order.
-Example: ["Front view of EasyTouch glucose monitor in white", "Side view showing USB port"]"""
+Example: ["Front view of product in white", "Side view showing key feature"]"""
         try:
             msg = client.messages.create(model=_MODEL, max_tokens=512,
                 system="Return valid JSON array only.",
@@ -10453,10 +11019,10 @@ async def ai_chat(request: Request):
     if not user_message:
         raise HTTPException(status_code=400, detail="message required")
 
-    # Deduct 1 credit
+    # Check credits upfront — deduct only after Claude responds successfully
     with get_conn() as conn:
         org_id = _get_org_id_for_workspace(conn, workspace_id)
-        _check_and_deduct_credits(conn, org_id, workspace_id, FEATURE_COSTS["ai_chat"], "ai_chat")
+        _check_credits_only(conn, org_id, FEATURE_COSTS["ai_chat"], "ai_chat")
 
     # ── Gather workspace context ────────────────────────────────────────────────
     ctx_lines: list[str] = []
@@ -10752,6 +11318,8 @@ async def ai_chat(request: Request):
     except Exception as e:
         print(f"[chat] Failed to save history: {e}")  # non-fatal
 
+    with get_conn() as conn:
+        _deduct_credits_only(conn, org_id, workspace_id, FEATURE_COSTS["ai_chat"], "ai_chat")
     return {"reply": reply, "credits_used": 1}
 
 
@@ -11465,6 +12033,38 @@ async def admin_migrate(request: Request):
         )""",
         "CREATE INDEX IF NOT EXISTS idx_onboard_jobs_ws ON onboard_jobs(workspace_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_onboard_jobs_order ON onboard_jobs(razorpay_order_id) WHERE razorpay_order_id IS NOT NULL",
+        # v32 — Apify Ad Library searches
+        """CREATE TABLE IF NOT EXISTS apify_ad_library_searches (
+            id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id     UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            query            TEXT NOT NULL DEFAULT '',
+            country          TEXT NOT NULL DEFAULT 'IN',
+            active_only      BOOLEAN NOT NULL DEFAULT TRUE,
+            max_items        INTEGER NOT NULL DEFAULT 30,
+            apify_run_id     TEXT,
+            apify_dataset_id TEXT,
+            status           TEXT NOT NULL DEFAULT 'running',
+            ads_json         JSONB,
+            claude_analysis  TEXT,
+            credits_deducted BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_adlib_ws ON apify_ad_library_searches(workspace_id, created_at DESC)",
+        # v33 — Voice of Customer (Reddit) scans
+        """CREATE TABLE IF NOT EXISTS voc_scans (
+            id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id  UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            query         TEXT NOT NULL DEFAULT '',
+            posts_json    JSONB NOT NULL DEFAULT '[]',
+            summary       TEXT,
+            credits_used  INT NOT NULL DEFAULT 3,
+            created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_voc_ws ON voc_scans(workspace_id, created_at DESC)",
+        # v33b — Extra columns on onboard_jobs for enriched scan data
+        "ALTER TABLE onboard_jobs ADD COLUMN IF NOT EXISTS reddit_voc JSONB",
+        "ALTER TABLE onboard_jobs ADD COLUMN IF NOT EXISTS ad_keywords JSONB",
     ]
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -11722,6 +12322,10 @@ async def aso_analyze(request: Request):
     category = body.get("category", "")
     store = body.get("store", "appstore")
 
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_credits_only(conn, org_id, FEATURE_COSTS["aso_analyze"], "aso_analyze")
+
     prompt = f"""You are an expert App Store Optimization (ASO) consultant.
 
 App: {app_name}
@@ -11755,6 +12359,9 @@ Analyze and return JSON:
         result = json.loads(msg.content[0].text.strip())
     except Exception as e:
         result = {"score": 0, "issues": [], "error": str(e)}
+    if not result.get("error"):
+        with get_conn() as conn:
+            _deduct_credits_only(conn, org_id, workspace_id, FEATURE_COSTS["aso_analyze"], "aso_analyze")
     return result
 
 
@@ -11874,6 +12481,10 @@ async def app_growth_plan_generate(request: Request):
     if not workspace_id:
         raise HTTPException(status_code=400, detail="workspace_id required")
 
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_credits_only(conn, org_id, FEATURE_COSTS["app_growth_plan"], "app_growth_plan")
+
     # Gather signals
     signals: dict = {}
     with get_conn() as conn:
@@ -11984,6 +12595,9 @@ Generate 8-12 actions covering all channels."""
         with conn.cursor() as cur:
             cur.execute("INSERT INTO app_growth_plans (workspace_id, plan_json) VALUES (%s,%s::jsonb)",
                         (workspace_id, json.dumps(plan)))
+    if not plan.get("error"):
+        with get_conn() as conn:
+            _deduct_credits_only(conn, org_id, workspace_id, FEATURE_COSTS["app_growth_plan"], "app_growth_plan")
     return plan
 
 
@@ -12557,9 +13171,31 @@ async def ai_daily_brief(
                 except Exception:
                     pass
 
+    # Enrich context with shared cross-module intel (products, LP audit, competitors, keywords)
+    _brief_shared = _get_workspace_context_block(workspace_id)
+    if _brief_shared:
+        context_parts.append("=== FULL WORKSPACE INTELLIGENCE ===\n" + _brief_shared)
+
     context_str = "\n\n---\n\n".join(context_parts) if context_parts else "No performance data yet."
 
-    prompt = f"""You are a senior growth strategist for an Indian D2C health brand.
+    # Fetch workspace brand context for the prompt
+    _brief_brand_desc = "an Indian brand"
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT workspace_type, brand_url, store_url FROM workspaces WHERE id=%s",
+                    (workspace_id,),
+                )
+                _brief_ws = cur.fetchone()
+        if _brief_ws:
+            _brief_type = (_brief_ws[0] or "").strip() or "brand"
+            _brief_domain = (_brief_ws[1] or _brief_ws[2] or "").replace("https://", "").replace("http://", "").split("/")[0]
+            _brief_brand_desc = f"an Indian {_brief_type} brand" + (f" ({_brief_domain})" if _brief_domain else "")
+    except Exception:
+        pass
+
+    prompt = f"""You are a senior growth strategist for {_brief_brand_desc}.
 Analyze this real marketing performance data and generate exactly 4 specific, actionable growth opportunities.
 
 PERFORMANCE DATA:
@@ -12567,7 +13203,7 @@ PERFORMANCE DATA:
 
 Generate a JSON array of exactly 4 objects. Each object MUST have these exact keys:
 - action_type: one of "increase_budget", "pause_campaign", "new_creative", "geographic_expansion", "keyword_addition", "bid_adjustment", "reduce_budget"
-- title: max 6 words, action-focused (e.g. "Scale SanketLife Budget 25%")
+- title: max 6 words, action-focused (reference actual campaign/product names from the data)
 - detail: exactly 2 sentences. First sentence: what the data shows (with specific numbers). Second sentence: what to do and why.
 - expected_impact: "High", "Medium", or "Low"
 - platform: "meta", "google", "youtube", or "all"
@@ -12648,11 +13284,10 @@ async def yt_ci_analyze(request: Request, background_tasks: BackgroundTasks):
     if not workspace_id:
         raise HTTPException(status_code=400, detail="workspace_id required")
 
-    # Deduct credits before running expensive analysis
+    # Check credits upfront — deduct only after analysis completes successfully
     with get_conn() as conn:
         org_id = _get_org_id_for_workspace(conn, workspace_id)
-        _check_and_deduct_credits(conn, org_id, workspace_id,
-                                  FEATURE_COSTS["yt_competitor_intel"], "yt_competitor_intel")
+        _check_credits_only(conn, org_id, FEATURE_COSTS["yt_competitor_intel"], "yt_competitor_intel")
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -12920,8 +13555,21 @@ async def yt_ci_confirm_discovery(request: Request, background_tasks: Background
     if not job_id:
         raise HTTPException(status_code=400, detail="No analysis job found — run /analyze first")
 
-    from services.agent_swarm.core.yt_intelligence import run_analysis_phase
-    background_tasks.add_task(run_analysis_phase, workspace_id, job_id)
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+
+    def _run_analysis():
+        from services.agent_swarm.core.yt_intelligence import run_analysis_phase as _rap
+        from services.agent_swarm.db import get_conn as _gc
+        try:
+            _rap(workspace_id, job_id)
+            # SUCCESS — deduct credits now
+            with _gc() as conn:
+                _deduct_credits_only(conn, org_id, workspace_id, FEATURE_COSTS["yt_competitor_intel"], "yt_competitor_intel")
+        except Exception as e:
+            print(f"[yt_ci] Phase 2 error: {e}")
+
+    background_tasks.add_task(_run_analysis)
 
     return {
         "started":          True,
@@ -14117,11 +14765,10 @@ async def yt_ci_regenerate_recipe(request: Request, background_tasks: Background
     if not workspace_id:
         raise HTTPException(status_code=400, detail="workspace_id required")
 
-    # Deduct credits before re-generation
+    # Check credits upfront — deduct only after re-generation succeeds
     with get_conn() as conn:
         org_id = _get_org_id_for_workspace(conn, workspace_id)
-        _check_and_deduct_credits(conn, org_id, workspace_id,
-                                  FEATURE_COSTS["growth_recipe_regen"], "growth_recipe_regen")
+        _check_credits_only(conn, org_id, FEATURE_COSTS["growth_recipe_regen"], "growth_recipe_regen")
 
     # RULE: background tasks that call blocking/sync functions MUST be `def`, not `async def`.
     # `async def` runs in the event loop and will block all incoming requests (including polls).
@@ -14143,6 +14790,9 @@ async def yt_ci_regenerate_recipe(request: Request, background_tasks: Background
                         conn.rollback()
                         workspace_type = "d2c"
                 _gen(workspace_id, workspace_type, conn)
+            # SUCCESS — deduct credits now
+            with _gc() as conn:
+                _deduct_credits_only(conn, org_id, workspace_id, FEATURE_COSTS["growth_recipe_regen"], "growth_recipe_regen")
         except Exception as e:
             print(f"[yt_intel] regenerate_recipe error: {e}")
 
@@ -14236,6 +14886,539 @@ async def meta_competitor_pages_delete(request: Request):
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Apify Ad Library — keyword-based competitor ad search (India + global)      ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def _apify_start_ad_library_run(query: str, country: str, active_only: bool, max_items: int) -> dict:
+    """Start an Apify facebook-ads-scraper run and return run metadata."""
+    if not APIFY_API_TOKEN:
+        raise HTTPException(status_code=503, detail="APIFY_API_TOKEN not configured")
+    # Build the Ad Library search URL
+    status_param = "active" if active_only else "all"
+    import urllib.parse
+    qs = urllib.parse.urlencode({
+        "active_status": status_param,
+        "ad_type": "all",
+        "country": country,
+        "q": query,
+        "search_type": "keyword_unordered",
+    })
+    search_url = f"https://www.facebook.com/ads/library/?{qs}"
+    payload = {
+        "startUrls": [{"url": search_url}],
+        "maxItems": max_items,
+        "proxyConfiguration": {"useApifyProxy": True},
+    }
+    resp = httpx.post(
+        f"https://api.apify.com/v2/acts/apify~facebook-ads-scraper/runs?token={APIFY_API_TOKEN}",
+        json=payload,
+        timeout=30,
+    )
+    if resp.status_code not in (200, 201):
+        try:
+            err = resp.json().get("error", {})
+            err_type = err.get("type", "")
+            err_msg  = err.get("message", resp.text[:200])
+        except Exception:
+            err_type = ""
+            err_msg  = resp.text[:200]
+        if "monthly" in err_msg.lower() or "hard limit" in err_msg.lower() or "platform-feature-disabled" in err_type:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "apify_limit_exceeded",
+                    "message": "Ad Library search is temporarily unavailable. Please contact support.",
+                },
+            )
+        raise HTTPException(status_code=502, detail="Ad Library search is temporarily unavailable. Please try again later.")
+    data = resp.json().get("data", {})
+    return {
+        "run_id": data.get("id"),
+        "dataset_id": data.get("defaultDatasetId"),
+    }
+
+
+def _apify_poll_run(run_id: str) -> str:
+    """Return run status: RUNNING / SUCCEEDED / FAILED / TIMED-OUT"""
+    if not APIFY_API_TOKEN:
+        return "FAILED"
+    resp = httpx.get(
+        f"https://api.apify.com/v2/actor-runs/{run_id}?token={APIFY_API_TOKEN}",
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        return "FAILED"
+    return resp.json().get("data", {}).get("status", "FAILED")
+
+
+def _apify_fetch_dataset(dataset_id: str, max_items: int = 100) -> list:
+    """Fetch items from an Apify dataset."""
+    if not APIFY_API_TOKEN:
+        return []
+    resp = httpx.get(
+        f"https://api.apify.com/v2/datasets/{dataset_id}/items"
+        f"?token={APIFY_API_TOKEN}&limit={max_items}",
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        return []
+    return resp.json() or []
+
+
+def _parse_apify_ads(raw_items: list) -> list:
+    """Normalise raw Apify items to a compact ad card format."""
+    import datetime as _dt
+
+    def _fmt(ts):
+        if not ts:
+            return None
+        try:
+            return _dt.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+        except Exception:
+            return None
+
+    ads = []
+    for item in raw_items:
+        snap = item.get("snapshot") or {}
+        body_text = ""
+        body_obj = snap.get("body")
+        if isinstance(body_obj, dict):
+            body_text = body_obj.get("text", "")
+        elif isinstance(body_obj, str):
+            body_text = body_obj
+
+        cards  = snap.get("cards") or []
+        videos = snap.get("videos") or []  # standalone video array (rarely populated)
+
+        # ── Media: images come from cards (camelCase keys), videos too ──
+        media_urls = []
+        # 1. Card images (most common)
+        for c in cards:
+            if not isinstance(c, dict):
+                continue
+            img = (c.get("originalImageUrl") or
+                   c.get("resizedImageUrl") or
+                   c.get("watermarkedResizedImageUrl"))
+            if img:
+                media_urls.append(img)
+                break  # use first card image as hero
+        # 2. Card video preview (for video ads)
+        if not media_urls:
+            for c in cards:
+                if not isinstance(c, dict):
+                    continue
+                thumb = c.get("videoPreviewImageUrl")
+                if thumb:
+                    media_urls.append(thumb)
+                    break
+        # 3. Standalone video thumbnail
+        if not media_urls:
+            for v in videos:
+                if isinstance(v, dict):
+                    thumb = (v.get("videoPreviewImageUrl") or
+                             v.get("video_preview_image_url"))
+                    if thumb:
+                        media_urls.append(thumb)
+                        break
+
+        # ── Check if it's a video ad ──
+        is_video = any(
+            (isinstance(c, dict) and (c.get("videoHdUrl") or c.get("videoSdUrl")))
+            for c in cards
+        )
+
+        start_ts = item.get("startDate")
+        end_ts   = item.get("endDate")
+        run_days = None
+        if start_ts and end_ts:
+            try:
+                run_days = (end_ts - start_ts) // 86400
+            except Exception:
+                pass
+
+        ads.append({
+            "ad_id":      item.get("adArchiveId"),
+            "page_name":  item.get("pageName"),
+            "page_id":    item.get("pageId"),
+            "is_active":  item.get("isActive", False),
+            "body":       body_text[:600],
+            "headline":   snap.get("title") or "",
+            "cta":        snap.get("ctaText") or snap.get("ctaType") or "",
+            "link":       snap.get("linkUrl") or "",
+            "platforms":  item.get("publisherPlatform") or [],
+            "start_date": _fmt(start_ts),
+            "end_date":   _fmt(end_ts),
+            "run_days":   run_days,
+            "is_video":   is_video,
+            "media_urls": media_urls[:1],   # hero image only
+            "cards":      [
+                {
+                    "title": c.get("title", ""),
+                    "body":  c.get("body", ""),
+                    "link":  c.get("linkUrl", "") or c.get("link_url", ""),
+                    "img":   (c.get("originalImageUrl") or
+                              c.get("resizedImageUrl") or
+                              c.get("videoPreviewImageUrl") or ""),
+                }
+                for c in cards[:5]
+                if isinstance(c, dict)
+            ],
+        })
+    return ads
+
+
+def _claude_analyze_ads(ads: list, query: str) -> str:
+    """Run Claude Haiku to produce a competitive intelligence summary."""
+    import anthropic as _ant
+    client = _ant.Anthropic()
+    if not ads:
+        return "No ads found for the given query."
+    # Compact summary for Claude
+    lines = []
+    for a in ads[:25]:
+        lines.append(
+            f"- Page: {a['page_name']} | Active: {a['is_active']} | Days: {a.get('run_days')} | "
+            f"CTA: {a['cta']} | Headline: {a['headline'][:80]} | Copy: {a['body'][:150]}"
+        )
+    ad_text = "\n".join(lines)
+    prompt = (
+        f"You are a competitive intelligence analyst. I searched the Meta Ad Library for '{query}' "
+        f"and found {len(ads)} competitor ads. Here is a summary:\n\n{ad_text}\n\n"
+        "Please provide a competitive intelligence report with these sections:\n"
+        "1. **Top Advertisers** — who is spending the most (longest-running ads)\n"
+        "2. **Common Hooks & Headlines** — what opening lines/themes are working\n"
+        "3. **CTA Patterns** — which CTAs are most used\n"
+        "4. **Creative Themes** — visual/emotional themes you spot\n"
+        "5. **Gaps & Opportunities** — what nobody is doing that you could exploit\n"
+        "6. **Recommended Strategy** — 3 actionable ad recommendations based on this data\n\n"
+        "Keep it sharp and tactical. Use bullet points."
+    )
+    msg = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=1200,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return msg.content[0].text
+
+
+@app.post("/intel/ad-library/search")
+async def ad_library_search(request: Request, background_tasks: BackgroundTasks):
+    """
+    Start an Apify-powered Meta Ad Library keyword search.
+    Returns {job_id, status: 'running'} immediately; poll /intel/ad-library/status/{job_id}.
+    Credits = ceil(max_items / 10) * 15  (15cr per 10 ads, 3× margin over cost).
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    query        = (body.get("query") or "").strip()
+    country      = (body.get("country") or "IN").upper()
+    active_only  = bool(body.get("active_only", True))
+    max_items    = min(int(body.get("max_items", 10)), 50)
+
+    if not workspace_id or not query:
+        raise HTTPException(status_code=400, detail="workspace_id and query required")
+    if not APIFY_API_TOKEN:
+        raise HTTPException(status_code=503, detail="Ad Library search is not configured")
+
+    import math
+    credits_required = math.ceil(max_items / 10) * 15   # 10→15cr, 20→30cr, 30→45cr, 50→75cr
+
+    # Check credits upfront
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_credits_only(conn, org_id, credits_required, "ad_library_search")
+
+    # Start Apify run
+    run_meta = _apify_start_ad_library_run(query, country, active_only, max_items)
+    run_id      = run_meta["run_id"]
+    dataset_id  = run_meta["dataset_id"]
+
+    # Store job in DB
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO apify_ad_library_searches
+                   (workspace_id, query, country, active_only, max_items, apify_run_id, apify_dataset_id, status)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,'running') RETURNING id""",
+                (workspace_id, query, country, active_only, max_items, run_id, dataset_id),
+            )
+            job_id = str(cur.fetchone()[0])
+        conn.commit()
+
+    # Background: poll → fetch → Claude → deduct credits
+    def _finalize():
+        import time as _t
+        _org_id  = org_id
+        _ws_id   = workspace_id
+        _run_id  = run_id
+        _ds_id   = dataset_id
+        _job_id  = job_id
+        _max     = max_items
+        _query   = query
+        _credits = credits_required
+
+        # Poll up to 3 minutes
+        for _ in range(36):
+            _t.sleep(5)
+            status = _apify_poll_run(_run_id)
+            if status == "SUCCEEDED":
+                break
+            if status in ("FAILED", "TIMED-OUT", "ABORTED"):
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE apify_ad_library_searches SET status='failed', updated_at=NOW() WHERE id=%s",
+                            (_job_id,),
+                        )
+                    conn.commit()
+                return
+        else:
+            # Timeout
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE apify_ad_library_searches SET status='timeout', updated_at=NOW() WHERE id=%s",
+                        (_job_id,),
+                    )
+                conn.commit()
+            return
+
+        try:
+            raw    = _apify_fetch_dataset(_ds_id, _max)
+            ads    = _parse_apify_ads(raw)
+            analysis = _claude_analyze_ads(ads, _query)
+
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """UPDATE apify_ad_library_searches
+                           SET status='completed', ads_json=%s, claude_analysis=%s,
+                               credits_deducted=TRUE, updated_at=NOW()
+                           WHERE id=%s""",
+                        (json.dumps(ads), analysis, _job_id),
+                    )
+                conn.commit()
+                _deduct_credits_only(conn, _org_id, _ws_id, _credits, "ad_library_search")
+        except Exception as e:
+            print(f"[ad-library] finalize error: {e}")
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE apify_ad_library_searches SET status='failed', updated_at=NOW() WHERE id=%s",
+                        (_job_id,),
+                    )
+                conn.commit()
+
+    background_tasks.add_task(_finalize)
+    return {"ok": True, "job_id": job_id, "status": "running", "credits_required": credits_required}
+
+
+@app.get("/intel/ad-library/status/{job_id}")
+async def ad_library_status(job_id: str, request: Request):
+    """Poll status of an Ad Library search job."""
+    _auth(request)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT status, query, country, ads_json, claude_analysis, created_at
+                   FROM apify_ad_library_searches WHERE id=%s""",
+                (job_id,),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    status, query, country, ads_json, analysis, created_at = row
+    resp: dict = {"job_id": job_id, "status": status, "query": query, "country": country}
+    if status == "completed":
+        resp["ads"]      = ads_json or []
+        resp["analysis"] = analysis or ""
+        resp["ad_count"] = len(ads_json) if ads_json else 0
+    return resp
+
+
+@app.get("/intel/ad-library/history")
+async def ad_library_history(request: Request, workspace_id: str = ""):
+    """Return past searches for a workspace (last 20)."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, query, country, status, ad_count_cached, created_at
+                   FROM (
+                       SELECT id, query, country, status,
+                              jsonb_array_length(COALESCE(ads_json, '[]'::jsonb)) AS ad_count_cached,
+                              created_at
+                       FROM apify_ad_library_searches
+                       WHERE workspace_id=%s
+                       ORDER BY created_at DESC
+                       LIMIT 20
+                   ) t""",
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+    return {
+        "history": [
+            {
+                "job_id":    str(r[0]),
+                "query":     r[1],
+                "country":   r[2],
+                "status":    r[3],
+                "ad_count":  r[4] or 0,
+                "created_at": r[5].isoformat() if r[5] else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Voice of Customer — Reddit Intelligence                                      ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+async def _reddit_voc_search(query: str, limit: int = 25) -> list:
+    """Free Reddit public search — no auth required."""
+    import httpx as _httpx
+    try:
+        async with _httpx.AsyncClient(
+            timeout=10,
+            headers={"User-Agent": "runway-studios-aria/1.0"},
+            follow_redirects=True,
+        ) as client:
+            r = await client.get(
+                "https://www.reddit.com/search.json",
+                params={"q": query, "sort": "relevance", "limit": limit, "type": "link"},
+            )
+            if r.status_code != 200:
+                return []
+            data = r.json()
+        posts = []
+        for child in data.get("data", {}).get("children", []):
+            p = child.get("data", {})
+            posts.append({
+                "title": p.get("title", ""),
+                "subreddit": p.get("subreddit_name_prefixed", ""),
+                "score": p.get("score", 0),
+                "url": f"https://reddit.com{p.get('permalink', '')}",
+                "text_preview": (p.get("selftext") or "")[:300].strip(),
+                "created_utc": int(p.get("created_utc") or 0),
+                "num_comments": p.get("num_comments", 0),
+            })
+        return posts
+    except Exception as e:
+        print(f"[reddit_voc] search error: {e}")
+        return []
+
+
+async def _claude_voc_summary(query: str, posts: list) -> str:
+    """Synthesise Reddit posts into a Voice of Customer summary using Claude Haiku."""
+    import anthropic as _ant
+    from services.agent_swarm.config import ANTHROPIC_API_KEY
+    if not posts:
+        return "No Reddit discussions found for this query."
+    blocks = "\n\n".join(
+        f"[{p['subreddit']}] {p['title']}\n{p['text_preview']}"
+        for p in posts[:15]
+    )
+    client = _ant.Anthropic(api_key=ANTHROPIC_API_KEY)
+    msg = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=700,
+        messages=[{
+            "role": "user",
+            "content": (
+                f'Analyse these Reddit posts about "{query}" and give a Voice of Customer summary.\n\n'
+                f'Reddit Posts:\n{blocks}\n\n'
+                "Provide exactly this structure:\n"
+                "**Top Pain Points** (3-5 bullets) — what users complain about\n"
+                "**Top Desires** (3-5 bullets) — what users want or love\n"
+                "**Key Phrases** — exact words customers use (comma-separated)\n"
+                "**Sentiment** — Positive / Mixed / Negative + one-sentence summary\n\n"
+                "Be concise. Use the exact language customers use."
+            ),
+        }],
+    )
+    return msg.content[0].text if msg.content else ""
+
+
+@app.post("/intel/voc/search")
+async def voc_search(request: Request):
+    """Reddit Voice of Customer search. Deducts 3 credits.
+    Body: {workspace_id, query, limit?}
+    """
+    _auth(request)
+    body = await request.json()
+    workspace_id = (body.get("workspace_id") or "").strip()
+    query        = (body.get("query") or "").strip()
+    limit        = min(int(body.get("limit") or 25), 50)
+    if not workspace_id or not query:
+        raise HTTPException(status_code=400, detail="workspace_id and query required")
+
+    CREDITS = FEATURE_COSTS.get("voc_search", 3)
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        new_balance = _check_and_deduct_credits(conn, org_id, CREDITS, "voc_search", workspace_id)
+
+    posts = await _reddit_voc_search(query, limit)
+    summary = await _claude_voc_summary(query, posts)
+
+    import uuid as _uuid_voc
+    scan_id = str(_uuid_voc.uuid4())
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO voc_scans (id, workspace_id, query, posts_json, summary, credits_used)
+                   VALUES (%s::uuid, %s::uuid, %s, %s::jsonb, %s, %s)""",
+                (scan_id, workspace_id, query, json.dumps(posts), summary, CREDITS),
+            )
+        conn.commit()
+
+    return {
+        "scan_id": scan_id,
+        "query": query,
+        "posts": posts,
+        "summary": summary,
+        "credits_used": CREDITS,
+        "credit_balance": new_balance,
+    }
+
+
+@app.get("/intel/voc/history")
+async def voc_history(request: Request, workspace_id: str = ""):
+    """Return past VoC scans for a workspace (last 20)."""
+    _auth(request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, query, summary,
+                          jsonb_array_length(COALESCE(posts_json, '[]'::jsonb)),
+                          credits_used, created_at
+                   FROM voc_scans
+                   WHERE workspace_id = %s
+                   ORDER BY created_at DESC LIMIT 20""",
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+    return {
+        "history": [
+            {
+                "scan_id":    str(r[0]),
+                "query":      r[1],
+                "summary":    r[2],
+                "post_count": r[3] or 0,
+                "credits_used": r[4] or 3,
+                "created_at": r[5].isoformat() if r[5] else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  Growth OS — Unified Command Center                                           ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
@@ -14256,11 +15439,10 @@ async def growth_os_generate(request: Request, background_tasks: BackgroundTasks
     strategy_mode = (body.get("strategy_mode") or "").strip()
     brand_url = (body.get("brand_url") or "").strip()
 
-    # Deduct credits before generating AI plan
+    # Check credits upfront — deduct only after plan generation succeeds
     with get_conn() as conn:
         org_id = _get_org_id_for_workspace(conn, workspace_id)
-        _check_and_deduct_credits(conn, org_id, workspace_id,
-                                  FEATURE_COSTS["growth_os"], "growth_os")
+        _check_credits_only(conn, org_id, FEATURE_COSTS["growth_os"], "growth_os")
 
     import uuid as _uuid
 
@@ -14275,6 +15457,9 @@ async def growth_os_generate(request: Request, background_tasks: BackgroundTasks
         try:
             with _gc() as conn:
                 _gen_plan(workspace_id, conn, directive=directive or None, strategy_mode=strategy_mode or None)
+            # SUCCESS — deduct credits now
+            with _gc() as conn:
+                _deduct_credits_only(conn, org_id, workspace_id, FEATURE_COSTS["growth_os"], "growth_os")
         except Exception as e:
             print(f"[growth_os] background generate error: {e}")
 
@@ -14473,6 +15658,10 @@ async def lp_audit_start(request: Request, background_tasks: BackgroundTasks):
     if not brand_url:
         raise HTTPException(status_code=400, detail="brand_url required")
 
+    with get_conn() as conn:
+        org_id = _get_org_id_for_workspace(conn, workspace_id)
+        _check_credits_only(conn, org_id, FEATURE_COSTS["lp_audit"], "lp_audit")
+
     job_id = str(__import__("uuid").uuid4())
 
     # Insert pending job row
@@ -14529,6 +15718,9 @@ async def lp_audit_start(request: Request, background_tasks: BackgroundTasks):
                         (json.dumps(result), job_id),
                     )
                 conn.commit()
+            # SUCCESS — deduct credits now
+            with get_conn() as conn:
+                _deduct_credits_only(conn, org_id, workspace_id, FEATURE_COSTS["lp_audit"], "lp_audit")
         except Exception as e:
             print(f"[lp_audit] job {job_id} failed: {e}")
             with get_conn() as conn:
@@ -14664,11 +15856,10 @@ async def growth_os_run_v2(request: Request, background_tasks: BackgroundTasks):
     strategy_mode = (body.get("strategy_mode") or "").strip()
     brand_url = (body.get("brand_url") or "").strip()
 
-    # Deduct credits
+    # Check credits upfront — deduct only after job succeeds
     with get_conn() as conn:
         org_id = _get_org_id_for_workspace(conn, workspace_id)
-        _check_and_deduct_credits(conn, org_id, workspace_id,
-                                  FEATURE_COSTS["growth_os"], "growth_os")
+        _check_credits_only(conn, org_id, FEATURE_COSTS["growth_os"], "growth_os")
 
     # Create the job row
     import uuid as _uuid
@@ -14683,6 +15874,7 @@ async def growth_os_run_v2(request: Request, background_tasks: BackgroundTasks):
 
     def _run():
         from services.agent_swarm.core.growth_os import run_full_strategy_job
+        from services.agent_swarm.db import get_conn as _gc
         try:
             run_full_strategy_job(
                 job_id, workspace_id,
@@ -14691,6 +15883,9 @@ async def growth_os_run_v2(request: Request, background_tasks: BackgroundTasks):
                 strategy_mode=strategy_mode or None,
                 credits_base=FEATURE_COSTS["growth_os"],
             )
+            # SUCCESS — deduct credits now
+            with _gc() as conn:
+                _deduct_credits_only(conn, org_id, workspace_id, FEATURE_COSTS["growth_os"], "growth_os")
         except Exception as e:
             print(f"[growth_os_v2] job {job_id} error: {e}")
 
@@ -16139,7 +17334,7 @@ async def email_compose_ai(request: Request):
 
     with get_conn() as conn:
         org_id = _get_org_id_for_workspace(conn, workspace_id)
-        _check_and_deduct_credits(conn, org_id, workspace_id, 3, "email_compose")
+        _check_credits_only(conn, org_id, FEATURE_COSTS["email_compose"], "email_compose")
 
     import datetime as _dt
     current_year = _dt.date.today().year
@@ -16318,6 +17513,8 @@ The HTML section is large so we avoid JSON encoding issues.
     if not html_body:
         raise HTTPException(status_code=500, detail="AI failed to generate email content — please try again")
 
+    with get_conn() as conn:
+        _deduct_credits_only(conn, org_id, workspace_id, FEATURE_COSTS["email_compose"], "email_compose")
     return {
         "subject":   subject,
         "preheader": preheader,
@@ -18154,3 +19351,84 @@ async def onboard_chain_status(job_id: str, request: Request):
     """Poll chain progress — delegates to preview-status."""
     _auth(request)
     return await onboard_preview_status(job_id, request)
+
+
+@app.post("/onboard/start-scan")
+async def onboard_start_scan(request: Request, background_tasks: BackgroundTasks):
+    """
+    All-in-one: find/create workspace + start free preview scan.
+    Called from the /onboard page when a new user pastes their URL.
+    Body: {url, workspace_name?, clerk_user_id?}
+    Returns: {ok, job_id, workspace_id, url_type}
+    """
+    body = await request.json()
+    url             = (body.get("url") or "").strip()
+    workspace_name  = (body.get("workspace_name") or "My Brand").strip()
+    clerk_user_id   = (body.get("clerk_user_id") or "").strip() or None
+    if not url:
+        raise HTTPException(status_code=400, detail="url required")
+
+    from services.agent_swarm.core.onboard_chain import detect_url_type
+    import uuid as _uuid_ss, re as _re_ss
+
+    url_type = detect_url_type(url)
+
+    # Find or create workspace
+    ws_id = None
+    org_id = None
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if clerk_user_id:
+                cur.execute(
+                    """SELECT w.id FROM workspaces w
+                       JOIN organizations o ON o.id = w.org_id
+                       WHERE o.clerk_user_id = %s AND w.active = TRUE
+                       LIMIT 1""",
+                    (clerk_user_id,),
+                )
+                row = cur.fetchone()
+                if row:
+                    ws_id = str(row[0])
+
+            if not ws_id:
+                org_id = str(_uuid_ss.uuid4())
+                base_slug = _re_ss.sub(r'[^a-z0-9]+', '-', workspace_name.lower()).strip('-') or 'brand'
+                slug = f"{base_slug}-{org_id[:8]}"
+                ws_type = 'creator' if url_type == 'youtube' else 'd2c'
+                cur.execute(
+                    """INSERT INTO organizations (id, name, slug, plan, credit_balance, clerk_user_id)
+                       VALUES (%s, %s, %s, 'free', 0, %s)""",
+                    (org_id, workspace_name, slug, clerk_user_id),
+                )
+                ws_id = str(_uuid_ss.uuid4())
+                cur.execute(
+                    """INSERT INTO workspaces (id, org_id, name, store_url, workspace_type, active)
+                       VALUES (%s, %s, %s, %s, %s, TRUE)""",
+                    (ws_id, org_id, workspace_name,
+                     url if url_type == 'website' else None, ws_type),
+                )
+        conn.commit()
+        if org_id:
+            _grant_credits(conn, org_id, ws_id, 50, "signup_grant",
+                           "Welcome! 50 free credits to explore the platform")
+
+    # Create onboard_jobs record + start preview in background
+    job_id = str(_uuid_ss.uuid4())
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO onboard_jobs (id, workspace_id, url, url_type, status)
+                   VALUES (%s::uuid, %s::uuid, %s, %s, 'pending')""",
+                (job_id, ws_id, url, url_type),
+            )
+        conn.commit()
+
+    def _run_preview():
+        import asyncio as _asyncio
+        from services.agent_swarm.core.onboard_chain import run_free_preview as _rfp
+        from services.agent_swarm.db import get_conn as _gc
+        with _gc() as _conn:
+            _asyncio.run(_rfp(job_id, ws_id, url, url_type, _conn))
+
+    background_tasks.add_task(_run_preview)
+    return {"ok": True, "job_id": job_id, "workspace_id": ws_id, "url_type": url_type}
