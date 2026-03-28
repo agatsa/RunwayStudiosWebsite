@@ -16594,13 +16594,24 @@ async def workspace_create(request: Request):
     Body: {name, store_url?, workspace_type?}
     Returns: {workspace_id, org_id, credit_balance}
     """
+    # Emails that get starter plan + 9999 credits automatically (no payment needed)
+    _BYPASS_EMAILS = {
+        "agr.neha@gmail.com",
+        "munfungaming@gmail.com",
+        "demo@runwaystudios.co",
+        "info@runwaystudios.co",
+    }
+
     body = await request.json()
     name           = (body.get("name") or "").strip()
     store_url      = body.get("store_url", "")
     workspace_type = body.get("workspace_type", "d2c")
     clerk_user_id  = (body.get("clerk_user_id") or "").strip() or None
+    user_email     = (body.get("email") or "").strip().lower()
     if not name:
         raise HTTPException(status_code=400, detail="name required")
+
+    is_bypass = user_email in _BYPASS_EMAILS
 
     import uuid as _uuid, re as _re
     with get_conn() as conn:
@@ -16649,8 +16660,14 @@ async def workspace_create(request: Request):
                     (ws_id, org_id, name, store_url or None, workspace_type),
                 )
                 conn.commit()
-                new_balance = _grant_credits(conn, org_id, ws_id, 50, "signup_grant",
-                                             description="Welcome! 50 free credits to explore the platform")
+                if is_bypass:
+                    cur.execute("UPDATE organizations SET plan='starter' WHERE id=%s", (org_id,))
+                    conn.commit()
+                    new_balance = _grant_credits(conn, org_id, ws_id, 9999, "bypass_grant",
+                                                 description="Internal access — payment bypassed")
+                else:
+                    new_balance = _grant_credits(conn, org_id, ws_id, 50, "signup_grant",
+                                                 description="Welcome! 50 free credits to explore the platform")
 
     return {
         "ok": True,

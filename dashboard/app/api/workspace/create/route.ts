@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
+import { auth, currentUser } from '@clerk/nextjs/server'
 import { fetchFromFastAPI } from '@/lib/api'
 
 export async function POST(req: NextRequest) {
@@ -9,10 +9,12 @@ export async function POST(req: NextRequest) {
   }
   try {
     const body = await req.json()
+    const user = await currentUser()
+    const email = user?.emailAddresses?.[0]?.emailAddress ?? ''
     const r = await fetchFromFastAPI('/workspace/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...body, clerk_user_id: userId }),
+      body: JSON.stringify({ ...body, clerk_user_id: userId, email }),
     })
     // 409 means workspace already exists — return it gracefully
     if (r.status === 409) {
