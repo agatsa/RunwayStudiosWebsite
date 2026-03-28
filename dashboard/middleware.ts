@@ -16,6 +16,8 @@ const isPublicRoute = createRouteMatcher([
   // /onboard/sso-callback is where Clerk lands after Google OAuth from the embedded <SignIn>
   '/onboard(.*)',
   '/api/onboard(.*)',
+  // One-click demo login for Razorpay KYC team (generates Clerk sign-in token, no OTP)
+  '/api/demo-access(.*)',
 ])
 
 export default clerkMiddleware((auth, request) => {
