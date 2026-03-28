@@ -19517,6 +19517,7 @@ def _detect_tech_stack(html: str) -> list:
 async def _run_free_analysis(domain: str, url: str):
     """Run the free public analysis pipeline and store result in DB."""
     import re as _re
+    import asyncio as _asyncio
     try:
         from services.agent_swarm.connectors.lp_auditor import _fetch_page, _extract_signals, _score_page, _grade
         import httpx as _httpx
