@@ -19670,6 +19670,7 @@ async def public_analyze(request: Request, background_tasks: BackgroundTasks, do
             cur.execute("UPDATE free_analyses SET view_count = view_count + 1 WHERE domain=%s", (domain,))
         conn.commit()
 
+    import asyncio as _asyncio
     background_tasks.add_task(_asyncio.run, _run_free_analysis(domain, url))
     return {"status": "pending", "domain": domain}
 
