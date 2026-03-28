@@ -11998,6 +11998,19 @@ async def admin_migrate(request: Request):
             updated_at      TIMESTAMPTZ DEFAULT NOW()
         )""",
         "CREATE INDEX IF NOT EXISTS idx_lp_audits_ws ON lp_audits(workspace_id, created_at DESC)",
+        # v43 Free public URL analysis (viral tool — no auth required)
+        """CREATE TABLE IF NOT EXISTS free_analyses (
+            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            domain          TEXT NOT NULL,
+            url             TEXT NOT NULL DEFAULT '',
+            result          JSONB NOT NULL DEFAULT '{}',
+            email_captures  TEXT[] DEFAULT '{}',
+            view_count      INT DEFAULT 0,
+            status          TEXT DEFAULT 'pending',
+            created_at      TIMESTAMPTZ DEFAULT NOW(),
+            updated_at      TIMESTAMPTZ DEFAULT NOW()
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_free_analyses_domain ON free_analyses(domain)",
         # v42 Growth OS Jobs — persistent background job model
         """CREATE TABLE IF NOT EXISTS growth_os_jobs (
             id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -19463,3 +19476,256 @@ async def onboard_start_scan(request: Request, background_tasks: BackgroundTasks
 
     background_tasks.add_task(_run_preview)
     return {"ok": True, "job_id": job_id, "workspace_id": ws_id, "url_type": url_type}
+
+
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Public Free URL Analysis — no auth, viral tool at runwaystudios.co/report  ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+def _clean_domain(raw: str) -> str:
+    """Extract bare domain from any URL input."""
+    import re as _re
+    raw = raw.strip().lower()
+    raw = _re.sub(r'^https?://', '', raw)
+    raw = _re.sub(r'^www\.', '', raw)
+    raw = raw.split('/')[0].split('?')[0].split('#')[0]
+    return raw
+
+
+def _detect_tech_stack(html: str) -> list:
+    """Detect tech stack from page HTML."""
+    h = html.lower()
+    stack = []
+    if 'myshopify.com' in h or 'shopify.com/s/' in h or 'cdn.shopify.com' in h: stack.append('Shopify')
+    elif 'wp-content' in h or 'wordpress' in h: stack.append('WordPress')
+    elif 'woocommerce' in h: stack.append('WooCommerce')
+    elif 'webflow' in h: stack.append('Webflow')
+    elif '__next_data__' in h: stack.append('Next.js')
+    if 'googletagmanager.com' in h or 'gtag(' in h: stack.append('Google Analytics')
+    if 'connect.facebook.net' in h or "fbq('" in h or 'fbevents.js' in h: stack.append('Meta Pixel')
+    if 'klaviyo' in h: stack.append('Klaviyo')
+    if 'hotjar' in h: stack.append('Hotjar')
+    if 'clevertap' in h: stack.append('CleverTap')
+    if 'mixpanel' in h: stack.append('Mixpanel')
+    if 'razorpay' in h: stack.append('Razorpay')
+    if 'intercom' in h: stack.append('Intercom')
+    if 'hubspot' in h: stack.append('HubSpot')
+    if 'segment.com' in h: stack.append('Segment')
+    return stack[:6]
+
+
+async def _run_free_analysis(domain: str, url: str):
+    """Run the free public analysis pipeline and store result in DB."""
+    import re as _re
+    try:
+        from services.agent_swarm.connectors.lp_auditor import _fetch_page, _extract_signals, _score_page, _grade
+        import httpx as _httpx
+
+        # 1. Fetch page + LP audit
+        (html_m, load_m, status_m), (html_d, load_d, _) = await _asyncio.gather(
+            _fetch_page(url, mobile=True),
+            _fetch_page(url, mobile=False),
+        )
+        html = html_m or html_d
+        reachable = bool(html)
+        signals = _extract_signals(html) if html else {}
+        score, issues = _score_page(signals, load_m) if html else (0, ["Page unreachable"])
+        grade = _grade(score)
+
+        # 2. Tech stack
+        tech_stack = _detect_tech_stack(html) if html else []
+
+        # 3. Google PageSpeed (free, no key)
+        pagespeed_mobile = 0
+        pagespeed_desktop = 0
+        try:
+            ps_url = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url={url}&strategy=mobile&fields=lighthouseResult.categories.performance.score"
+            async with _httpx.AsyncClient(timeout=15) as c:
+                r = await c.get(ps_url)
+                if r.status_code == 200:
+                    ps_data = r.json()
+                    pagespeed_mobile = int((ps_data.get("lighthouseResult", {}).get("categories", {}).get("performance", {}).get("score", 0) or 0) * 100)
+        except Exception:
+            pass
+        try:
+            ps_url2 = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url={url}&strategy=desktop&fields=lighthouseResult.categories.performance.score"
+            async with _httpx.AsyncClient(timeout=15) as c:
+                r2 = await c.get(ps_url2)
+                if r2.status_code == 200:
+                    ps_data2 = r2.json()
+                    pagespeed_desktop = int((ps_data2.get("lighthouseResult", {}).get("categories", {}).get("performance", {}).get("score", 0) or 0) * 100)
+        except Exception:
+            pass
+
+        # 4. Brand name from title/domain
+        brand_name = signals.get("title", "").split("|")[0].split("-")[0].split("–")[0].strip()
+        if not brand_name or len(brand_name) > 60:
+            brand_name = domain.split(".")[0].title()
+
+        # 5. Top keywords from page text
+        from services.agent_swarm.core.brand_intel import _extract_keywords as _ek
+        page_text = signals.get("page_text_snippet", "")
+        top_keywords = _ek(page_text)[:7] if page_text else []
+
+        # 6. Ad presence heuristic
+        ad_presence = bool(signals.get("has_trust_signals") or "fbq(" in html or "gtag(" in (html or ""))
+
+        # 7. Competitive score (LP score + speed bonus)
+        speed_bonus = 10 if pagespeed_mobile >= 70 else (5 if pagespeed_mobile >= 50 else 0)
+        competitive_score = min(100, score + speed_bonus)
+
+        result = {
+            "domain": domain,
+            "url": url,
+            "brand_name": brand_name,
+            "reachable": reachable,
+            "competitive_score": competitive_score,
+            "grade": grade,
+            "load_ms_mobile": load_m,
+            "load_ms_desktop": load_d,
+            "pagespeed_mobile": pagespeed_mobile,
+            "pagespeed_desktop": pagespeed_desktop,
+            "top_keywords": top_keywords,
+            "tech_stack": tech_stack,
+            "ad_presence": ad_presence,
+            "cta_count": signals.get("cta_count", 0),
+            "price_visible": signals.get("price_visible", False),
+            "has_reviews": signals.get("has_reviews", False),
+            "has_guarantee": signals.get("has_guarantee", False),
+            "issues": issues[:5],
+            "title": signals.get("title", ""),
+            "meta_desc": signals.get("meta_desc", ""),
+        }
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE free_analyses
+                       SET result=%s::jsonb, status='completed', updated_at=NOW()
+                       WHERE domain=%s""",
+                    (_json.dumps(result), domain),
+                )
+            conn.commit()
+
+    except Exception as e:
+        print(f"[free_analysis] {domain} failed: {e}")
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE free_analyses SET status='failed', updated_at=NOW() WHERE domain=%s",
+                    (domain,),
+                )
+            conn.commit()
+
+
+@app.get("/public/analyze")
+async def public_analyze(request: Request, background_tasks: BackgroundTasks, domain: str = None):
+    """
+    Public (no auth) URL analysis trigger.
+    Returns immediately with status='pending' or cached result if available.
+    Poll this endpoint — returns 'completed' result when ready.
+    """
+    if not domain:
+        raise HTTPException(status_code=400, detail="domain required")
+
+    domain = _clean_domain(domain)
+    if not domain or len(domain) < 4 or "." not in domain:
+        raise HTTPException(status_code=400, detail="Invalid domain")
+
+    url = f"https://{domain}"
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, result, updated_at FROM free_analyses WHERE domain=%s",
+                (domain,),
+            )
+            row = cur.fetchone()
+
+    if row:
+        status, result, updated_at = row
+        # Use cache if completed within last 24h
+        import datetime as _dt
+        age_h = ((_dt.datetime.now(_dt.timezone.utc) - updated_at.replace(tzinfo=_dt.timezone.utc)).total_seconds() / 3600) if updated_at else 999
+        if status == "completed" and age_h < 24:
+            return {"status": "completed", "domain": domain, "result": result if isinstance(result, dict) else {}}
+        if status == "pending":
+            return {"status": "pending", "domain": domain}
+
+    # Insert new job (or reset failed/stale)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO free_analyses (domain, url, status)
+                   VALUES (%s, %s, 'pending')
+                   ON CONFLICT (domain) DO UPDATE
+                   SET status='pending', updated_at=NOW()""",
+                (domain, url),
+            )
+        conn.commit()
+
+    # Increment view count
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE free_analyses SET view_count = view_count + 1 WHERE domain=%s", (domain,))
+        conn.commit()
+
+    background_tasks.add_task(_asyncio.run, _run_free_analysis(domain, url))
+    return {"status": "pending", "domain": domain}
+
+
+@app.get("/public/analyze/result")
+async def public_analyze_result(request: Request, domain: str = None):
+    """Poll for free analysis result by domain."""
+    if not domain:
+        raise HTTPException(status_code=400, detail="domain required")
+    domain = _clean_domain(domain)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, result FROM free_analyses WHERE domain=%s",
+                (domain,),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="No analysis found")
+    status, result = row
+    return {
+        "status": status,
+        "domain": domain,
+        "result": result if isinstance(result, dict) else {},
+    }
+
+
+@app.post("/public/analyze/capture-email")
+async def public_capture_email(request: Request):
+    """Capture email from free report page for remarketing (no auth)."""
+    body = await request.json()
+    email = (body.get("email") or "").strip().lower()
+    domain = _clean_domain(body.get("domain") or "")
+    if not email or "@" not in email or not domain:
+        raise HTTPException(status_code=400, detail="email and domain required")
+
+    # Save to free_analyses.email_captures
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE free_analyses
+                   SET email_captures = array_append(
+                       COALESCE(email_captures, '{}'),
+                       %s
+                   )
+                   WHERE domain=%s AND NOT (%s = ANY(COALESCE(email_captures, '{}')))""",
+                (email, domain, email),
+            )
+        conn.commit()
+
+    # Also add to Resend email list if configured
+    try:
+        from services.agent_swarm.connectors.resend import ResendConnector as _RC
+        _rc = _RC()
+        _rc.add_contact(email=email, list_id=None, first_name="", last_name="")
+    except Exception:
+        pass
+
+    return {"ok": True}
