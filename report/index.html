@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title id="page-title">Website Analysis — Runway Studios</title>
+  <meta name="description" content="Free competitive intelligence report. See how any website scores on conversion, speed, tech stack, and competitor positioning." />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="theme-color" content="#7c3aed" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --brand: #7c3aed; --brand-dark: #5b21b6; --brand-light: #ede9fe;
+      --gray-900: #111827; --gray-700: #374151; --gray-500: #6b7280;
+      --gray-300: #d1d5db; --gray-200: #e5e7eb; --gray-100: #f9fafb;
+      --green: #16a34a; --green-light: #dcfce7;
+      --amber: #d97706; --amber-light: #fef3c7;
+      --red: #dc2626; --red-light: #fee2e2;
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: var(--gray-700); background: var(--gray-100); line-height: 1.6; }
+
+    /* NAV */
+    nav { background: white; border-bottom: 1px solid var(--gray-200); padding: 0 1.5rem; height: 56px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 50; }
+    .nav-logo { font-size: 1rem; font-weight: 800; color: var(--brand); text-decoration: none; }
+    .nav-domain { font-size: 0.8rem; color: var(--gray-500); background: var(--gray-100); border: 1px solid var(--gray-200); padding: 0.25rem 0.75rem; border-radius: 99px; }
+    .nav-cta { background: var(--brand); color: white; padding: 0.4rem 1rem; border-radius: 6px; text-decoration: none; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+    .nav-cta:hover { background: var(--brand-dark); }
+
+    /* LOADING */
+    .loading-wrap { max-width: 600px; margin: 80px auto; text-align: center; padding: 2rem; }
+    .spinner { width: 48px; height: 48px; border: 4px solid var(--brand-light); border-top-color: var(--brand); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 1.5rem; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-title { font-size: 1.25rem; font-weight: 700; color: var(--gray-900); margin-bottom: 0.5rem; }
+    .loading-sub { color: var(--gray-500); font-size: 0.9rem; }
+    .loading-steps { margin-top: 1.5rem; display: flex; flex-direction: column; gap: 0.5rem; text-align: left; background: white; border: 1px solid var(--gray-200); border-radius: 12px; padding: 1rem 1.25rem; }
+    .loading-step { font-size: 0.82rem; color: var(--gray-500); display: flex; align-items: center; gap: 0.5rem; }
+    .loading-step.done { color: var(--green); }
+    .loading-step.active { color: var(--brand); font-weight: 600; }
+    .step-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+
+    /* ERROR */
+    .error-wrap { max-width: 500px; margin: 80px auto; text-align: center; padding: 2rem; background: white; border: 1px solid var(--red-light); border-radius: 16px; }
+    .error-icon { font-size: 2.5rem; margin-bottom: 1rem; }
+    .error-title { font-size: 1.1rem; font-weight: 700; color: var(--gray-900); margin-bottom: 0.5rem; }
+    .error-sub { font-size: 0.875rem; color: var(--gray-500); margin-bottom: 1.5rem; }
+    .btn-primary { display: inline-flex; align-items: center; gap: 0.5rem; background: var(--brand); color: white; padding: 0.7rem 1.5rem; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 0.875rem; transition: background 0.2s; border: none; cursor: pointer; }
+    .btn-primary:hover { background: var(--brand-dark); }
+    .btn-outline { display: inline-flex; align-items: center; gap: 0.5rem; background: white; color: var(--brand); padding: 0.7rem 1.5rem; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 0.875rem; border: 1.5px solid var(--brand); transition: all 0.2s; cursor: pointer; }
+    .btn-outline:hover { background: var(--brand-light); }
+
+    /* REPORT */
+    .report-wrap { max-width: 860px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+
+    /* Score header */
+    .score-header { background: white; border: 1px solid var(--gray-200); border-radius: 16px; padding: 1.75rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; }
+    .score-ring-wrap { flex-shrink: 0; }
+    .score-info { flex: 1; min-width: 200px; }
+    .score-domain { font-size: 0.78rem; color: var(--gray-500); font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 0.25rem; }
+    .score-brand { font-size: 1.4rem; font-weight: 800; color: var(--gray-900); margin-bottom: 0.25rem; letter-spacing: -0.02em; }
+    .score-grade { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; font-weight: 700; padding: 0.2rem 0.75rem; border-radius: 99px; margin-bottom: 0.5rem; }
+    .score-meta { font-size: 0.8rem; color: var(--gray-500); }
+    .score-actions { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; margin-left: auto; }
+
+    /* KPI grid */
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.875rem; margin-bottom: 1.5rem; }
+    .kpi-card { background: white; border: 1px solid var(--gray-200); border-radius: 12px; padding: 1rem; }
+    .kpi-label { font-size: 0.68rem; font-weight: 600; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.35rem; }
+    .kpi-value { font-size: 1.5rem; font-weight: 800; color: var(--gray-900); letter-spacing: -0.02em; line-height: 1.2; }
+    .kpi-sub { font-size: 0.7rem; color: var(--gray-500); margin-top: 0.2rem; }
+    .kpi-good { color: var(--green); }
+    .kpi-warn { color: var(--amber); }
+    .kpi-bad { color: var(--red); }
+
+    /* Sections */
+    .report-section { background: white; border: 1px solid var(--gray-200); border-radius: 14px; padding: 1.25rem; margin-bottom: 1.25rem; }
+    .report-section-title { font-size: 0.75rem; font-weight: 700; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
+    .report-section-title span { font-size: 0.9rem; }
+
+    /* Keywords */
+    .keyword-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .keyword-chip { background: var(--brand-light); color: var(--brand); font-size: 0.78rem; font-weight: 600; padding: 0.25rem 0.75rem; border-radius: 99px; }
+
+    /* Tech stack */
+    .tech-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .tech-chip { background: var(--gray-100); color: var(--gray-700); font-size: 0.78rem; font-weight: 600; padding: 0.25rem 0.75rem; border-radius: 99px; border: 1px solid var(--gray-200); }
+
+    /* Issues */
+    .issue-list { display: flex; flex-direction: column; gap: 0.5rem; }
+    .issue-item { display: flex; align-items: flex-start; gap: 0.6rem; font-size: 0.82rem; color: var(--gray-700); background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 0.6rem 0.75rem; }
+    .issue-icon { flex-shrink: 0; margin-top: 0.05rem; }
+
+    /* Speed bars */
+    .speed-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.75rem; }
+    .speed-label { font-size: 0.8rem; color: var(--gray-500); width: 80px; flex-shrink: 0; }
+    .speed-bar-wrap { flex: 1; height: 8px; background: var(--gray-200); border-radius: 99px; overflow: hidden; }
+    .speed-bar { height: 100%; border-radius: 99px; transition: width 1s ease; }
+    .speed-score { font-size: 0.8rem; font-weight: 700; width: 36px; text-align: right; }
+
+    /* Email capture */
+    .email-capture { background: linear-gradient(135deg, #f5f3ff, #ede9fe); border: 1px solid #c4b5fd; border-radius: 14px; padding: 1.5rem; margin-bottom: 1.25rem; text-align: center; }
+    .email-capture h3 { font-size: 1rem; font-weight: 700; color: var(--gray-900); margin-bottom: 0.35rem; }
+    .email-capture p { font-size: 0.82rem; color: var(--gray-500); margin-bottom: 1rem; }
+    .email-form { display: flex; gap: 0.5rem; max-width: 420px; margin: 0 auto; }
+    .email-input { flex: 1; padding: 0.65rem 1rem; border: 1.5px solid #c4b5fd; border-radius: 8px; font-size: 0.875rem; outline: none; background: white; }
+    .email-input:focus { border-color: var(--brand); }
+    .email-btn { background: var(--brand); color: white; border: none; padding: 0.65rem 1.25rem; border-radius: 8px; font-size: 0.875rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    .email-btn:hover { background: var(--brand-dark); }
+    .email-success { font-size: 0.82rem; color: var(--green); font-weight: 600; margin-top: 0.5rem; }
+
+    /* Gate / CTA */
+    .gate-section { background: var(--gray-900); border-radius: 16px; padding: 2rem; text-align: center; margin-bottom: 1.25rem; color: white; }
+    .gate-title { font-size: 1.25rem; font-weight: 800; margin-bottom: 0.5rem; letter-spacing: -0.02em; }
+    .gate-sub { font-size: 0.875rem; color: #9ca3af; margin-bottom: 1.5rem; }
+    .gate-features { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center; margin-bottom: 1.5rem; }
+    .gate-feat { font-size: 0.75rem; color: #d1d5db; background: #1f2937; padding: 0.25rem 0.75rem; border-radius: 99px; }
+    .gate-cta { background: var(--brand); color: white; padding: 0.8rem 2rem; border-radius: 10px; text-decoration: none; font-weight: 700; font-size: 0.95rem; display: inline-block; transition: background 0.2s; }
+    .gate-cta:hover { background: var(--brand-dark); }
+    .gate-note { font-size: 0.75rem; color: #6b7280; margin-top: 0.75rem; }
+
+    /* Share */
+    .share-bar { background: white; border: 1px solid var(--gray-200); border-radius: 12px; padding: 1rem 1.25rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+    .share-text { font-size: 0.82rem; color: var(--gray-500); flex: 1; min-width: 180px; }
+    .share-text strong { color: var(--gray-900); }
+    .share-url { font-size: 0.75rem; background: var(--gray-100); border: 1px solid var(--gray-200); border-radius: 6px; padding: 0.35rem 0.75rem; font-family: monospace; color: var(--gray-700); flex: 2; min-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+    .copy-btn { background: var(--brand-light); color: var(--brand); border: none; padding: 0.4rem 1rem; border-radius: 6px; font-size: 0.78rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    .copy-btn:hover { background: #ddd6fe; }
+
+    /* Viral footer */
+    .viral-footer { text-align: center; padding: 1.5rem; background: white; border: 1px solid var(--gray-200); border-radius: 14px; }
+    .viral-footer p { font-size: 0.85rem; color: var(--gray-500); margin-bottom: 0.75rem; }
+    .viral-footer strong { color: var(--gray-900); }
+    .analyze-another { display: flex; gap: 0.5rem; max-width: 480px; margin: 0 auto; }
+    .analyze-input { flex: 1; padding: 0.65rem 1rem; border: 1.5px solid var(--gray-300); border-radius: 8px; font-size: 0.875rem; outline: none; }
+    .analyze-input:focus { border-color: var(--brand); }
+    .analyze-btn { background: var(--brand); color: white; border: none; padding: 0.65rem 1.25rem; border-radius: 8px; font-size: 0.875rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
+
+    /* Powered by */
+    .powered-by { text-align: center; padding: 1.25rem; font-size: 0.75rem; color: var(--gray-500); }
+    .powered-by a { color: var(--brand); text-decoration: none; font-weight: 600; }
+
+    @media (max-width: 600px) {
+      .score-header { flex-direction: column; text-align: center; }
+      .score-actions { margin-left: 0; justify-content: center; }
+      .email-form { flex-direction: column; }
+      .share-bar { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <a href="https://runwaystudios.co" class="nav-logo">Runway Studios</a>
+  <span class="nav-domain" id="nav-domain">runwaystudios.co</span>
+  <a href="https://app.runwaystudios.co/onboard" class="nav-cta">Get Full Report →</a>
+</nav>
+
+<!-- Loading state -->
+<div id="state-loading" class="loading-wrap">
+  <div class="spinner"></div>
+  <p class="loading-title">Analysing <span id="loading-domain">website</span>…</p>
+  <p class="loading-sub">This takes about 20–30 seconds. Please wait.</p>
+  <div class="loading-steps">
+    <div class="loading-step active" id="step-fetch"><span class="step-dot"></span>Fetching page & measuring load speed</div>
+    <div class="loading-step" id="step-signals"><span class="step-dot"></span>Extracting conversion signals</div>
+    <div class="loading-step" id="step-speed"><span class="step-dot"></span>Running Google PageSpeed test</div>
+    <div class="loading-step" id="step-tech"><span class="step-dot"></span>Detecting tech stack</div>
+    <div class="loading-step" id="step-score"><span class="step-dot"></span>Computing competitive score</div>
+  </div>
+</div>
+
+<!-- Error state -->
+<div id="state-error" class="loading-wrap" style="display:none">
+  <div class="error-wrap">
+    <div class="error-icon">⚠️</div>
+    <p class="error-title">Analysis failed</p>
+    <p class="error-sub" id="error-msg">We couldn't reach this website. Please check the URL and try again.</p>
+    <div style="display:flex;gap:0.75rem;justify-content:center;flex-wrap:wrap">
+      <button class="btn-outline" onclick="location.reload()">Try Again</button>
+      <a href="https://runwaystudios.co" class="btn-primary">← Back to Home</a>
+    </div>
+  </div>
+</div>
+
+<!-- Report state -->
+<div id="state-report" class="report-wrap" style="display:none">
+
+  <!-- Score header -->
+  <div class="score-header">
+    <div class="score-ring-wrap">
+      <svg id="score-svg" width="80" height="80" viewBox="0 0 80 80">
+        <circle cx="40" cy="40" r="34" fill="none" stroke="#f3f4f6" stroke-width="8"/>
+        <circle id="score-arc" cx="40" cy="40" r="34" fill="none" stroke="#7c3aed" stroke-width="8"
+          stroke-dasharray="0 214" stroke-linecap="round" transform="rotate(-90 40 40)"/>
+        <text id="score-text" x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
+          font-size="18" font-weight="800" fill="#111827">0</text>
+      </svg>
+    </div>
+    <div class="score-info">
+      <div class="score-domain" id="report-domain">domain.com</div>
+      <div class="score-brand" id="report-brand">Brand Name</div>
+      <div class="score-grade" id="report-grade">Grade F</div>
+      <div class="score-meta" id="report-meta">Report generated just now</div>
+    </div>
+    <div class="score-actions">
+      <button class="btn-outline" onclick="shareReport()">Share Report</button>
+      <a href="https://app.runwaystudios.co/onboard" class="btn-primary">Full Analysis →</a>
+    </div>
+  </div>
+
+  <!-- Share bar (hidden until share clicked) -->
+  <div id="share-bar" class="share-bar" style="display:none">
+    <div class="share-text"><strong>Share this report</strong> — anyone with the link can view it</div>
+    <div class="share-url" id="share-url" onclick="copyShareUrl()"></div>
+    <button class="copy-btn" onclick="copyShareUrl()" id="copy-btn">Copy Link</button>
+  </div>
+
+  <!-- KPI grid -->
+  <div class="kpi-grid">
+    <div class="kpi-card">
+      <div class="kpi-label">Competitive Score</div>
+      <div class="kpi-value" id="kpi-score">—</div>
+      <div class="kpi-sub">out of 100</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Mobile Speed</div>
+      <div class="kpi-value" id="kpi-speed-mob">—</div>
+      <div class="kpi-sub">PageSpeed score</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Desktop Speed</div>
+      <div class="kpi-value" id="kpi-speed-desk">—</div>
+      <div class="kpi-sub">PageSpeed score</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Load Time</div>
+      <div class="kpi-value" id="kpi-load">—</div>
+      <div class="kpi-sub">mobile, ms</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">CTAs Found</div>
+      <div class="kpi-value" id="kpi-cta">—</div>
+      <div class="kpi-sub">conversion buttons</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Ads Running</div>
+      <div class="kpi-value" id="kpi-ads">—</div>
+      <div class="kpi-sub">Meta/Google pixels</div>
+    </div>
+  </div>
+
+  <!-- Keywords -->
+  <div class="report-section">
+    <div class="report-section-title"><span>🔑</span> Top Keywords This Page Targets</div>
+    <div class="keyword-chips" id="keywords-wrap"></div>
+  </div>
+
+  <!-- Tech Stack -->
+  <div class="report-section" id="tech-section">
+    <div class="report-section-title"><span>🛠️</span> Tech Stack Detected</div>
+    <div class="tech-chips" id="tech-wrap"></div>
+  </div>
+
+  <!-- Speed detail -->
+  <div class="report-section">
+    <div class="report-section-title"><span>⚡</span> Page Speed Breakdown</div>
+    <div class="speed-row">
+      <div class="speed-label">Mobile</div>
+      <div class="speed-bar-wrap"><div class="speed-bar" id="speed-bar-mob" style="width:0%;background:#7c3aed"></div></div>
+      <div class="speed-score" id="speed-mob-score">—</div>
+    </div>
+    <div class="speed-row">
+      <div class="speed-label">Desktop</div>
+      <div class="speed-bar-wrap"><div class="speed-bar" id="speed-bar-desk" style="width:0%;background:#7c3aed"></div></div>
+      <div class="speed-score" id="speed-desk-score">—</div>
+    </div>
+    <p style="font-size:0.72rem;color:var(--gray-500);margin-top:0.5rem;">Source: Google PageSpeed Insights. Scores below 50 significantly hurt paid ad conversion rates.</p>
+  </div>
+
+  <!-- Issues -->
+  <div class="report-section" id="issues-section">
+    <div class="report-section-title"><span>⚠️</span> Conversion Issues Found</div>
+    <div class="issue-list" id="issues-wrap"></div>
+  </div>
+
+  <!-- Email capture -->
+  <div class="email-capture">
+    <h3>📩 Get this report in your inbox</h3>
+    <p>We'll email you a PDF version + weekly updates when this site changes.</p>
+    <div class="email-form">
+      <input type="email" class="email-input" id="capture-email" placeholder="your@email.com" />
+      <button class="email-btn" onclick="captureEmail()">Send Me Report</button>
+    </div>
+    <div class="email-success" id="email-success" style="display:none">✓ Sent! Check your inbox.</div>
+  </div>
+
+  <!-- Gated full analysis CTA -->
+  <div class="gate-section">
+    <div class="gate-title">See the Full Competitive Picture</div>
+    <div class="gate-sub">This was the free summary. The full report goes 10x deeper — free to create.</div>
+    <div class="gate-features">
+      <span class="gate-feat">Deep competitor profiles</span>
+      <span class="gate-feat">Meta Ad Library search</span>
+      <span class="gate-feat">Voice of Customer (Reddit)</span>
+      <span class="gate-feat">90-day Growth Strategy</span>
+      <span class="gate-feat">YouTube Intelligence</span>
+      <span class="gate-feat">Landing page recommendations</span>
+    </div>
+    <a href="https://app.runwaystudios.co/onboard" class="gate-cta">Get Full Analysis Free →</a>
+    <p class="gate-note">No credit card. Free plan includes 50 credits — enough for a full brand analysis.</p>
+  </div>
+
+  <!-- Analyze another -->
+  <div class="viral-footer">
+    <p><strong>Analyze your own website or a competitor</strong><br>Powered by Runway Studios · <a href="https://runwaystudios.co">runwaystudios.co</a></p>
+    <div class="analyze-another">
+      <input type="url" class="analyze-input" id="new-url" placeholder="e.g. yourcompetitor.com" />
+      <button class="analyze-btn" onclick="analyzeAnother()">Analyze →</button>
+    </div>
+  </div>
+
+  <div class="powered-by">
+    Free competitive intelligence by <a href="https://runwaystudios.co">Runway Studios</a> · <a href="https://app.runwaystudios.co/onboard">Get your full growth report →</a>
+  </div>
+
+</div>
+
+<script>
+  const _API = 'https://agent-swarm-771420308292.asia-south1.run.app';
+  let _domain = '';
+  let _result = null;
+
+  function getDomain() {
+    const params = new URLSearchParams(window.location.search);
+    return (params.get('domain') || '').trim().toLowerCase()
+      .replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0].split('?')[0];
+  }
+
+  function setStep(active) {
+    const steps = ['fetch','signals','speed','tech','score'];
+    steps.forEach((s, i) => {
+      const el = document.getElementById('step-' + s);
+      if (!el) return;
+      el.className = 'loading-step ' + (i < active ? 'done' : i === active ? 'active' : '');
+    });
+  }
+
+  function gradeColor(grade) {
+    const map = { A: '#16a34a', B: '#0d9488', C: '#d97706', D: '#ea580c', F: '#dc2626' };
+    return map[grade] || '#6b7280';
+  }
+
+  function gradeClass(score) {
+    if (score >= 80) return 'kpi-good';
+    if (score >= 50) return 'kpi-warn';
+    return 'kpi-bad';
+  }
+
+  function renderReport(data) {
+    _result = data;
+    const r = data.result || data;
+
+    // Update page title & nav
+    document.getElementById('page-title').textContent = (r.brand_name || r.domain) + ' — Competitive Analysis';
+    document.getElementById('nav-domain').textContent = r.domain || _domain;
+
+    // Score ring
+    const score = r.competitive_score || 0;
+    const grade = r.grade || 'F';
+    const circ = 2 * Math.PI * 34;
+    const dash = (score / 100) * circ;
+    const color = gradeColor(grade);
+    document.getElementById('score-arc').setAttribute('stroke-dasharray', `${dash} ${circ}`);
+    document.getElementById('score-arc').setAttribute('stroke', color);
+    document.getElementById('score-text').textContent = score;
+
+    document.getElementById('report-domain').textContent = r.domain || _domain;
+    document.getElementById('report-brand').textContent = r.brand_name || r.domain;
+    const gradeEl = document.getElementById('report-grade');
+    gradeEl.textContent = `Grade ${grade}`;
+    gradeEl.style.background = color + '20';
+    gradeEl.style.color = color;
+    document.getElementById('report-meta').textContent = `Analysed just now · runwaystudios.co`;
+
+    // KPIs
+    const scoreEl = document.getElementById('kpi-score');
+    scoreEl.textContent = score;
+    scoreEl.className = 'kpi-value ' + gradeClass(score);
+
+    const mob = r.pagespeed_mobile || 0;
+    const mobEl = document.getElementById('kpi-speed-mob');
+    mobEl.textContent = mob || '—';
+    mobEl.className = 'kpi-value ' + gradeClass(mob);
+
+    const desk = r.pagespeed_desktop || 0;
+    const deskEl = document.getElementById('kpi-speed-desk');
+    deskEl.textContent = desk || '—';
+    deskEl.className = 'kpi-value ' + gradeClass(desk);
+
+    const load = r.load_ms_mobile;
+    const loadEl = document.getElementById('kpi-load');
+    loadEl.textContent = load ? `${load}ms` : '—';
+    loadEl.className = 'kpi-value ' + (load < 2000 ? 'kpi-good' : load < 4000 ? 'kpi-warn' : 'kpi-bad');
+
+    document.getElementById('kpi-cta').textContent = r.cta_count != null ? r.cta_count : '—';
+    document.getElementById('kpi-ads').textContent = r.ad_presence ? 'Yes' : 'No';
+    document.getElementById('kpi-ads').className = 'kpi-value ' + (r.ad_presence ? 'kpi-good' : 'kpi-warn');
+
+    // Keywords
+    const kw = r.top_keywords || [];
+    document.getElementById('keywords-wrap').innerHTML = kw.length
+      ? kw.map(k => `<span class="keyword-chip">${k}</span>`).join('')
+      : '<span style="font-size:0.82rem;color:var(--gray-500)">No strong keywords detected</span>';
+
+    // Tech stack
+    const tech = r.tech_stack || [];
+    if (tech.length) {
+      document.getElementById('tech-wrap').innerHTML = tech.map(t => `<span class="tech-chip">${t}</span>`).join('');
+    } else {
+      document.getElementById('tech-section').style.display = 'none';
+    }
+
+    // Speed bars
+    setTimeout(() => {
+      document.getElementById('speed-bar-mob').style.width = mob + '%';
+      document.getElementById('speed-bar-mob').style.background = mob >= 70 ? '#16a34a' : mob >= 50 ? '#d97706' : '#dc2626';
+      document.getElementById('speed-bar-desk').style.width = desk + '%';
+      document.getElementById('speed-bar-desk').style.background = desk >= 70 ? '#16a34a' : desk >= 50 ? '#d97706' : '#dc2626';
+      document.getElementById('speed-mob-score').textContent = mob || '—';
+      document.getElementById('speed-mob-score').className = 'speed-score ' + gradeClass(mob);
+      document.getElementById('speed-desk-score').textContent = desk || '—';
+      document.getElementById('speed-desk-score').className = 'speed-score ' + gradeClass(desk);
+    }, 300);
+
+    // Issues
+    const issues = r.issues || [];
+    if (issues.length) {
+      document.getElementById('issues-wrap').innerHTML = issues.map(i =>
+        `<div class="issue-item"><span class="issue-icon">⚠️</span>${i}</div>`
+      ).join('');
+    } else {
+      document.getElementById('issues-section').style.display = 'none';
+    }
+
+    // Show report
+    document.getElementById('state-loading').style.display = 'none';
+    document.getElementById('state-report').style.display = 'block';
+    document.getElementById('share-url').textContent = window.location.href;
+  }
+
+  async function poll(domain, attempts) {
+    if (attempts > 20) {
+      document.getElementById('state-loading').style.display = 'none';
+      document.getElementById('state-error').style.display = 'block';
+      return;
+    }
+    if (attempts === 3) setStep(1);
+    if (attempts === 5) setStep(2);
+    if (attempts === 7) setStep(3);
+    if (attempts === 9) setStep(4);
+
+    try {
+      const r = await fetch(`${_API}/public/analyze/result?domain=${encodeURIComponent(domain)}`);
+      const data = await r.json();
+      if (data.status === 'completed') {
+        renderReport(data);
+      } else if (data.status === 'failed') {
+        document.getElementById('state-loading').style.display = 'none';
+        document.getElementById('state-error').style.display = 'block';
+      } else {
+        setTimeout(() => poll(domain, attempts + 1), 2500);
+      }
+    } catch(e) {
+      setTimeout(() => poll(domain, attempts + 1), 3000);
+    }
+  }
+
+  async function startAnalysis(domain) {
+    _domain = domain;
+    document.getElementById('loading-domain').textContent = domain;
+    document.getElementById('nav-domain').textContent = domain;
+    setStep(0);
+    try {
+      const r = await fetch(`${_API}/public/analyze?domain=${encodeURIComponent(domain)}`);
+      const data = await r.json();
+      if (data.status === 'completed') {
+        renderReport(data);
+      } else {
+        setTimeout(() => poll(domain, 1), 2500);
+      }
+    } catch(e) {
+      document.getElementById('state-loading').style.display = 'none';
+      document.getElementById('state-error').style.display = 'block';
+    }
+  }
+
+  function shareReport() {
+    const bar = document.getElementById('share-bar');
+    bar.style.display = bar.style.display === 'none' ? 'flex' : 'none';
+  }
+
+  function copyShareUrl() {
+    navigator.clipboard.writeText(window.location.href).then(() => {
+      document.getElementById('copy-btn').textContent = 'Copied!';
+      setTimeout(() => { document.getElementById('copy-btn').textContent = 'Copy Link'; }, 2000);
+    });
+  }
+
+  async function captureEmail() {
+    const email = document.getElementById('capture-email').value.trim();
+    if (!email || !email.includes('@')) return;
+    try {
+      await fetch(`${_API}/public/analyze/capture-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, domain: _domain }),
+      });
+    } catch(e) {}
+    document.getElementById('email-success').style.display = 'block';
+    document.getElementById('capture-email').value = '';
+    document.querySelector('.email-btn').textContent = 'Sent ✓';
+    document.querySelector('.email-btn').disabled = true;
+  }
+
+  function analyzeAnother() {
+    let val = document.getElementById('new-url').value.trim();
+    if (!val) return;
+    val = val.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+    window.location.href = '/report/?domain=' + encodeURIComponent(val);
+  }
+
+  // Init
+  const domain = getDomain();
+  if (!domain) {
+    document.getElementById('state-loading').style.display = 'none';
+    document.getElementById('state-error').style.display = 'block';
+    document.getElementById('error-msg').textContent = 'No website URL provided. Please go back and enter a URL to analyse.';
+  } else {
+    startAnalysis(domain);
+  }
+</script>
+</body>
+</html>

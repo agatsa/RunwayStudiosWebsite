@@ -350,7 +350,7 @@
 
 <!-- ANNOUNCEMENT BAR -->
 <div class="announcement">
-  🚀 ARIA is live — drop your URL and get a free competitor analysis in 30 seconds. <a href="https://app.runwaystudios.co/onboard">Try it now →</a>
+  🛡️ Fair Billing Pledge — no surprise charges, cancel in 2 clicks, credits never expire. <a href="/fair-billing.html">Read our pledge →</a>
 </div>
 <div style="height:36px"></div>
 
@@ -387,17 +387,17 @@
 <section class="hero">
   <div class="hero-eyebrow">
     <span class="dot"></span>
-    AI Growth OS — Now Live
+    Free Competitor Analysis — No Sign-up Required
   </div>
-  <h1>Drop Your URL.<br>Get a <em>Free Competitor Analysis</em> in 30 Seconds.</h1>
-  <p class="hero-sub">YouTube channel, product page, app, or website — ARIA finds your competitors, audits your landing page, and builds a 90-day growth strategy.</p>
+  <h1>Your Competitors' Entire Strategy.<br><em>Exposed In 30 Seconds.</em></h1>
+  <p class="hero-sub">Drop any URL. ARIA analyses your competitors, scores your landing page, detects their tech stack, and hands you a growth plan. Free. No account needed.</p>
 
   <!-- URL Input Hero Form -->
-  <div style="max-width:580px;margin:2rem auto 1.5rem;display:flex;gap:0;box-shadow:0 4px 24px rgba(124,58,237,0.18);border-radius:14px;overflow:hidden;border:1.5px solid #c4b5fd;background:white;">
+  <div style="max-width:580px;margin:2rem auto 1rem;display:flex;gap:0;box-shadow:0 4px 24px rgba(124,58,237,0.18);border-radius:14px;overflow:hidden;border:1.5px solid #c4b5fd;background:white;">
     <input
       id="heroUrlInput"
       type="url"
-      placeholder="your-website.com or youtube.com/@channel"
+      placeholder="e.g. yourcompetitor.com or yoursite.com"
       style="flex:1;border:none;outline:none;padding:1rem 1.25rem;font-size:1rem;color:#111827;background:transparent;min-width:0;"
       onkeydown="if(event.key==='Enter')heroAnalyse()"
     />
@@ -410,14 +410,16 @@
       Analyse Free →
     </button>
   </div>
+  <p style="font-size:0.8rem;color:var(--gray-500);margin-bottom:0.75rem;">No account needed · Results in ~30 seconds · Powered by <strong style="color:var(--gray-700);">runwaystudios.co</strong></p>
   <p class="hero-trust" style="margin-bottom:2rem;">Already have an account? <a href="https://app.runwaystudios.co/sign-in" style="color:var(--brand);font-weight:600;">Log in →</a></p>
 
   <script>
   function heroAnalyse() {
-    var url = document.getElementById('heroUrlInput').value.trim();
-    if (!url) return;
-    if (!url.startsWith('http://') && !url.startsWith('https://')) url = 'https://' + url;
-    window.location.href = 'https://app.runwaystudios.co/onboard?url=' + encodeURIComponent(url);
+    var val = document.getElementById('heroUrlInput').value.trim();
+    if (!val) return;
+    var domain = val.replace(/^https?:\/\//,'').replace(/^www\./,'').split('/')[0].split('?')[0];
+    if (!domain || domain.indexOf('.') === -1) return;
+    window.location.href = '/report/?domain=' + encodeURIComponent(domain);
   }
   </script>
 
@@ -1034,6 +1036,7 @@
         <li><a href="#about">About</a></li>
         <li><a href="#contact">Contact</a></li>
         <li><a href="/support.html">Support</a></li>
+        <li><a href="fair-billing.html">Fair Billing Pledge</a></li>
         <li><a href="privacy.html">Privacy Policy</a></li>
         <li><a href="tos.html">Terms of Service</a></li>
         <li><a href="data-deletion.html">Data Deletion</a></li>
