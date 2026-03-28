@@ -67,24 +67,52 @@ export default function LandingPageContent({ wsId }: { wsId: string }) {
   const [error, setError] = useState<string | null>(null)
   const [expandedSite, setExpandedSite] = useState<string | null>(null)
 
+  const parseAuditResponse = (data: any): AuditReport | null => {
+    if (!data?.audit?.result) return null
+    const audi = data.audit
+    const result = audi.result || {}
+    const ourSite = result.our_site || null
+    const competitors: any[] = result.competitors || []
+    const allSites: SiteAudit[] = []
+    if (ourSite) allSites.push(ourSite as SiteAudit)
+    allSites.push(...(competitors as SiteAudit[]))
+    return {
+      workspace_id: wsId,
+      audited_at: audi.updated_at || audi.created_at || new Date().toISOString(),
+      cached: false,
+      sites: allSites,
+    }
+  }
+
   const fetchReport = useCallback(async (force = false) => {
     setLoading(true)
     setError(null)
     try {
       if (force) {
-        // Trigger new audit, then poll latest
+        // Trigger new audit (runs in background on server)
         const startRes = await fetch('/api/lp-audit/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ workspace_id: wsId }),
         })
         if (!startRes.ok) throw new Error(`Start failed: ${startRes.status}`)
-        // Wait a moment for the audit to complete (it runs synchronously)
-        await new Promise(r => setTimeout(r, 1000))
+        const startData = await startRes.json()
+        const jobId = startData.job_id
+        // Poll until completed or failed (up to 90s)
+        const deadline = Date.now() + 90_000
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, 3000))
+          const statusRes = await fetch(`/api/lp-audit/status?job_id=${jobId}`)
+          if (statusRes.ok) {
+            const s = await statusRes.json()
+            if (s.status === 'completed' || s.status === 'failed') break
+          }
+        }
       }
       const r = await fetch(`/api/lp-audit/latest?workspace_id=${wsId}`)
       if (!r.ok) throw new Error(`${r.status}`)
-      setReport(await r.json())
+      const data = await r.json()
+      setReport(parseAuditResponse(data))
     } catch (e) {
       setError(`Failed to load audit. ${e}`)
     } finally {
