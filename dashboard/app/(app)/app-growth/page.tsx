@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import {
   Smartphone, Star, Search, TrendingUp, Zap, BarChart2,
@@ -153,6 +153,14 @@ type TabId = typeof TABS[number]['id']
 // ─── Page shell ───────────────────────────────────────────────────────────────
 
 export default function AppGrowthPage() {
+  return (
+    <Suspense fallback={<div className="flex h-64 items-center justify-center"><p className="text-sm text-gray-400">Loading...</p></div>}>
+      <AppGrowthContent />
+    </Suspense>
+  )
+}
+
+function AppGrowthContent() {
   const searchParams = useSearchParams()
   const wsId = searchParams.get('ws') ?? searchParams.get('workspace_id') ?? ''
   const [tab, setTab] = useState<TabId>('overview')

@@ -168,14 +168,12 @@ def _classify_comments_batch(comments: list[dict], ad_id: str, product_context: 
     Claude classifies each comment and generates a suggested reply in one batch call.
     Returns list of {comment_id, type, suggested_reply}.
 
-    CRITICAL: No medical device claims, no CDSCO references in replies.
+    Generates suggested replies appropriate to the brand's product context.
     """
     if not comments:
         return []
 
-    product_ctx = product_context or (
-        "Indian wellness wearable brand. Smart wellness band that tracks sleep, activity, and recovery."
-    )
+    product_ctx = product_context or "Indian D2C brand."
 
     items = "\n".join(
         f'{i+1}. [id:{c["id"]}] {c.get("message", "")[:200]}'
@@ -204,13 +202,10 @@ Categories:
 For each comment write a short friendly reply (max 150 chars, Hinglish or English, natural tone).
 
 CRITICAL RULES — these MUST be followed:
-- Do NOT say the product is a medical device
-- Do NOT say "CDSCO approved" or any regulatory certification
-- Do NOT claim it diagnoses, treats, monitors, or cures any health condition
-- Position as a wellness and lifestyle product only
 - For scam/trust: be warm, invite to DM, no defensiveness
 - For purchase_intent: give a simple next step (link or DM)
 - Use emojis naturally but sparingly
+- Match the tone to the brand's product category (infer from product context above)
 
 Return ONLY a valid JSON array (no markdown, no extra text):
 [

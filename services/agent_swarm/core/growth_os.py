@@ -95,6 +95,8 @@ def _check_meta(job_id: str, workspace_id: str, conn) -> dict:
     _log(job_id, "Checking Meta Ads performance...", source="meta")
     try:
         with conn.cursor() as cur:
+            # Use 365-day window so Excel-uploaded historical data is always included.
+            # Live API data lands with current timestamps so 365d captures both.
             cur.execute(
                 """
                 SELECT
@@ -105,16 +107,20 @@ def _check_meta(job_id: str, workspace_id: str, conn) -> dict:
                     AVG(CASE WHEN clicks > 0 THEN spend/clicks ELSE NULL END) AS avg_cpc,
                     SUM(impressions) AS total_impressions,
                     SUM(clicks) AS total_clicks,
-                    SUM(conversions) AS total_conversions
+                    SUM(conversions) AS total_conversions,
+                    COUNT(DISTINCT entity_name) AS campaign_count
                 FROM kpi_hourly
                 WHERE workspace_id = %s
                   AND platform = 'meta'
-                  AND hour_ts >= NOW() - INTERVAL '30 days'
+                  AND entity_level = 'campaign'
+                  AND hour_ts >= NOW() - INTERVAL '365 days'
                 """,
                 (workspace_id,),
             )
             row = cur.fetchone()
-        if row and row[0] and float(row[0]) > 0:
+        # Accept data even if spend=0 — Excel files sometimes have only clicks/impressions
+        has_data = row and row[8] and int(row[8]) > 0  # campaign_count > 0
+        if has_data:
             data = {
                 "total_spend": float(row[0] or 0),
                 "total_revenue": float(row[1] or 0),
@@ -125,15 +131,41 @@ def _check_meta(job_id: str, workspace_id: str, conn) -> dict:
                 "total_clicks": int(row[6] or 0),
                 "total_conversions": int(row[7] or 0),
             }
+            # Also fetch individual campaign names + performance
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT entity_name,
+                              ROUND(SUM(COALESCE(spend,0))::numeric,0) AS spend,
+                              ROUND(SUM(COALESCE(conversions,0))::numeric,0) AS convs,
+                              ROUND(SUM(COALESCE(clicks,0))::numeric,0) AS clicks,
+                              ROUND(CASE WHEN SUM(COALESCE(spend,0))>0
+                                    THEN SUM(COALESCE(revenue,0))/SUM(COALESCE(spend,0))
+                                    ELSE 0 END::numeric,2) AS roas
+                       FROM kpi_hourly
+                       WHERE workspace_id=%s AND platform='meta' AND entity_level='campaign'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'
+                       GROUP BY entity_name ORDER BY spend DESC LIMIT 10""",
+                    (workspace_id,),
+                )
+                campaigns = [
+                    {"name": r[0], "spend": float(r[1] or 0), "conversions": int(r[2] or 0),
+                     "clicks": int(r[3] or 0), "roas": float(r[4] or 0)}
+                    for r in cur.fetchall() if r[0]
+                ]
+            data["campaigns"] = campaigns
             _log(job_id,
-                 f"✓ Meta Ads — ₹{data['total_spend']:,.0f} spend · {data['avg_roas']:.2f}× ROAS · CTR {data['avg_ctr']:.2f}%",
+                 f"✓ Meta Ads — ₹{data['total_spend']:,.0f} spend · {data['avg_roas']:.2f}× ROAS · CTR {data['avg_ctr']:.2f}% · {len(campaigns)} campaigns",
                  type_="found", source="meta")
             return data
         else:
             _log(job_id, "~ Meta Ads — no data (not connected or no campaigns)", type_="missing", source="meta")
             return {}
     except Exception as e:
-        _log(job_id, f"~ Meta Ads — query error: {e}", type_="missing", source="meta")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _log(job_id, f"~ Meta Ads — error reading data: {e}", type_="missing", source="meta")
         return {}
 
 
@@ -149,16 +181,19 @@ def _check_google(job_id: str, workspace_id: str, conn) -> dict:
                     AVG(CASE WHEN spend > 0 THEN revenue/spend ELSE NULL END) AS avg_roas,
                     AVG(CASE WHEN impressions > 0 THEN clicks/impressions*100 ELSE NULL END) AS avg_ctr,
                     SUM(clicks) AS total_clicks,
-                    SUM(conversions) AS total_conversions
+                    SUM(conversions) AS total_conversions,
+                    COUNT(DISTINCT entity_name) AS campaign_count
                 FROM kpi_hourly
                 WHERE workspace_id = %s
                   AND platform = 'google'
-                  AND hour_ts >= NOW() - INTERVAL '30 days'
+                  AND entity_level = 'campaign'
+                  AND hour_ts >= NOW() - INTERVAL '365 days'
                 """,
                 (workspace_id,),
             )
             row = cur.fetchone()
-        if row and row[0] and float(row[0]) > 0:
+        has_data = row and row[6] and int(row[6]) > 0
+        if has_data:
             data = {
                 "total_spend": float(row[0] or 0),
                 "total_revenue": float(row[1] or 0),
@@ -167,25 +202,51 @@ def _check_google(job_id: str, workspace_id: str, conn) -> dict:
                 "total_clicks": int(row[4] or 0),
                 "total_conversions": int(row[5] or 0),
             }
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT entity_name,
+                              ROUND(SUM(COALESCE(spend,0))::numeric,0) AS spend,
+                              ROUND(SUM(COALESCE(conversions,0))::numeric,0) AS convs,
+                              ROUND(SUM(COALESCE(clicks,0))::numeric,0) AS clicks,
+                              ROUND(CASE WHEN SUM(COALESCE(spend,0))>0
+                                    THEN SUM(COALESCE(revenue,0))/SUM(COALESCE(spend,0))
+                                    ELSE 0 END::numeric,2) AS roas
+                       FROM kpi_hourly
+                       WHERE workspace_id=%s AND platform='google' AND entity_level='campaign'
+                         AND hour_ts >= NOW() - INTERVAL '365 days'
+                       GROUP BY entity_name ORDER BY spend DESC LIMIT 10""",
+                    (workspace_id,),
+                )
+                campaigns = [
+                    {"name": r[0], "spend": float(r[1] or 0), "conversions": int(r[2] or 0),
+                     "clicks": int(r[3] or 0), "roas": float(r[4] or 0)}
+                    for r in cur.fetchall() if r[0]
+                ]
+            data["campaigns"] = campaigns
             _log(job_id,
-                 f"✓ Google Ads — ₹{data['total_spend']:,.0f} spend · {data['avg_roas']:.2f}× ROAS · {data['total_conversions']} conversions",
+                 f"✓ Google Ads — ₹{data['total_spend']:,.0f} spend · {data['avg_roas']:.2f}× ROAS · {data['total_conversions']} conversions · {len(campaigns)} campaigns",
                  type_="found", source="google")
             return data
         else:
             _log(job_id, "~ Google Ads — no data (connect Google or upload CSV reports)", type_="missing", source="google")
             return {}
     except Exception as e:
-        _log(job_id, f"~ Google Ads — query error: {e}", type_="missing", source="google")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _log(job_id, f"~ Google Ads — error reading data: {e}", type_="missing", source="google")
         return {}
 
 
 def _check_youtube(job_id: str, workspace_id: str, conn) -> dict:
     _log(job_id, "Checking YouTube channel data...", source="youtube")
     try:
+        # platform_connections.account_id stores the channel_id for YouTube
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT channel_id, subscriber_count, view_count, video_count
+                SELECT account_id
                 FROM platform_connections
                 WHERE workspace_id = %s AND platform = 'youtube' AND account_id IS NOT NULL
                 LIMIT 1
@@ -199,12 +260,26 @@ def _check_youtube(job_id: str, workspace_id: str, conn) -> dict:
 
         channel_id = row[0]
 
+        # Aggregate video stats
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*), COALESCE(SUM(view_count), 0)
+                FROM youtube_videos
+                WHERE workspace_id = %s
+                """,
+                (workspace_id,),
+            )
+            agg = cur.fetchone()
+        video_count = int(agg[0] or 0) if agg else 0
+        total_views = int(agg[1] or 0) if agg else 0
+
         # Top videos
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT title, view_count, like_count, comment_count,
-                       avg_view_duration_pct, is_short
+                       COALESCE(avg_view_duration_pct, 0), COALESCE(is_short, false)
                 FROM youtube_videos
                 WHERE workspace_id = %s
                 ORDER BY view_count DESC
@@ -214,13 +289,9 @@ def _check_youtube(job_id: str, workspace_id: str, conn) -> dict:
             )
             top_videos = cur.fetchall()
 
-        subs = int(row[1] or 0)
-        total_views = int(row[2] or 0)
-        video_count = int(row[3] or 0)
-
         data = {
             "channel_id": channel_id,
-            "subscriber_count": subs,
+            "subscriber_count": 0,  # not stored locally; shown as N/A
             "total_views": total_views,
             "video_count": video_count,
             "top_videos": [
@@ -237,11 +308,15 @@ def _check_youtube(job_id: str, workspace_id: str, conn) -> dict:
         }
         top_title = top_videos[0][0][:50] if top_videos else "unknown"
         _log(job_id,
-             f"✓ YouTube — {subs:,} subscribers · {total_views:,} total views · top: \"{top_title}\"",
+             f"✓ YouTube — {video_count} videos · {total_views:,} total views · top: \"{top_title}\"",
              type_="found", source="youtube")
         return data
     except Exception as e:
-        _log(job_id, f"~ YouTube — query error: {e}", type_="missing", source="youtube")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _log(job_id, f"~ YouTube — not connected", type_="missing", source="youtube")
         return {}
 
 
@@ -318,7 +393,11 @@ def _check_yt_competitor_intel(job_id: str, workspace_id: str, conn) -> dict:
              type_="found", source="yt_intel")
         return data
     except Exception as e:
-        _log(job_id, f"~ YouTube Intel — query error: {e}", type_="missing", source="yt_intel")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _log(job_id, "~ YouTube Intel — no analysis completed yet", type_="missing", source="yt_intel")
         return {}
 
 
@@ -398,7 +477,11 @@ def _check_brand_intel(job_id: str, workspace_id: str, conn) -> dict:
              type_="found", source="brand_intel")
         return data
     except Exception as e:
-        _log(job_id, f"~ Competitor Intel — query error: {e}", type_="missing", source="brand_intel")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _log(job_id, "~ Competitor Intel — run Brand Intel first from the sidebar", type_="missing", source="brand_intel")
         return {}
 
 
@@ -441,7 +524,11 @@ def _check_lp_audit(job_id: str, workspace_id: str, conn) -> dict:
              type_="found", source="lp_audit")
         return data
     except Exception as e:
-        _log(job_id, f"~ Landing Page Audit — query error: {e}", type_="missing", source="lp_audit")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _log(job_id, "~ Landing Page Audit — not yet run", type_="missing", source="lp_audit")
         return {}
 
 
@@ -559,7 +646,11 @@ def _check_email(job_id: str, workspace_id: str, conn) -> dict:
             _log(job_id, "~ Email — no campaigns or contacts yet", type_="missing", source="email")
             return {}
     except Exception as e:
-        _log(job_id, f"~ Email — query error: {e}", type_="missing", source="email")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _log(job_id, "~ Email — not connected", type_="missing", source="email")
         return {}
 
 
@@ -604,7 +695,11 @@ def _check_search_trends(job_id: str, workspace_id: str, conn) -> dict:
             _log(job_id, "~ Search Trends — no keyword data available", type_="missing", source="search_trends")
             return {}
     except Exception as e:
-        _log(job_id, f"~ Search Trends — query error: {e}", type_="missing", source="search_trends")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _log(job_id, "~ Search Trends — no keyword data available", type_="missing", source="search_trends")
         return {}
 
 
@@ -641,7 +736,11 @@ def _check_organic(job_id: str, workspace_id: str, conn) -> dict:
             _log(job_id, "~ Organic Social — no post data", type_="missing", source="organic")
             return {}
     except Exception as e:
-        _log(job_id, f"~ Organic — query error: {e}", type_="missing", source="organic")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _log(job_id, "~ Organic Social — no post data", type_="missing", source="organic")
         return {}
 
 
@@ -670,7 +769,11 @@ def _check_comments(job_id: str, workspace_id: str, conn) -> dict:
         _log(job_id, "~ Comments — not yet analysed", type_="missing", source="comments")
         return {}
     except Exception as e:
-        _log(job_id, f"~ Comments — query error: {e}", type_="missing", source="comments")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _log(job_id, "~ Comments — not yet analysed", type_="missing", source="comments")
         return {}
 
 
@@ -704,7 +807,7 @@ def _check_workspace(job_id: str, workspace_id: str, conn) -> dict:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT name, workspace_type, monthly_budget, brand_url
+                SELECT name, workspace_type, monthly_budget, brand_url, store_url
                 FROM workspaces WHERE id = %s::uuid
                 """,
                 (workspace_id,),
@@ -715,11 +818,42 @@ def _check_workspace(job_id: str, workspace_id: str, conn) -> dict:
                 "name": row[0] or "Unknown Brand",
                 "type": row[1] or "d2c",
                 "monthly_budget": float(row[2] or 0),
-                "brand_url": row[3] or "",
+                "brand_url": row[3] or row[4] or "",
             }
         return {"name": "Unknown Brand", "type": "d2c", "monthly_budget": 0, "brand_url": ""}
     except Exception:
         return {"name": "Unknown Brand", "type": "d2c", "monthly_budget": 0, "brand_url": ""}
+
+
+def _check_products_catalog(job_id: str, workspace_id: str, conn) -> list:
+    """Fetch products from the central catalog (CSV uploads, Shopify sync, manual)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT name, description, price, product_url, category
+                   FROM products
+                   WHERE workspace_id = %s::uuid
+                   ORDER BY updated_at DESC LIMIT 10""",
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+        if rows:
+            products = [
+                {
+                    "name": r[0] or "",
+                    "description": (r[1] or "")[:200],
+                    "price": float(r[2]) if r[2] else 0,
+                    "url": r[3] or "",
+                    "category": r[4] or "",
+                }
+                for r in rows
+            ]
+            _log(job_id, f"✓ Product Catalog — {len(products)} products found", type_="found", source="products")
+            return products
+        _log(job_id, "~ Product Catalog — no products uploaded yet", type_="missing", source="products")
+        return []
+    except Exception as e:
+        return []
 
 
 # ── Strategy prompt builder ────────────────────────────────────────────────────
@@ -836,27 +970,51 @@ def _build_strategy_prompt(intel: dict, directive: str = None, strategy_mode: st
     if ws.get("brand_url"):
         lines.append(f"Website: {ws['brand_url']}")
 
+    # Product Catalog — inject before ad data so ARIA knows what's being sold
+    products_catalog = intel.get("products_catalog", [])
+    # Also merge Shopify products if no catalog products exist
+    if not products_catalog:
+        shopify_products = intel.get("shopify", {}).get("products", [])
+        if shopify_products:
+            products_catalog = [{"name": p["title"], "price": p["price"], "description": "", "url": "", "category": ""} for p in shopify_products]
+    if products_catalog:
+        lines.append("\n=== PRODUCTS BEING SOLD ===")
+        lines.append("IMPORTANT: These are the ACTUAL products this brand sells. Base ALL strategy, copy, and channel recommendations on these products — not on any assumed category.")
+        for p in products_catalog[:8]:
+            price_str = f" | ₹{p['price']:,.0f}" if p.get("price") else ""
+            desc_str = f" — {p['description'][:120]}" if p.get("description") else ""
+            cat_str = f" [{p['category']}]" if p.get("category") else ""
+            lines.append(f"  • {p['name']}{cat_str}{price_str}{desc_str}")
+    else:
+        lines.append("\n=== PRODUCTS: No catalog uploaded — infer from brand name and website ===")
+
     # Meta Ads
     meta = intel.get("meta", {})
     if meta:
-        lines.append("\n=== META ADS (Last 30 days) ===")
+        lines.append("\n=== META ADS (Historical) ===")
         lines.append(f"Spend: ₹{meta.get('total_spend', 0):,.0f}")
         lines.append(f"Revenue: ₹{meta.get('total_revenue', 0):,.0f}")
         lines.append(f"ROAS: {meta.get('avg_roas', 0):.2f}× (target 2.5×)")
         lines.append(f"CTR: {meta.get('avg_ctr', 0):.2f}% (industry avg 1.0%)")
         lines.append(f"CPC: ₹{meta.get('avg_cpc', 0):.0f}")
         lines.append(f"Conversions: {meta.get('total_conversions', 0):,}")
+        for c in meta.get("campaigns", [])[:8]:
+            roas_str = f" | ROAS {c['roas']:.2f}x" if c['roas'] > 0 else ""
+            lines.append(f"  Campaign: {c['name']} — Spend ₹{c['spend']:,.0f} | Clicks {c['clicks']}{roas_str}")
     else:
         lines.append("\n=== META ADS: Not connected — exclude from paid strategy ===")
 
     # Google Ads
     google = intel.get("google", {})
     if google:
-        lines.append("\n=== GOOGLE ADS (Last 30 days) ===")
+        lines.append("\n=== GOOGLE ADS (Historical) ===")
         lines.append(f"Spend: ₹{google.get('total_spend', 0):,.0f}")
         lines.append(f"ROAS: {google.get('avg_roas', 0):.2f}×")
         lines.append(f"CTR: {google.get('avg_ctr', 0):.2f}%")
         lines.append(f"Conversions: {google.get('total_conversions', 0)}")
+        for c in google.get("campaigns", [])[:8]:
+            roas_str = f" | ROAS {c['roas']:.2f}x" if c['roas'] > 0 else ""
+            lines.append(f"  Campaign: {c['name']} — Spend ₹{c['spend']:,.0f} | Clicks {c['clicks']}{roas_str}")
 
     # YouTube Channel
     yt = intel.get("youtube", {})
@@ -903,7 +1061,8 @@ def _build_strategy_prompt(intel: dict, directive: str = None, strategy_mode: st
                 lines.append(f"  Active Meta Ads: {c['ad_count']} | Themes: {', '.join(c.get('top_themes', []))}")
             pricing = c.get("pricing_tiers", [])
             if pricing:
-                lines.append(f"  Pricing: {', '.join([f\"{p.get('name', '')} {p.get('price', '')}\" for p in pricing[:3]])}")
+                pricing_str = ", ".join([p.get("name", "") + " " + str(p.get("price", "")) for p in pricing[:3]])
+                lines.append(f"  Pricing: {pricing_str}")
             if c.get("pain_points"):
                 lines.append(f"  Customer Pain Points: {'; '.join(c['pain_points'][:3])}")
             if c.get("tech_stack"):
@@ -1026,6 +1185,7 @@ def run_full_strategy_job(
 
         with get_conn() as conn:
             workspace = _check_workspace(job_id, workspace_id, conn)
+            products_catalog = _check_products_catalog(job_id, workspace_id, conn)
             meta = _check_meta(job_id, workspace_id, conn)
             google = _check_google(job_id, workspace_id, conn)
             youtube = _check_youtube(job_id, workspace_id, conn)
@@ -1132,6 +1292,7 @@ def run_full_strategy_job(
         # Build intel dict for prompt
         intel = {
             "workspace": workspace,
+            "products_catalog": products_catalog,
             **intel_map,
             "auction_insights": auction_insights,
         }
@@ -1156,14 +1317,17 @@ def run_full_strategy_job(
         prompt = _build_strategy_prompt(intel, directive=directive, strategy_mode=strategy_mode)
 
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        response = client.messages.create(
+        # Use streaming — required for large outputs (>10 min generation time at 32K tokens)
+        raw = ""
+        with client.messages.stream(
             model=CLAUDE_OPUS,
-            max_tokens=8192,
+            max_tokens=32768,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
-        )
-
-        raw = response.content[0].text.strip()
+        ) as stream:
+            for chunk in stream.text_stream:
+                raw += chunk
+        raw = raw.strip()
         # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("```", 2)[1]
@@ -1172,7 +1336,27 @@ def run_full_strategy_job(
             raw = raw.rsplit("```", 1)[0]
         raw = raw.strip()
 
-        plan = json.loads(raw)
+        # Attempt to recover truncated JSON (hit max_tokens mid-output)
+        try:
+            plan = json.loads(raw)
+        except json.JSONDecodeError:
+            # Truncated: close all open arrays/objects and retry
+            recovered = raw
+            open_brackets = recovered.count("{") - recovered.count("}")
+            open_arrays = recovered.count("[") - recovered.count("]")
+            # Close any open string (heuristic: count unescaped quotes)
+            # Strip trailing incomplete value up to the last comma or colon
+            for ch in [",", ":"]:
+                last = recovered.rfind(ch)
+                if last > len(recovered) - 200:
+                    recovered = recovered[:last]
+            recovered = recovered.rstrip().rstrip(",")
+            # Close open arrays/objects
+            open_arrays = recovered.count("[") - recovered.count("]")
+            open_brackets = recovered.count("{") - recovered.count("}")
+            recovered += "]" * max(open_arrays, 0) + "}" * max(open_brackets, 0)
+            plan = json.loads(recovered)
+            _log(job_id, "⚠️ Strategy JSON was truncated — recovered partial plan", "strategy", "warning")
 
         # Assign UUIDs if missing
         for action in plan.get("actions", []):
@@ -1226,28 +1410,11 @@ def run_full_strategy_job(
 
 
 def _trigger_brand_intel(job_id: str, workspace_id: str, brand_url: str):
-    """Start brand intel discovery in background."""
-    import threading
-    from services.agent_swarm.core.brand_intel import run_full_brand_analysis
-    from services.agent_swarm.db import get_conn
-
-    bi_job_id = str(uuid.uuid4())
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO brand_intel_jobs (id, workspace_id, brand_url, status, discovery_status)
-                   VALUES (%s::uuid, %s::uuid, %s, 'pending', 'idle')""",
-                (bi_job_id, workspace_id, brand_url),
-            )
-
-    def _run():
-        try:
-            run_full_brand_analysis(bi_job_id, workspace_id, brand_url)
-        except Exception as e:
-            print(f"[growth_os] auto brand intel failed: {e}")
-
-    threading.Thread(target=_run, daemon=True).start()
-    _log(job_id, f"   ↳ Started competitor discovery for {brand_url}...", "trigger", "progress")
+    """Brand intel requires user confirmation between phases — cannot auto-complete.
+    Raise an exception so the caller skips the auto-trigger gracefully."""
+    raise RuntimeError(
+        "Brand Intel requires competitor confirmation in the dashboard — run it manually from the sidebar."
+    )
 
 
 def _trigger_lp_audit(job_id: str, workspace_id: str, brand_url: str):

@@ -62,9 +62,13 @@ def _get_trending_angle() -> str | None:
     """
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     today = date.today().isoformat()
-    prompt = f"""You are a moment marketing strategist for EasyTouch Rhythm (Indian health wearable — tracks heart rate, SpO2, BP trend, steps, sleep; ₹4,999).
+    from services.agent_swarm.config import PRODUCT_CONTEXT
+    brand_ctx = (PRODUCT_CONTEXT or "Indian D2C brand")[:300]
+    prompt = f"""You are a moment marketing strategist for the following brand:
+{brand_ctx}
+
 Today is {today}. Based on your knowledge of India:
-- Are there any upcoming health/wellness/fitness trends, news events, or cultural moments in the next 7 days that are highly relevant to a health wearable targeting Indians with diabetes/BP concerns?
+- Are there any upcoming trends, news events, cultural moments, or occasions in the next 7 days that are highly relevant to this brand's target audience?
 - If yes: suggest 1 specific ad angle in 1-2 sentences. Start with "TREND:"
 - If nothing significant: reply "NO_TREND"
 
@@ -119,7 +123,7 @@ def run_moment_marketing(platform: str, account_id: str) -> dict:
             trigger_reason = (
                 f"MOMENT MARKETING: {occ['occasion']} on {occ['date']} ({occ['days_away']} days away). "
                 f"Category: {occ['category']}. "
-                f"Create a highly relevant, time-sensitive ad for EasyTouch Rhythm that ties into this moment."
+                f"Create a highly relevant, time-sensitive ad for this brand that ties into this moment."
             )
             result = run_creative_generator(
                 platform, account_id,
@@ -142,7 +146,7 @@ def run_moment_marketing(platform: str, account_id: str) -> dict:
                 if not _is_already_triggered(trend_key):
                     trigger_reason = (
                         f"TRENDING MOMENT: {trend}. "
-                        f"This is a timely opportunity for EasyTouch Rhythm — create a relevant, newsworthy ad."
+                        f"This is a timely opportunity for this brand — create a relevant, newsworthy ad."
                     )
                     result = run_creative_generator(
                         platform, account_id,

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Crosshair, Search, PlayCircle, BarChart2, UploadCloud } from 'lucide-react'
 import Link from 'next/link'
@@ -10,6 +10,14 @@ import YouTubeCompetitorIntel from '@/components/youtube/YouTubeCompetitorIntel'
 type Tab = 'brand' | 'youtube' | 'auction'
 
 export default function CompetitorIntelPage() {
+  return (
+    <Suspense fallback={<div className="flex h-64 items-center justify-center"><p className="text-sm text-gray-400">Loading...</p></div>}>
+      <CompetitorIntelContent />
+    </Suspense>
+  )
+}
+
+function CompetitorIntelContent() {
   const searchParams  = useSearchParams()
   const workspaceId   = searchParams.get('ws') ?? ''
   const defaultTab    = (searchParams.get('tab') as Tab) ?? 'brand'

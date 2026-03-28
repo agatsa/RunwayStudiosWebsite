@@ -5,7 +5,7 @@ import Header from '@/components/layout/Header'
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
-    <Suspense>
+    <Suspense fallback={<div className="flex h-screen items-center justify-center"><p className="text-sm text-gray-400">Loading...</p></div>}>
       <WorkspaceProvider>
         <div className="flex h-screen overflow-hidden">
           <Sidebar />

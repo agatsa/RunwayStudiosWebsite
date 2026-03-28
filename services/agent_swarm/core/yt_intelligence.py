@@ -1395,7 +1395,7 @@ def train_breakout_model(workspace_id: str, conn) -> dict:
         "You are a YouTube content strategy expert. Based on the following logistic regression "
         "feature importances from a breakout prediction model (positive = increases breakout probability, "
         "negative = decreases), write a concise, actionable playbook paragraph (3–5 sentences) for a "
-        "health-tech brand channel. Use plain English — no bullet points.\n\n"
+        "brand channel. Use plain English — no bullet points.\n\n"
         f"Top model features:\n{features_str}\n\n"
         "Write the playbook as if speaking directly to the creator."
     )

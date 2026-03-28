@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Mail, Globe, Users, Send, BarChart2, AlertCircle, Zap } from 'lucide-react'
 import DomainSetupWizard from '@/components/email/DomainSetupWizard'
@@ -20,6 +20,14 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
 ]
 
 export default function EmailPage() {
+  return (
+    <Suspense fallback={<div className="flex h-64 items-center justify-center"><p className="text-sm text-gray-400">Loading...</p></div>}>
+      <EmailContent />
+    </Suspense>
+  )
+}
+
+function EmailContent() {
   const searchParams = useSearchParams()
   const wsId = searchParams.get('ws') ?? ''
 

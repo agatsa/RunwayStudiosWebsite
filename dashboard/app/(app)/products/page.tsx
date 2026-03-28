@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import {
   Plus, RefreshCw, Trash2, ExternalLink, Package,
@@ -173,6 +173,14 @@ function AddUrlBar({
 // ── Main Page ────────────────────────────────────────────────────────────────
 
 export default function ProductsPage() {
+  return (
+    <Suspense fallback={<div className="flex h-64 items-center justify-center"><p className="text-sm text-gray-400">Loading...</p></div>}>
+      <ProductsContent />
+    </Suspense>
+  )
+}
+
+function ProductsContent() {
   const searchParams = useSearchParams()
   const wsId = searchParams.get('ws') ?? ''
 

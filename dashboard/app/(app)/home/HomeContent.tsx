@@ -10,6 +10,63 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
+function HomeSkeleton() {
+  return (
+    <div className="mx-auto max-w-3xl space-y-6 py-4 px-2 animate-pulse">
+      {/* Greeting */}
+      <div className="flex items-center justify-between">
+        <div className="space-y-2">
+          <div className="h-6 w-48 rounded-lg bg-gray-200" />
+          <div className="h-4 w-36 rounded-lg bg-gray-100" />
+        </div>
+        <div className="h-8 w-28 rounded-lg bg-gray-100" />
+      </div>
+      {/* KPI strip */}
+      <div className="grid grid-cols-3 gap-3">
+        {[0,1,2].map(i => (
+          <div key={i} className="rounded-xl border border-gray-100 bg-white p-4 space-y-2">
+            <div className="h-3 w-16 rounded bg-gray-100" />
+            <div className="h-6 w-20 rounded-lg bg-gray-200" />
+          </div>
+        ))}
+      </div>
+      {/* ARIA card */}
+      <div className="rounded-xl border border-amber-100 bg-amber-50/40 p-5 space-y-3">
+        <div className="flex items-center gap-3">
+          <div className="h-8 w-8 rounded-xl bg-amber-200" />
+          <div className="space-y-1.5">
+            <div className="h-4 w-40 rounded bg-amber-200" />
+            <div className="h-3 w-24 rounded bg-amber-100" />
+          </div>
+        </div>
+        {[0,1,2].map(i => (
+          <div key={i} className="rounded-xl border border-amber-100 bg-white p-4 flex gap-3">
+            <div className="h-5 w-5 rounded-full bg-amber-200 shrink-0 mt-0.5" />
+            <div className="flex-1 space-y-2">
+              <div className="h-4 w-3/4 rounded bg-gray-200" />
+              <div className="h-3 w-full rounded bg-gray-100" />
+              <div className="h-3 w-2/3 rounded bg-gray-100" />
+            </div>
+          </div>
+        ))}
+      </div>
+      {/* Section grid */}
+      <div className="grid grid-cols-2 gap-3">
+        {[0,1,2,3].map(i => (
+          <div key={i} className="rounded-xl border border-gray-100 bg-white p-4 space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="h-8 w-8 rounded-lg bg-gray-100" />
+              <div className="h-4 w-16 rounded bg-gray-200" />
+            </div>
+            <div className="h-3 w-full rounded bg-gray-100" />
+            <div className="h-3 w-20 rounded bg-gray-200" />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 interface Opportunity {
   action_type: string
   title: string
@@ -80,6 +137,8 @@ export default function HomeContent() {
   const [kpi, setKpi] = useState<KpiSummary | null>(null)
   const [gos, setGos] = useState<GrowthOSLatest | null>(null)
   const [pending, setPending] = useState<PendingAction[]>([])
+  // pageLoading: true until KPI (fast) has loaded — shows full skeleton instead of blank
+  const [pageLoading, setPageLoading] = useState(true)
 
   // Greeting
   const hour = new Date().getHours()
@@ -87,22 +146,25 @@ export default function HomeContent() {
 
   useEffect(() => {
     if (!wsId) return
-    // Fetch all data in parallel
-    const fetches = [
-      fetch(`/api/ai/daily-brief?workspace_id=${wsId}`)
-        .then(r => r.ok ? r.json() : null)
-        .then(d => setBrief(d)),
-      fetch(`/api/kpi/summary?workspace_id=${wsId}&days=7`)
-        .then(r => r.ok ? r.json() : null)
-        .then(d => setKpi(d?.summary ?? null)),
-      fetch(`/api/growth-os/latest?workspace_id=${wsId}`)
-        .then(r => r.ok ? r.json() : null)
-        .then(d => setGos(d)),
-      fetch(`/api/actions/list?workspace_id=${wsId}&status=pending&limit=5`)
-        .then(r => r.ok ? r.json() : null)
-        .then(d => setPending(d?.actions ?? [])),
-    ]
-    Promise.all(fetches).catch(() => {})
+    setPageLoading(true)
+    // KPI is fast (DB query) — use it to gate the skeleton
+    fetch(`/api/kpi/summary?workspace_id=${wsId}&days=7`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { setKpi(d?.summary ?? null); setPageLoading(false) })
+      .catch(() => setPageLoading(false))
+    // Brief, GOS, pending are slower — load independently
+    fetch(`/api/ai/daily-brief?workspace_id=${wsId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => setBrief(d))
+      .catch(() => setBrief({ opportunities: [], generated_at: null, cached: false }))
+    fetch(`/api/growth-os/latest?workspace_id=${wsId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => setGos(d))
+      .catch(() => {})
+    fetch(`/api/actions/list?workspace_id=${wsId}&status=pending&limit=5`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => setPending(d?.actions ?? []))
+      .catch(() => {})
   }, [wsId])
 
   const refreshBrief = async () => {
@@ -116,13 +178,8 @@ export default function HomeContent() {
     }
   }
 
-  if (!wsId) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-sm text-gray-500">No workspace selected.</p>
-      </div>
-    )
-  }
+  // Show skeleton while workspace is being resolved or KPI is loading
+  if (!wsId || pageLoading) return <HomeSkeleton />
 
   const topOpps = brief?.opportunities?.slice(0, 3) ?? []
   const highCount = brief?.opportunities?.filter(o => o.expected_impact === 'High').length ?? 0
@@ -149,30 +206,22 @@ export default function HomeContent() {
       </div>
 
       {/* ── KPI strip ── */}
-      {kpi ? (
-        <div className="grid grid-cols-3 gap-3">
-          <div className="rounded-xl border border-gray-100 bg-white p-4">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">Spend (7d)</p>
-            <p className="mt-1 text-lg font-bold text-gray-900">₹{fmt(kpi.spend)}</p>
-          </div>
-          <div className="rounded-xl border border-gray-100 bg-white p-4">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">ROAS (7d)</p>
-            <p className={cn('mt-1 text-lg font-bold', (kpi.roas ?? 0) >= 2.5 ? 'text-green-600' : (kpi.roas ?? 0) > 0 ? 'text-yellow-600' : 'text-gray-900')}>
-              {(kpi.roas ?? 0) > 0 ? `${kpi.roas!.toFixed(2)}x` : '—'}
-            </p>
-          </div>
-          <div className="rounded-xl border border-gray-100 bg-white p-4">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">Clicks (7d)</p>
-            <p className="mt-1 text-lg font-bold text-gray-900">{fmt(kpi.clicks)}</p>
-          </div>
+      <div className="grid grid-cols-3 gap-3">
+        <div className="rounded-xl border border-gray-100 bg-white p-4">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">Spend (7d)</p>
+          <p className="mt-1 text-lg font-bold text-gray-900">₹{fmt(kpi?.spend)}</p>
         </div>
-      ) : (
-        <div className="grid grid-cols-3 gap-3">
-          {[0, 1, 2].map(i => (
-            <div key={i} className="rounded-xl border border-gray-100 bg-gray-50 p-4 animate-pulse h-16" />
-          ))}
+        <div className="rounded-xl border border-gray-100 bg-white p-4">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">ROAS (7d)</p>
+          <p className={cn('mt-1 text-lg font-bold', (kpi?.roas ?? 0) >= 2.5 ? 'text-green-600' : (kpi?.roas ?? 0) > 0 ? 'text-yellow-600' : 'text-gray-900')}>
+            {(kpi?.roas ?? 0) > 0 ? `${kpi!.roas!.toFixed(2)}x` : '—'}
+          </p>
         </div>
-      )}
+        <div className="rounded-xl border border-gray-100 bg-white p-4">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">Clicks (7d)</p>
+          <p className="mt-1 text-lg font-bold text-gray-900">{fmt(kpi?.clicks)}</p>
+        </div>
+      </div>
 
       {/* ── Today's Growth Actions (ARIA brief) ── */}
       <div className="rounded-xl border border-amber-200 bg-gradient-to-br from-amber-50/70 to-orange-50/30 overflow-hidden">

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import {
   Search, TrendingUp, FileText, Zap, AlertTriangle,
@@ -1051,6 +1051,14 @@ function WPFixRow({ issue, post, wsId }: any) {
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function SEOPage() {
+  return (
+    <Suspense fallback={<div className="flex h-64 items-center justify-center"><p className="text-sm text-gray-400">Loading...</p></div>}>
+      <SEOContent />
+    </Suspense>
+  )
+}
+
+function SEOContent() {
   const searchParams = useSearchParams()
   const wsId = searchParams.get('ws') ?? ''
 

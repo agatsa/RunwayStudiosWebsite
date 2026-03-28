@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Sparkles, CheckSquare, ClipboardList, Zap } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -19,6 +19,14 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
 ]
 
 export default function PlanPage() {
+  return (
+    <Suspense fallback={<div className="flex h-64 items-center justify-center"><p className="text-sm text-gray-400">Loading...</p></div>}>
+      <PlanContent />
+    </Suspense>
+  )
+}
+
+function PlanContent() {
   const searchParams = useSearchParams()
   const wsId = searchParams.get('ws') ?? ''
   const defaultTab = (searchParams.get('tab') as Tab) ?? 'strategy'

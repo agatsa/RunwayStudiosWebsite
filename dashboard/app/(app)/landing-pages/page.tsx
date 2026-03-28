@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import {
   Layout, RefreshCw, CheckCircle, AlertTriangle, Loader2,
@@ -189,6 +189,14 @@ function SiteScoreCard({ site, isOurs }: { site: SiteAudit; isOurs: boolean }) {
 // ── Main LP Audit Page ──────────────────────────────────────────────────────────
 
 export default function LandingPagesPage() {
+  return (
+    <Suspense fallback={<div className="flex h-64 items-center justify-center"><p className="text-sm text-gray-400">Loading...</p></div>}>
+      <LandingPagesContent />
+    </Suspense>
+  )
+}
+
+function LandingPagesContent() {
   const searchParams = useSearchParams()
   const wsId = searchParams.get('ws') ?? ''
 
