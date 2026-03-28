@@ -29,6 +29,6 @@ export async function GET(req: NextRequest) {
 
   // Clerk's <SignIn> component picks up __clerk_ticket from the URL hash
   // and completes sign-in with zero user interaction.
-  const redirect = `${req.nextUrl.origin}/sign-in#__clerk_ticket=${data.token}`
+  const redirect = `https://app.runwaystudios.co/sign-in#__clerk_ticket=${data.token}`
   return NextResponse.redirect(redirect)
 }
