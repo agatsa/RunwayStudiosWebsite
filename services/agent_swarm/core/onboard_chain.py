@@ -696,6 +696,19 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
         log(f"⚠ Growth OS partial: {e}", "missing", "growth_os")
         set_status("complete")
 
+    # Mark workspace onboarding complete so the "Welcome" modal never shows again
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE workspaces SET onboarding_complete=true, "
+                    "onboarding_channels=%s::jsonb WHERE id=%s::uuid",
+                    (json.dumps(["brand_intel", "growth_os"]), workspace_id),
+                )
+            conn.commit()
+    except Exception as _e:
+        print(f"[onboard_chain] onboarding_complete update failed: {_e}")
+
     log("═══════════════════════════════════════", "separator")
     log("  ✓ Analysis complete — view your results in the dashboard", "header")
     log("═══════════════════════════════════════", "separator")
@@ -777,6 +790,19 @@ def _run_youtube_chain(job_id, workspace_id, url, log, set_status):
         print(f"[onboard_chain] _run_youtube_chain error: {e}\n{traceback.format_exc()}")
         log(f"⚠ YouTube chain partial: {e}", "missing", "youtube")
         set_status("complete", {"yt_job_id": yt_job_id})
+
+    # Mark workspace onboarding complete
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE workspaces SET onboarding_complete=true, "
+                    "onboarding_channels=%s::jsonb WHERE id=%s::uuid",
+                    (json.dumps(["youtube"]), workspace_id),
+                )
+            conn.commit()
+    except Exception as _e:
+        print(f"[onboard_chain] onboarding_complete update failed: {_e}")
 
     log("═══════════════════════════════════════", "separator")
     log("  ✓ YouTube analysis complete — view results in the dashboard", "header")

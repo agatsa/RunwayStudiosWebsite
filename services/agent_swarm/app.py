@@ -16486,6 +16486,28 @@ async def admin_set_plan(request: Request):
     return {"ok": True, "org_id": org_id, "plan": plan, "credits_granted": credits_granted}
 
 
+@app.post("/admin/complete-onboarding")
+async def admin_complete_onboarding(request: Request):
+    """Mark a workspace as onboarding_complete=true.
+    Body: {workspace_id, channels?: [...]}
+    Protected by X-Admin-Token header.
+    """
+    _admin_auth(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id", "")
+    channels = body.get("channels", ["brand_intel", "growth_os"])
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE workspaces SET onboarding_complete=true, onboarding_channels=%s::jsonb WHERE id=%s::uuid",
+                (json.dumps(channels), workspace_id),
+            )
+        conn.commit()
+    return {"ok": True, "workspace_id": workspace_id}
+
+
 @app.post("/admin/set-email-plan")
 async def admin_set_email_plan(request: Request):
     """Set an org's email_plan. Body: {org_id, email_plan}. Plans: none/starter/pro/scale."""
