@@ -19214,14 +19214,27 @@ async def onboard_preview_status(job_id: str, request: Request):
     status, logs, preview_data, bi_job_id, yt_job_id, gos_job_id, url, url_type, paid_at, created_at = row
 
     import datetime as _dt_ob
-    if status in ("previewing", "chain_running") and created_at:
-        age_minutes = (_dt_ob.datetime.utcnow() - created_at.replace(tzinfo=None)).total_seconds() / 60
-        if age_minutes > 30:
+    now_utc = _dt_ob.datetime.utcnow()
+    if status == "previewing" and created_at:
+        # Previewing should complete within 5 minutes
+        age_minutes = (now_utc - created_at.replace(tzinfo=None)).total_seconds() / 60
+        if age_minutes > 10:
             status = "failed"
             with get_conn() as conn2:
                 with conn2.cursor() as cur2:
                     cur2.execute(
-                        "UPDATE onboard_jobs SET status='failed', updated_at=NOW() WHERE id=%s::uuid AND status NOT IN ('complete','failed')",
+                        "UPDATE onboard_jobs SET status='failed', updated_at=NOW() WHERE id=%s::uuid AND status='previewing'",
+                        (job_id,),
+                    )
+    elif status == "chain_running" and paid_at:
+        # Chain timeout: 45 min from when payment was confirmed
+        chain_age_minutes = (now_utc - paid_at.replace(tzinfo=None)).total_seconds() / 60
+        if chain_age_minutes > 45:
+            status = "failed"
+            with get_conn() as conn2:
+                with conn2.cursor() as cur2:
+                    cur2.execute(
+                        "UPDATE onboard_jobs SET status='failed', updated_at=NOW() WHERE id=%s::uuid AND status='chain_running'",
                         (job_id,),
                     )
 

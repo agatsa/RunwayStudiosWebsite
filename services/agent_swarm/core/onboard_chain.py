@@ -382,14 +382,16 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
     import importlib
 
     # ── Step 1: Brand Intel Phase 2 ──────────────────────────────────────────
+    # Runs in a thread with heartbeat logs + 8-min hard timeout so it never blocks forever.
     log("Phase 1/4 — Brand Intel: Full 9-layer competitor analysis", "phase", "brand_intel")
     log("─────────────────────────────────────────────────────────", "divider")
 
     if bi_job_id:
         try:
+            import threading as _threading
             bi = importlib.import_module("services.agent_swarm.core.brand_intel")
 
-            # Auto-confirm all Phase 1 candidates (no user interaction needed)
+            # Load and confirm candidates
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
@@ -401,17 +403,16 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
                 if isinstance(candidates, str):
                     candidates = json.loads(candidates)
 
-            confirmed_ids = [c.get("id") for c in candidates if c.get("id")]
-            log(f"Auto-confirming {len(confirmed_ids)} competitors for deep analysis…", "info", "brand_intel")
+            candidates = candidates[:5]
+            _competitor_names = [c.get("name") or c.get("domain", "?") for c in candidates]
 
-            # Confirm via DB update (same logic as /brand-intel/confirm-discovery)
+            # Mark all candidates as confirmed in DB
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         "UPDATE brand_intel_jobs SET discovery_status='confirmed', updated_at=NOW() WHERE id=%s::uuid",
                         (bi_job_id,),
                     )
-                    # Mark all candidates as confirmed
                     cur.execute(
                         """UPDATE brand_intel_jobs
                            SET discovery_candidates = (
@@ -424,11 +425,55 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
                     )
                 conn.commit()
 
-            # Run Phase 2 in asyncio
-            with get_conn() as conn:
-                asyncio.run(bi.run_analysis_phase(bi_job_id, workspace_id, conn))
+            # Fetch meta token
+            _meta_token = ""
+            try:
+                with get_conn() as _tc:
+                    with _tc.cursor() as _tcur:
+                        _tcur.execute(
+                            "SELECT access_token FROM platform_connections "
+                            "WHERE workspace_id=%s::uuid AND platform='meta' AND is_active LIMIT 1",
+                            (workspace_id,),
+                        )
+                        _tr = _tcur.fetchone()
+                        if _tr:
+                            _meta_token = _tr[0] or ""
+            except Exception:
+                pass
 
-            log("✓ Brand Intel complete — competitor intelligence gathered", "success", "brand_intel")
+            _bi_exc: list = [None]
+            _bi_url, _bi_token = url, _meta_token
+
+            def _run_bi_thread():
+                try:
+                    with get_conn() as _bi_conn:
+                        asyncio.run(bi.run_analysis_phase(
+                            bi_job_id, workspace_id, _bi_url, "d2c", _bi_token, _bi_conn
+                        ))
+                except Exception as _e:
+                    _bi_exc[0] = _e
+
+            log(f"Analysing {len(_competitor_names)} competitors: {', '.join(_competitor_names[:3])}{'…' if len(_competitor_names) > 3 else ''}", "info", "brand_intel")
+            log("(scraping websites → ad library → content patterns → Claude AI analysis)", "info", "brand_intel")
+
+            _bi_thread = _threading.Thread(target=_run_bi_thread, daemon=True)
+            _bi_thread.start()
+
+            _elapsed = 0
+            _BI_MAX = 8 * 60  # hard cap: 8 minutes
+            while _bi_thread.is_alive() and _elapsed < _BI_MAX:
+                _bi_thread.join(timeout=20)
+                if _bi_thread.is_alive():
+                    _elapsed += 20
+                    log(f"⏳ Competitor analysis running… ({_elapsed // 60}m {_elapsed % 60:02d}s)", "info", "brand_intel")
+
+            if _bi_thread.is_alive():
+                log("⚠ Brand Intel taking longer than expected — moving on, results will appear later in Competitor Intel tab", "missing", "brand_intel")
+            elif _bi_exc[0]:
+                raise _bi_exc[0]
+            else:
+                log("✓ Brand Intel complete — competitor intelligence gathered", "success", "brand_intel")
+
         except Exception as e:
             log(f"⚠ Brand Intel Phase 2 partial: {e}", "missing", "brand_intel")
     else:
@@ -518,7 +563,7 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
     try:
         from services.agent_swarm.connectors.lp_auditor import run_full_audit
 
-        # Get competitor URLs from brand intel if available
+        # Get competitor URLs from brand intel (now available since P2 just ran)
         competitor_urls = []
         if bi_job_id:
             try:
@@ -536,14 +581,20 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
             except Exception:
                 pass
 
-        lp_result = asyncio.run(run_full_audit(
-            brand_url=url,
-            competitor_urls=competitor_urls or None,
-        ))
-        score = lp_result.get("our_audit", {}).get("score", 0)
+        log(f"Auditing {url}" + (f" + {len(competitor_urls)} competitors" if competitor_urls else ""), "info", "lp_audit")
+
+        # 3-minute hard timeout so LP Audit never blocks the chain indefinitely
+        async def _run_audit_with_timeout():
+            return await asyncio.wait_for(
+                run_full_audit(brand_url=url, competitor_urls=competitor_urls or None),
+                timeout=180,
+            )
+
+        lp_result = asyncio.run(_run_audit_with_timeout())
+        score = (lp_result.get("our_site") or lp_result.get("our_audit") or {}).get("score", 0)
         log(f"✓ LP Audit complete — conversion score: {score}/100", "success", "lp_audit")
 
-        # Save LP audit to onboard_jobs
+        # Save to onboard_jobs (for display on onboard page)
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -552,6 +603,23 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
                 )
             conn.commit()
 
+        # Also save to lp_audits table so Growth OS can read it
+        try:
+            import uuid as _lp_uuid
+            _lp_audit_id = str(_lp_uuid.uuid4())
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO lp_audits (id, workspace_id, brand_url, status, audit_json, updated_at)
+                           VALUES (%s::uuid, %s::uuid, %s, 'completed', %s::jsonb, NOW())""",
+                        (_lp_audit_id, workspace_id, url, json.dumps(lp_result)),
+                    )
+                conn.commit()
+        except Exception as _lp_e:
+            print(f"[onboard_chain] lp_audits insert failed: {_lp_e}")
+
+    except asyncio.TimeoutError:
+        log("⚠ LP Audit timed out after 3 min — moving on", "missing", "lp_audit")
     except Exception as e:
         log(f"⚠ LP Audit partial: {e}", "missing", "lp_audit")
 
@@ -582,17 +650,49 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
                 )
             conn.commit()
 
-        run_full_strategy_job(
-            gos_job_id, workspace_id,
-            directive=directive or "Build a full-funnel growth strategy from scratch",
-            brand_url=url,
-            strategy_mode="onboard",
-        )
+        import threading as _gos_thread
 
-        log("✓ Growth OS strategy complete!", "success", "growth_os")
-        set_status("complete", {"gos_job_id": gos_job_id})
+        _gos_exc: list = [None]
+        _gos_done: list = [False]
+
+        def _run_gos():
+            try:
+                run_full_strategy_job(
+                    gos_job_id, workspace_id,
+                    directive=directive or "Build a full-funnel growth strategy from scratch",
+                    brand_url=url,
+                    strategy_mode="onboard",
+                    auto_trigger_analyses=False,
+                )
+                _gos_done[0] = True
+            except Exception as _ge:
+                _gos_exc[0] = _ge
+
+        _gos_t = _gos_thread.Thread(target=_run_gos, daemon=True)
+        _gos_t.start()
+
+        _gos_elapsed = 0
+        _GOS_MAX = 20 * 60  # 20-minute hard cap
+        while _gos_t.is_alive() and _gos_elapsed < _GOS_MAX:
+            _gos_t.join(timeout=30)
+            if _gos_t.is_alive():
+                _gos_elapsed += 30
+                log(f"⏳ Generating strategy… ({_gos_elapsed // 60}m {_gos_elapsed % 60:02d}s)", "info", "growth_os")
+
+        if _gos_t.is_alive():
+            log("⚠ Growth OS still generating — strategy will appear in dashboard within 5 minutes", "missing", "growth_os")
+            # Mark complete anyway so user isn't left waiting
+            set_status("complete", {"gos_job_id": gos_job_id})
+        elif _gos_exc[0]:
+            log(f"⚠ Growth OS error: {_gos_exc[0]}", "missing", "growth_os")
+            set_status("complete", {"gos_job_id": gos_job_id})
+        else:
+            log("✓ Growth OS strategy complete!", "success", "growth_os")
+            set_status("complete", {"gos_job_id": gos_job_id})
 
     except Exception as e:
+        import traceback
+        print(f"[onboard_chain] growth_os step error: {e}\n{traceback.format_exc()}")
         log(f"⚠ Growth OS partial: {e}", "missing", "growth_os")
         set_status("complete")
 
