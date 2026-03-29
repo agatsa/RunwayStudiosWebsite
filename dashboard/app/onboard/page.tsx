@@ -441,8 +441,16 @@ function OnboardPageInner() {
 
   const startChainPolling = (jobId: string, wsId: string) => {
     if (pollRef.current) clearInterval(pollRef.current)
+    const pollStart = Date.now()
+    const MAX_POLL_MS = 8 * 60 * 1000 // 8 minutes
     pollRef.current = setInterval(async () => {
       try {
+        // Timeout: if stuck for 8+ minutes, show failed state
+        if (Date.now() - pollStart > MAX_POLL_MS) {
+          setStage('failed')
+          clearInterval(pollRef.current!)
+          return
+        }
         const r = await fetch(`/api/onboard/chain-status?job_id=${jobId}&workspace_id=${wsId}`)
         if (!r.ok) return
         const d: JobState = await r.json()
