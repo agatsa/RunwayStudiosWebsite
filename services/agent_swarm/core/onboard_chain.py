@@ -479,16 +479,16 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
     else:
         log("~ Brand Intel skipped (no Phase 1 job found)", "missing", "brand_intel")
 
-    # ── Step 2: Reddit Voice of Customer ─────────────────────────────────────
-    log("Phase 2/4 — Reddit VoC: Mining customer conversations", "phase", "reddit_voc")
+    # ── Step 2: Reddit Voice of Customer (Competitive Sweep) ─────────────────
+    log("Phase 2/4 — Reddit VoC: Mining customer conversations across product space", "phase", "reddit_voc")
     log("─────────────────────────────────────────────────────────", "divider")
 
-    reddit_posts = []
+    reddit_voc_data: dict = {}
     try:
         from urllib.parse import urlparse as _urlparse
         import httpx as _httpx_voc
 
-        # Build search query from brand name + own keywords from brand intel DB
+        # Build own brand query from domain + top own keywords
         _domain = _urlparse(url).netloc.replace('www.', '').split('.')[0]
         _brand_q = _domain.strip().capitalize()
         _own_kws: list = []
@@ -507,48 +507,138 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
             except Exception:
                 pass
         _kw_q = " ".join(_own_kws)
-        _reddit_query = f"{_brand_q} {_kw_q}".strip() or _brand_q
+        _own_query = f"{_brand_q} {_kw_q}".strip() or _brand_q
 
-        log(f"Searching Reddit for: {_reddit_query}", "info", "reddit_voc")
+        # Get confirmed competitor names from brand intel (Brand Intel step ran first)
+        _competitor_names: list = []
+        if bi_job_id:
+            try:
+                with get_conn() as _cp_conn:
+                    with _cp_conn.cursor() as _cp_cur:
+                        _cp_cur.execute(
+                            """SELECT competitor_name FROM brand_competitor_profiles
+                               WHERE job_id=%s::uuid AND confirmed=TRUE
+                               ORDER BY confidence_pct DESC LIMIT 4""",
+                            (bi_job_id,),
+                        )
+                        _competitor_names = [r[0] for r in _cp_cur.fetchall() if r[0]]
+            except Exception:
+                pass
 
-        async def _do_reddit():
+        # Build list: own brand first, then each competitor
+        _search_targets = [("own", _own_query)] + [("competitor", name) for name in _competitor_names]
+        log(f"Sweeping Reddit: own brand + {len(_competitor_names)} competitors ({len(_search_targets)} searches)", "info", "reddit_voc")
+
+        async def _sweep_reddit_all():
+            """Run all Reddit searches sequentially with rate-limit delay."""
+            _results: dict = {}
             async with _httpx_voc.AsyncClient(
-                timeout=10,
+                timeout=12,
                 headers={"User-Agent": "runway-studios-aria/1.0"},
                 follow_redirects=True,
             ) as _cli:
-                _r = await _cli.get(
-                    "https://www.reddit.com/search.json",
-                    params={"q": _reddit_query, "sort": "relevance", "limit": 25, "type": "link"},
+                for _idx, (_kind, _query) in enumerate(_search_targets):
+                    if _idx > 0:
+                        await asyncio.sleep(1.5)  # avoid Reddit rate limit
+                    try:
+                        _r = await _cli.get(
+                            "https://www.reddit.com/search.json",
+                            params={"q": _query, "sort": "relevance", "limit": 20, "type": "link"},
+                        )
+                        _posts = []
+                        if _r.status_code == 200:
+                            for _child in _r.json().get("data", {}).get("children", []):
+                                _p = _child.get("data", {})
+                                _posts.append({
+                                    "title": _p.get("title", ""),
+                                    "subreddit": _p.get("subreddit_name_prefixed", ""),
+                                    "score": _p.get("score", 0),
+                                    "url": f"https://reddit.com{_p.get('permalink', '')}",
+                                    "text_preview": (_p.get("selftext") or "")[:300].strip(),
+                                    "num_comments": _p.get("num_comments", 0),
+                                })
+                        _results[_query] = {"kind": _kind, "query": _query, "posts": _posts}
+                    except Exception as _se:
+                        _results[_query] = {"kind": _kind, "query": _query, "posts": [], "error": str(_se)}
+            return _results
+
+        _raw_results = asyncio.run(_sweep_reddit_all())
+
+        _own_posts = _raw_results.get(_own_query, {}).get("posts", [])
+        _comp_posts = {
+            _v["query"]: _v["posts"]
+            for _v in _raw_results.values()
+            if _v.get("kind") == "competitor"
+        }
+        _total_posts = sum(len(_v.get("posts", [])) for _v in _raw_results.values())
+
+        log(f"✓ Found {_total_posts} Reddit discussions across {len(_search_targets)} queries", "success", "reddit_voc")
+        for _qv in _raw_results.values():
+            log(f"  [{_qv.get('kind')}] \"{_qv.get('query')[:50]}\": {len(_qv.get('posts', []))} posts", "info", "reddit_voc")
+
+        # Claude Haiku synthesis — extract competitive VoC insight across all brands
+        _synthesis: dict = {}
+        if _total_posts > 0:
+            try:
+                import anthropic as _anth_voc
+                from services.agent_swarm.config import ANTHROPIC_API_KEY
+                _HAIKU = "claude-haiku-4-5-20251001"
+
+                _digest: list = []
+                if _own_posts:
+                    _digest.append(f"=== Reddit posts about {_brand_q} (our brand) ===")
+                    for _p in _own_posts[:8]:
+                        _digest.append(f"[{_p['subreddit']}] {_p['title']} | {_p['text_preview'][:150]}")
+                for _cname, _cposts in _comp_posts.items():
+                    if _cposts:
+                        _digest.append(f"\n=== Reddit posts about {_cname} (competitor) ===")
+                        for _p in _cposts[:8]:
+                            _digest.append(f"[{_p['subreddit']}] {_p['title']} | {_p['text_preview'][:150]}")
+
+                _haiku_client = _anth_voc.Anthropic(api_key=ANTHROPIC_API_KEY)
+                _haiku_resp = _haiku_client.messages.create(
+                    model=_HAIKU,
+                    max_tokens=800,
+                    system="You are a market research analyst. Return ONLY valid JSON, no markdown.",
+                    messages=[{"role": "user", "content": (
+                        "Analyse these Reddit posts about a product category and return a JSON synthesis.\n\n"
+                        + "\n".join(_digest[:60])
+                        + '\n\nReturn JSON with exactly these keys:\n'
+                        '{"top_pain_points":["pain 1","pain 2","pain 3","pain 4","pain 5"],'
+                        '"unmet_desires":["desire 1","desire 2","desire 3"],'
+                        '"competitor_weaknesses":{"CompetitorName":["weakness 1","weakness 2"]},'
+                        '"our_brand_sentiment":"positive|neutral|negative|not_mentioned",'
+                        '"category_sentiment":"positive|neutral|negative",'
+                        '"win_opportunity":"One sentence: what gap exists that our brand can own"}'
+                    )}],
                 )
-                if _r.status_code == 200:
-                    _data = _r.json()
-                    _posts = []
-                    for _child in _data.get("data", {}).get("children", []):
-                        _p = _child.get("data", {})
-                        _posts.append({
-                            "title": _p.get("title", ""),
-                            "subreddit": _p.get("subreddit_name_prefixed", ""),
-                            "score": _p.get("score", 0),
-                            "url": f"https://reddit.com{_p.get('permalink', '')}",
-                            "text_preview": (_p.get("selftext") or "")[:300].strip(),
-                            "num_comments": _p.get("num_comments", 0),
-                        })
-                    return _posts
-            return []
+                _syn_raw = _haiku_resp.content[0].text.strip()
+                if _syn_raw.startswith("```"):
+                    _syn_raw = _syn_raw.split("```", 2)[1]
+                    if _syn_raw.startswith("json"):
+                        _syn_raw = _syn_raw[4:]
+                    _syn_raw = _syn_raw.rsplit("```", 1)[0]
+                _synthesis = json.loads(_syn_raw.strip())
+                log(f"✓ VoC synthesis: {len(_synthesis.get('top_pain_points', []))} pain points identified", "success", "reddit_voc")
+                if _synthesis.get("win_opportunity"):
+                    log(f"  Win opportunity: {_synthesis['win_opportunity'][:80]}", "info", "reddit_voc")
+            except Exception as _syn_e:
+                log(f"~ VoC synthesis partial: {_syn_e}", "missing", "reddit_voc")
 
-        reddit_posts = asyncio.run(_do_reddit())
-        log(f"✓ Found {len(reddit_posts)} Reddit discussions", "success", "reddit_voc")
-        if reddit_posts:
-            for _rp in reddit_posts[:3]:
-                log(f"  [{_rp['subreddit']}] {_rp['title'][:70]}", "info", "reddit_voc")
+        reddit_voc_data = {
+            "own_posts": _own_posts[:15],
+            "competitor_posts": {k: v[:10] for k, v in _comp_posts.items()},
+            "synthesis": _synthesis,
+            "queries_run": len(_search_targets),
+            "total_posts": _total_posts,
+        }
 
-        # Persist to onboard_jobs.reddit_voc
+        # Persist to onboard_jobs.reddit_voc (enriched competitive sweep)
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE onboard_jobs SET reddit_voc=%s::jsonb, updated_at=NOW() WHERE id=%s::uuid",
-                    (json.dumps(reddit_posts), job_id),
+                    (json.dumps(reddit_voc_data), job_id),
                 )
             conn.commit()
 

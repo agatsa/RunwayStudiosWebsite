@@ -801,6 +801,49 @@ def _check_auction(job_id: str, workspace_id: str, conn) -> dict:
         return []
 
 
+def _check_reddit_voc(job_id: str, workspace_id: str, conn) -> dict:
+    """Read competitive Reddit VoC sweep stored during onboarding."""
+    _log(job_id, "Checking Reddit Voice of Customer data...", source="reddit_voc")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT reddit_voc FROM onboard_jobs
+                WHERE workspace_id = %s AND status = 'complete'
+                  AND reddit_voc IS NOT NULL
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+        if not row or not row[0]:
+            _log(job_id, "~ Reddit VoC — no sweep data yet (runs during onboarding)", type_="missing", source="reddit_voc")
+            return {}
+
+        voc = row[0] if isinstance(row[0], dict) else {}
+        synthesis = voc.get("synthesis", {})
+        total_posts = voc.get("total_posts", 0)
+        queries_run = voc.get("queries_run", 0)
+        pain_points = synthesis.get("top_pain_points", [])
+        win_opp = synthesis.get("win_opportunity", "")
+
+        if not synthesis and not total_posts:
+            _log(job_id, "~ Reddit VoC — sweep ran but returned no posts", type_="missing", source="reddit_voc")
+            return {}
+
+        _log(job_id,
+             f"✓ Reddit VoC — {total_posts} posts across {queries_run} queries · {len(pain_points)} pain points · sentiment: {synthesis.get('category_sentiment', 'unknown')}",
+             type_="found", source="reddit_voc")
+        return voc
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _log(job_id, "~ Reddit VoC — error reading data", type_="missing", source="reddit_voc")
+        return {}
+
+
 def _check_workspace(job_id: str, workspace_id: str, conn) -> dict:
     """Get workspace profile (name, type, budget, brand URL)."""
     try:
@@ -1146,6 +1189,36 @@ def _build_strategy_prompt(intel: dict, directive: str = None, strategy_mode: st
             if wins:
                 lines.append(f"Love: {', '.join(wins[:8])}")
 
+    # Reddit VoC — competitive sweep
+    reddit_voc = intel.get("reddit_voc", {})
+    if reddit_voc:
+        synthesis = reddit_voc.get("synthesis", {})
+        pain_points = synthesis.get("top_pain_points", [])
+        unmet = synthesis.get("unmet_desires", [])
+        comp_weaknesses = synthesis.get("competitor_weaknesses", {})
+        win_opp = synthesis.get("win_opportunity", "")
+        total_posts = reddit_voc.get("total_posts", 0)
+        queries_run = reddit_voc.get("queries_run", 0)
+
+        if pain_points or unmet or comp_weaknesses:
+            lines.append(f"\n=== REDDIT VOICE OF CUSTOMER (Competitive Sweep — {total_posts} posts, {queries_run} brands) ===")
+            lines.append("IMPORTANT: These are real customer pain points from Reddit across this product category — not assumptions.")
+            if pain_points:
+                lines.append(f"Top Pain Points (whole category): {'; '.join(pain_points[:5])}")
+            if unmet:
+                lines.append(f"Unmet Customer Desires: {'; '.join(unmet[:3])}")
+            if synthesis.get("our_brand_sentiment"):
+                lines.append(f"Our Brand Sentiment on Reddit: {synthesis['our_brand_sentiment']}")
+            if synthesis.get("category_sentiment"):
+                lines.append(f"Category Sentiment: {synthesis['category_sentiment']}")
+            for comp_name, weaknesses in list(comp_weaknesses.items())[:4]:
+                if weaknesses:
+                    lines.append(f"  {comp_name} weaknesses (from Reddit): {'; '.join(weaknesses[:3])}")
+            if win_opp:
+                lines.append(f"Win Opportunity: {win_opp}")
+            lines.append("→ Use these pain points to write ad copy, landing page headlines, and email subject lines that resonate.")
+            lines.append("→ For each competitor weakness, recommend a specific action that makes us the obvious alternative.")
+
     # Auction insights
     auction = intel.get("auction_insights", [])
     if auction:
@@ -1198,6 +1271,7 @@ def run_full_strategy_job(
             organic = _check_organic(job_id, workspace_id, conn)
             comments = _check_comments(job_id, workspace_id, conn)
             auction_insights = _check_auction(job_id, workspace_id, conn)
+            reddit_voc = _check_reddit_voc(job_id, workspace_id, conn)
 
         # Count what's available
         sources_found = []
@@ -1206,7 +1280,7 @@ def run_full_strategy_job(
             "meta": meta, "google": google, "youtube": youtube,
             "yt_intel": yt_intel, "brand_intel": brand_intel, "lp_audit": lp_audit,
             "shopify": shopify, "email": email, "search_trends": search_trends,
-            "organic": organic, "comments": comments,
+            "organic": organic, "comments": comments, "reddit_voc": reddit_voc,
         }
         for k, v in intel_map.items():
             if v:
