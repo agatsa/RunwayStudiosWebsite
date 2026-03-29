@@ -716,7 +716,7 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
 
 def _run_youtube_chain(job_id, workspace_id, url, log, set_status):
     """YouTube chain: YT Competitor Discovery → YT Analysis + Growth Recipe."""
-    import asyncio
+    import re as _re
     import uuid as _uuid
     from services.agent_swarm.db import get_conn
     import importlib
@@ -726,6 +726,45 @@ def _run_youtube_chain(job_id, workspace_id, url, log, set_status):
 
     yt_job_id = str(_uuid.uuid4())
     try:
+        # ── Bug fix 3: Resolve channel ID and save to platform_connections ──
+        # Best source: preview_data already has the resolved channel_id from the YouTube API
+        channel_id = None
+        try:
+            with get_conn() as _pconn:
+                with _pconn.cursor() as _pcur:
+                    _pcur.execute(
+                        "SELECT preview_data FROM onboard_jobs WHERE id=%s::uuid",
+                        (job_id,),
+                    )
+                    _prow = _pcur.fetchone()
+            if _prow and _prow[0]:
+                _pd = _prow[0] if isinstance(_prow[0], dict) else json.loads(_prow[0])
+                channel_id = _pd.get("channel_id")
+        except Exception as _pe:
+            print(f"[onboard_chain] preview_data read failed: {_pe}")
+
+        # Fallback: extract from /channel/UCXXX URL directly
+        if not channel_id:
+            _m = _re.search(r"youtube\.com/channel/([A-Za-z0-9_\-]+)", url)
+            if _m:
+                channel_id = _m.group(1)
+
+        if channel_id:
+            log(f"Saving YouTube channel {channel_id} to workspace…", "info", "youtube")
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO platform_connections
+                               (id, workspace_id, platform, account_id, status, updated_at)
+                           VALUES (%s::uuid, %s::uuid, 'youtube', %s, 'active', NOW())
+                           ON CONFLICT (workspace_id, platform, account_id)
+                           DO UPDATE SET status='active', updated_at=NOW()""",
+                        (str(_uuid.uuid4()), workspace_id, channel_id),
+                    )
+                conn.commit()
+        else:
+            log("⚠ Could not extract channel ID from URL — discovery may find no seed channel", "missing", "youtube")
+
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -747,13 +786,8 @@ def _run_youtube_chain(job_id, workspace_id, url, log, set_status):
 
         yt_intel = importlib.import_module("services.agent_swarm.core.yt_intelligence")
 
-        # Phase 1: Discovery
-        with get_conn() as conn:
-            asyncio.run(yt_intel.run_discovery_phase(
-                job_id=yt_job_id,
-                workspace_id=workspace_id,
-                conn=conn,
-            ))
+        # Phase 1: Discovery — Bug fix 1+2: call directly (sync function, manages own conn)
+        yt_intel.run_discovery_phase(workspace_id=workspace_id, job_id=yt_job_id)
         log("✓ Competitor channels discovered", "success", "youtube")
 
         # Auto-confirm all discovered competitors
@@ -771,16 +805,11 @@ def _run_youtube_chain(job_id, workspace_id, url, log, set_status):
         confirmed_ids = [c.get("channel_id") for c in candidates if c.get("channel_id")]
         log(f"Auto-confirming {len(confirmed_ids)} YouTube competitor channels…", "info", "youtube")
 
-        # Phase 2: Deep Analysis
+        # Phase 2: Deep Analysis — Bug fix 1+2: call directly (sync function, manages own conn)
         log("Phase 2/2 — YouTube Deep Analysis + Growth Recipe", "phase", "youtube")
         log("─────────────────────────────────────────────────────────", "divider")
 
-        with get_conn() as conn:
-            asyncio.run(yt_intel.run_analysis_phase(
-                job_id=yt_job_id,
-                workspace_id=workspace_id,
-                conn=conn,
-            ))
+        yt_intel.run_analysis_phase(workspace_id=workspace_id, job_id=yt_job_id)
 
         log("✓ YouTube analysis + growth recipe complete!", "success", "youtube")
         set_status("complete", {"yt_job_id": yt_job_id})
