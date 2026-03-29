@@ -1,0 +1,57 @@
+name: Deploy Website to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '*.html'
+      - '*.svg'
+      - 'report/**'
+      - 'CNAME'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Collect website files
+        run: |
+          mkdir -p _site
+          # Copy all HTML pages
+          cp *.html _site/ 2>/dev/null || true
+          # Copy static assets
+          cp favicon.svg _site/ 2>/dev/null || true
+          cp CNAME _site/ 2>/dev/null || true
+          # Copy report subdirectory
+          cp -r report _site/ 2>/dev/null || true
+          # Ensure .nojekyll exists
+          touch _site/.nojekyll
+          echo "Files deployed:"
+          ls -la _site/
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '_site'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
