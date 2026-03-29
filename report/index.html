@@ -387,15 +387,15 @@
     scoreEl.textContent = score;
     scoreEl.className = 'kpi-value ' + gradeClass(score);
 
-    const mob = r.pagespeed_mobile || 0;
+    const mob = r.pagespeed_mobile != null ? r.pagespeed_mobile : null;
     const mobEl = document.getElementById('kpi-speed-mob');
-    mobEl.textContent = mob || '—';
-    mobEl.className = 'kpi-value ' + gradeClass(mob);
+    mobEl.textContent = mob != null ? mob : '—';
+    mobEl.className = 'kpi-value ' + (mob != null ? gradeClass(mob) : '');
 
-    const desk = r.pagespeed_desktop || 0;
+    const desk = r.pagespeed_desktop != null ? r.pagespeed_desktop : null;
     const deskEl = document.getElementById('kpi-speed-desk');
-    deskEl.textContent = desk || '—';
-    deskEl.className = 'kpi-value ' + gradeClass(desk);
+    deskEl.textContent = desk != null ? desk : '—';
+    deskEl.className = 'kpi-value ' + (desk != null ? gradeClass(desk) : '');
 
     const load = r.load_ms_mobile;
     const loadEl = document.getElementById('kpi-load');
@@ -422,14 +422,14 @@
 
     // Speed bars
     setTimeout(() => {
-      document.getElementById('speed-bar-mob').style.width = mob + '%';
-      document.getElementById('speed-bar-mob').style.background = mob >= 70 ? '#16a34a' : mob >= 50 ? '#d97706' : '#dc2626';
-      document.getElementById('speed-bar-desk').style.width = desk + '%';
-      document.getElementById('speed-bar-desk').style.background = desk >= 70 ? '#16a34a' : desk >= 50 ? '#d97706' : '#dc2626';
-      document.getElementById('speed-mob-score').textContent = mob || '—';
-      document.getElementById('speed-mob-score').className = 'speed-score ' + gradeClass(mob);
-      document.getElementById('speed-desk-score').textContent = desk || '—';
-      document.getElementById('speed-desk-score').className = 'speed-score ' + gradeClass(desk);
+      document.getElementById('speed-bar-mob').style.width = (mob || 0) + '%';
+      document.getElementById('speed-bar-mob').style.background = mob == null ? '#e5e7eb' : mob >= 70 ? '#16a34a' : mob >= 50 ? '#d97706' : '#dc2626';
+      document.getElementById('speed-bar-desk').style.width = (desk || 0) + '%';
+      document.getElementById('speed-bar-desk').style.background = desk == null ? '#e5e7eb' : desk >= 70 ? '#16a34a' : desk >= 50 ? '#d97706' : '#dc2626';
+      document.getElementById('speed-mob-score').textContent = mob != null ? mob : '—';
+      document.getElementById('speed-mob-score').className = 'speed-score ' + (mob != null ? gradeClass(mob) : '');
+      document.getElementById('speed-desk-score').textContent = desk != null ? desk : '—';
+      document.getElementById('speed-desk-score').className = 'speed-score ' + (desk != null ? gradeClass(desk) : '');
     }, 300);
 
     // Issues
