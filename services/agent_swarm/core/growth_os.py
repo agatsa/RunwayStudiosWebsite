@@ -844,6 +844,147 @@ def _check_reddit_voc(job_id: str, workspace_id: str, conn) -> dict:
         return {}
 
 
+def _run_voc_sweep(job_id: str, workspace_id: str, brand_url: str, competitor_names: list) -> dict:
+    """
+    Run Reddit competitive VoC sweep inline.
+    Called by Growth OS when reddit_voc is missing — permanent auto-fix for all users.
+    Returns enriched voc dict (same format as onboard_chain stores).
+    Saves result back to onboard_jobs so future strategy runs skip this step.
+    """
+    import asyncio
+    import httpx
+    from urllib.parse import urlparse
+
+    _log(job_id, f"⚡ Running Reddit VoC sweep — {brand_url} + {len(competitor_names)} competitors...",
+         type_="auto_trigger", source="reddit_voc")
+
+    try:
+        # Build own brand query from domain name
+        _domain = urlparse(brand_url).netloc.replace("www.", "").split(".")[0]
+        _brand_q = _domain.strip().capitalize() if _domain else "brand"
+
+        _search_targets = [("own", _brand_q)] + [("competitor", name) for name in competitor_names[:4]]
+
+        async def _sweep():
+            results = {}
+            async with httpx.AsyncClient(
+                timeout=12,
+                headers={"User-Agent": "runway-studios-aria/1.0"},
+                follow_redirects=True,
+            ) as cli:
+                for idx, (kind, query) in enumerate(_search_targets):
+                    if idx > 0:
+                        await asyncio.sleep(1.5)
+                    try:
+                        r = await cli.get(
+                            "https://www.reddit.com/search.json",
+                            params={"q": query, "sort": "relevance", "limit": 20, "type": "link"},
+                        )
+                        posts = []
+                        if r.status_code == 200:
+                            for child in r.json().get("data", {}).get("children", []):
+                                p = child.get("data", {})
+                                posts.append({
+                                    "title": p.get("title", ""),
+                                    "subreddit": p.get("subreddit_name_prefixed", ""),
+                                    "score": p.get("score", 0),
+                                    "url": f"https://reddit.com{p.get('permalink', '')}",
+                                    "text_preview": (p.get("selftext") or "")[:300].strip(),
+                                    "num_comments": p.get("num_comments", 0),
+                                })
+                        results[query] = {"kind": kind, "posts": posts}
+                    except Exception:
+                        results[query] = {"kind": kind, "posts": []}
+            return results
+
+        raw = asyncio.run(_sweep())
+
+        own_posts = raw.get(_brand_q, {}).get("posts", [])
+        comp_posts = {k: v["posts"] for k, v in raw.items() if v.get("kind") == "competitor"}
+        total_posts = sum(len(v["posts"]) for v in raw.values())
+
+        _log(job_id, f"   ↳ {total_posts} posts fetched across {len(_search_targets)} queries", source="reddit_voc")
+
+        # Claude Haiku synthesis
+        synthesis = {}
+        if total_posts > 0:
+            try:
+                import anthropic as _anth
+                from services.agent_swarm.config import ANTHROPIC_API_KEY
+                _HAIKU = "claude-haiku-4-5-20251001"
+
+                digest = []
+                if own_posts:
+                    digest.append(f"=== Reddit posts about {_brand_q} (our brand) ===")
+                    for p in own_posts[:8]:
+                        digest.append(f"[{p['subreddit']}] {p['title']} | {p['text_preview'][:150]}")
+                for cname, cposts in comp_posts.items():
+                    if cposts:
+                        digest.append(f"\n=== Reddit posts about {cname} (competitor) ===")
+                        for p in cposts[:8]:
+                            digest.append(f"[{p['subreddit']}] {p['title']} | {p['text_preview'][:150]}")
+
+                resp = _anth.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
+                    model=_HAIKU,
+                    max_tokens=800,
+                    system="You are a market research analyst. Return ONLY valid JSON, no markdown.",
+                    messages=[{"role": "user", "content": (
+                        "Analyse these Reddit posts and return a JSON synthesis.\n\n"
+                        + "\n".join(digest[:60])
+                        + '\n\nReturn JSON with exactly these keys:\n'
+                        '{"top_pain_points":["pain 1","pain 2","pain 3","pain 4","pain 5"],'
+                        '"unmet_desires":["desire 1","desire 2","desire 3"],'
+                        '"competitor_weaknesses":{"CompetitorName":["weakness 1","weakness 2"]},'
+                        '"our_brand_sentiment":"positive|neutral|negative|not_mentioned",'
+                        '"category_sentiment":"positive|neutral|negative",'
+                        '"win_opportunity":"One sentence: what gap exists that our brand can own"}'
+                    )}],
+                )
+                syn_raw = resp.content[0].text.strip()
+                if syn_raw.startswith("```"):
+                    syn_raw = syn_raw.split("```", 2)[1]
+                    if syn_raw.startswith("json"):
+                        syn_raw = syn_raw[4:]
+                    syn_raw = syn_raw.rsplit("```", 1)[0]
+                synthesis = json.loads(syn_raw.strip())
+                _log(job_id,
+                     f"   ↳ VoC synthesis: {len(synthesis.get('top_pain_points', []))} pain points · win: {synthesis.get('win_opportunity', '')[:60]}",
+                     source="reddit_voc")
+            except Exception as e:
+                _log(job_id, f"   ↳ VoC synthesis partial: {e}", type_="warning", source="reddit_voc")
+
+        voc_data = {
+            "own_posts": own_posts[:15],
+            "competitor_posts": {k: v[:10] for k, v in comp_posts.items()},
+            "synthesis": synthesis,
+            "queries_run": len(_search_targets),
+            "total_posts": total_posts,
+        }
+
+        # Persist back to onboard_jobs so future Growth OS runs skip the sweep
+        try:
+            from services.agent_swarm.db import get_conn
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """UPDATE onboard_jobs SET reddit_voc=%s::jsonb, updated_at=NOW()
+                           WHERE workspace_id=%s AND id=(
+                               SELECT id FROM onboard_jobs WHERE workspace_id=%s
+                               ORDER BY updated_at DESC LIMIT 1
+                           )""",
+                        (json.dumps(voc_data), workspace_id, workspace_id),
+                    )
+                conn.commit()
+        except Exception:
+            pass  # persist failure is non-fatal — data is used in-memory this run
+
+        return voc_data
+
+    except Exception as e:
+        _log(job_id, f"   ↳ Reddit VoC sweep failed: {e}", type_="warning", source="reddit_voc")
+        return {}
+
+
 def _check_workspace(job_id: str, workspace_id: str, conn) -> dict:
     """Get workspace profile (name, type, budget, brand URL)."""
     try:
@@ -1357,6 +1498,20 @@ def run_full_strategy_job(
                         _log(job_id, "   ↳ LP audit in progress...", "trigger", "progress")
                 except Exception as e:
                     _log(job_id, f"   ↳ Could not auto-trigger LP audit: {e}", "trigger", "warning")
+
+            # Auto-run Reddit VoC sweep when missing (permanent fix — works for all users)
+            if not reddit_voc and brand_url:
+                if _is_cancelled(job_id):
+                    _log(job_id, "⛔ Job cancelled by user.", "cancelled", "cancelled")
+                    return
+                # Get competitor names from brand_intel (may have just been freshly gathered above)
+                _comp_names = [c["name"] for c in intel_map.get("brand_intel", {}).get("competitors", [])[:4] if c.get("name")]
+                reddit_voc = _run_voc_sweep(job_id, workspace_id, brand_url, _comp_names)
+                if reddit_voc:
+                    intel_map["reddit_voc"] = reddit_voc
+                    sources_found.append("reddit_voc")
+                    if "reddit_voc" in sources_missing:
+                        sources_missing.remove("reddit_voc")
 
         # ── Cancellation checkpoint before strategy generation ─────────────────
         if _is_cancelled(job_id):
