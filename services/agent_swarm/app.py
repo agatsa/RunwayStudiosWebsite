@@ -19569,8 +19569,13 @@ async def _run_free_analysis(domain: str, url: str):
         # 5. Top keywords — weight meta_desc most (most intentional copy), filter brand name words
         from services.agent_swarm.core.brand_intel import _extract_keywords as _ek
         import re as _re2
-        # Domain-derived words to exclude (e.g. "runway","studios" for runwaystudios.co)
+        # Domain-derived words to exclude — catches compound names like "runwaystudios" → "runway","studios"
+        _domain_bare = domain.lower().split(".")[0]  # e.g. "runwaystudios"
         domain_stop = set(_re2.findall(r"[a-z]{3,}", domain.lower()))
+        # Add ALL 4+ char substrings of bare domain so compound words get excluded too
+        for _si in range(len(_domain_bare)):
+            for _sj in range(_si + 4, len(_domain_bare) + 1):
+                domain_stop.add(_domain_bare[_si:_sj])
         kw_parts = []
         if signals.get("meta_desc"):kw_parts.append((signals["meta_desc"] + " ") * 8)
         if signals.get("h1"):       kw_parts.append((signals["h1"] + " ") * 4)
@@ -19578,6 +19583,7 @@ async def _run_free_analysis(domain: str, url: str):
         kw_parts.append(signals.get("page_text_snippet", "")[:400])
         keyword_source = " ".join(kw_parts)
         raw_kw = _ek(keyword_source) if keyword_source.strip() else []
+        # Exclude words in domain or that are substrings of domain base
         top_keywords = [w for w in raw_kw if w not in domain_stop][:8]
 
         # 6. Ad presence heuristic
