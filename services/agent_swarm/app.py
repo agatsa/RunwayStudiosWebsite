@@ -19599,7 +19599,7 @@ async def _run_free_analysis(domain: str, url: str):
         if signals.get("meta_desc"):kw_parts.append((signals["meta_desc"] + " ") * 8)
         if signals.get("h1"):       kw_parts.append((signals["h1"] + " ") * 4)
         if signals.get("title"):    kw_parts.append((signals["title"] + " ") * 2)
-        kw_parts.append(signals.get("page_text_snippet", "")[:800])
+        kw_parts.append(signals.get("page_text_snippet", ""))
         keyword_source = " ".join(kw_parts)
         raw_kw = _ek(keyword_source, n=20) if keyword_source.strip() else []
         # Common sentence-structure words that aren't topic keywords
