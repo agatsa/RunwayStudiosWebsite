@@ -16766,7 +16766,8 @@ import time as _time
 PLAN_MEMBER_LIMITS: dict = {"free": 1, "starter": 3, "growth": 999}
 
 def _get_member_limit(plan: str) -> int:
-    return PLAN_MEMBER_LIMITS.get(plan, 1)
+    # Unknown plan names (e.g. legacy "agency" workspace type stored in plan col) → unlimited
+    return PLAN_MEMBER_LIMITS.get(plan, 999)
 
 def _workspace_plan(conn, workspace_id: str) -> str:
     """Return the billing plan for a workspace's org."""
