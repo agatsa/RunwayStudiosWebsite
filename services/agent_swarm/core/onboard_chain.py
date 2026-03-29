@@ -492,7 +492,7 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
                     return _posts
             return []
 
-        reddit_posts = asyncio.run(_do_reddit())
+        reddit_posts = await _do_reddit()
         log(f"✓ Found {len(reddit_posts)} Reddit discussions", "success", "reddit_voc")
         if reddit_posts:
             for _rp in reddit_posts[:3]:
