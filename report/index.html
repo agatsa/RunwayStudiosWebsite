@@ -243,9 +243,9 @@
       <div class="kpi-sub">conversion buttons</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">Ads Running</div>
+      <div class="kpi-label">Tracking Pixels</div>
       <div class="kpi-value" id="kpi-ads">—</div>
-      <div class="kpi-sub">Meta/Google pixels</div>
+      <div class="kpi-sub" id="kpi-ads-sub">Meta / Google</div>
     </div>
   </div>
 
@@ -406,8 +406,10 @@
     loadEl.className = 'kpi-value ' + (load < 2000 ? 'kpi-good' : load < 4000 ? 'kpi-warn' : 'kpi-bad');
 
     document.getElementById('kpi-cta').textContent = r.cta_count != null ? r.cta_count : '—';
-    document.getElementById('kpi-ads').textContent = r.ad_presence ? 'Yes' : 'No';
-    document.getElementById('kpi-ads').className = 'kpi-value ' + (r.ad_presence ? 'kpi-good' : 'kpi-warn');
+    const pixelLabel = r.pixel_label || (r.ad_presence ? 'Found' : 'None');
+    document.getElementById('kpi-ads').textContent = pixelLabel;
+    document.getElementById('kpi-ads').className = 'kpi-value ' + (r.pixel_detected || r.ad_presence ? 'kpi-good' : 'kpi-warn');
+    if (r.pixel_label) document.getElementById('kpi-ads-sub').textContent = r.pixel_detected ? 'Tracking pixels found' : 'No pixels detected';
 
     // Keywords
     const kw = r.top_keywords || [];

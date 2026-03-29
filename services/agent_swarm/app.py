@@ -19599,7 +19599,7 @@ async def _run_free_analysis(domain: str, url: str):
         if signals.get("meta_desc"):kw_parts.append((signals["meta_desc"] + " ") * 8)
         if signals.get("h1"):       kw_parts.append((signals["h1"] + " ") * 4)
         if signals.get("title"):    kw_parts.append((signals["title"] + " ") * 2)
-        kw_parts.append(signals.get("page_text_snippet", "")[:400])
+        kw_parts.append(signals.get("page_text_snippet", "")[:800])
         keyword_source = " ".join(kw_parts)
         raw_kw = _ek(keyword_source, n=20) if keyword_source.strip() else []
         # Common sentence-structure words that aren't topic keywords
@@ -19612,8 +19612,12 @@ async def _run_free_analysis(domain: str, url: str):
         }
         top_keywords = [w for w in raw_kw if w not in domain_stop and w not in _kw_noise][:8]
 
-        # 6. Ad presence heuristic
-        ad_presence = bool(signals.get("has_trust_signals") or "fbq(" in html or "gtag(" in (html or ""))
+        # 6. Tracking pixel detection (pixels ≠ ads running)
+        pixel_meta = "fbq(" in (html or "") or "connect.facebook.net" in (html or "")
+        pixel_google = "gtag(" in (html or "") or "googletagmanager.com" in (html or "")
+        pixel_detected = pixel_meta or pixel_google
+        pixel_label = ("Meta+Google" if pixel_meta and pixel_google
+                       else "Meta" if pixel_meta else "Google" if pixel_google else "None")
 
         # 7. Competitive score (LP score + speed bonus)
         speed_bonus = 10 if (pagespeed_mobile or 0) >= 70 else (5 if (pagespeed_mobile or 0) >= 50 else 0)
@@ -19633,7 +19637,8 @@ async def _run_free_analysis(domain: str, url: str):
             "pagespeed_estimated": pagespeed_estimated,
             "top_keywords": top_keywords,
             "tech_stack": tech_stack,
-            "ad_presence": ad_presence,
+            "pixel_detected": pixel_detected,
+            "pixel_label": pixel_label,
             "cta_count": signals.get("cta_count", 0),
             "price_visible": signals.get("price_visible", False),
             "has_reviews": signals.get("has_reviews", False),
