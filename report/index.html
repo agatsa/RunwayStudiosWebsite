@@ -225,12 +225,12 @@
     <div class="kpi-card">
       <div class="kpi-label">Mobile Speed</div>
       <div class="kpi-value" id="kpi-speed-mob">—</div>
-      <div class="kpi-sub">PageSpeed score</div>
+      <div class="kpi-sub" id="kpi-speed-mob-sub">PageSpeed score</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-label">Desktop Speed</div>
       <div class="kpi-value" id="kpi-speed-desk">—</div>
-      <div class="kpi-sub">PageSpeed score</div>
+      <div class="kpi-sub" id="kpi-speed-desk-sub">PageSpeed score</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-label">Load Time</div>
@@ -388,14 +388,17 @@
     scoreEl.className = 'kpi-value ' + gradeClass(score);
 
     const mob = r.pagespeed_mobile != null ? r.pagespeed_mobile : null;
+    const est = r.pagespeed_estimated || false;
     const mobEl = document.getElementById('kpi-speed-mob');
     mobEl.textContent = mob != null ? mob : '—';
     mobEl.className = 'kpi-value ' + (mob != null ? gradeClass(mob) : '');
+    if (est && mob != null) document.getElementById('kpi-speed-mob-sub').textContent = 'Est. from load time';
 
     const desk = r.pagespeed_desktop != null ? r.pagespeed_desktop : null;
     const deskEl = document.getElementById('kpi-speed-desk');
     deskEl.textContent = desk != null ? desk : '—';
     deskEl.className = 'kpi-value ' + (desk != null ? gradeClass(desk) : '');
+    if (est && desk != null) document.getElementById('kpi-speed-desk-sub').textContent = 'Est. from load time';
 
     const load = r.load_ms_mobile;
     const loadEl = document.getElementById('kpi-load');
@@ -421,9 +424,13 @@
     }
 
     // Speed note
-    if (mob == null && desk == null) {
-      const noteEl = document.getElementById('speed-note');
-      if (noteEl) noteEl.textContent = 'PageSpeed data unavailable (Google API rate limit). Your load time above is measured directly.';
+    const noteEl = document.getElementById('speed-note');
+    if (noteEl) {
+      if (est) {
+        noteEl.textContent = 'Score estimated from measured load time (Google PageSpeed API rate-limited on server IPs). Add a free API key for real Lighthouse scores.';
+      } else if (mob == null && desk == null) {
+        noteEl.textContent = 'PageSpeed data unavailable. Your load time above is measured directly.';
+      }
     }
 
     // Speed bars
@@ -432,9 +439,9 @@
       document.getElementById('speed-bar-mob').style.background = mob == null ? '#e5e7eb' : mob >= 70 ? '#16a34a' : mob >= 50 ? '#d97706' : '#dc2626';
       document.getElementById('speed-bar-desk').style.width = (desk || 0) + '%';
       document.getElementById('speed-bar-desk').style.background = desk == null ? '#e5e7eb' : desk >= 70 ? '#16a34a' : desk >= 50 ? '#d97706' : '#dc2626';
-      document.getElementById('speed-mob-score').textContent = mob != null ? mob : '—';
+      document.getElementById('speed-mob-score').textContent = mob != null ? (est ? mob + '*' : mob) : '—';
       document.getElementById('speed-mob-score').className = 'speed-score ' + (mob != null ? gradeClass(mob) : '');
-      document.getElementById('speed-desk-score').textContent = desk != null ? desk : '—';
+      document.getElementById('speed-desk-score').textContent = desk != null ? (est ? desk + '*' : desk) : '—';
       document.getElementById('speed-desk-score').className = 'speed-score ' + (desk != null ? gradeClass(desk) : '');
     }, 300);
 

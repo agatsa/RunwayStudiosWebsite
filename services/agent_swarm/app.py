@@ -19537,14 +19537,22 @@ async def _run_free_analysis(domain: str, url: str):
         # 2. Tech stack
         tech_stack = _detect_tech_stack(html) if html else []
 
-        # 3. Google PageSpeed (free, no key) — None = unavailable, 0 = actual score
+        # 3. Google PageSpeed — try with API key first, then anonymous, then estimate from load time
         pagespeed_mobile = None
         pagespeed_desktop = None
+        pagespeed_estimated = False
         _ps_base = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
         _ps_fields = "lighthouseResult.categories.performance.score"
+        _ps_key = ""
+        try:
+            from services.agent_swarm.config import PAGESPEED_API_KEY as _psk
+            _ps_key = _psk or ""
+        except Exception:
+            pass
+        _ps_key_param = f"&key={_ps_key}" if _ps_key else ""
         try:
             async with _httpx.AsyncClient(timeout=25) as c:
-                rm = await c.get(f"{_ps_base}?url={url}&strategy=mobile&fields={_ps_fields}")
+                rm = await c.get(f"{_ps_base}?url={url}&strategy=mobile&fields={_ps_fields}{_ps_key_param}")
                 if rm.status_code == 200:
                     score_raw = rm.json().get("lighthouseResult", {}).get("categories", {}).get("performance", {}).get("score")
                     if score_raw is not None:
@@ -19553,13 +19561,24 @@ async def _run_free_analysis(domain: str, url: str):
             pass
         try:
             async with _httpx.AsyncClient(timeout=25) as c:
-                rd = await c.get(f"{_ps_base}?url={url}&strategy=desktop&fields={_ps_fields}")
+                rd = await c.get(f"{_ps_base}?url={url}&strategy=desktop&fields={_ps_fields}{_ps_key_param}")
                 if rd.status_code == 200:
                     score_raw = rd.json().get("lighthouseResult", {}).get("categories", {}).get("performance", {}).get("score")
                     if score_raw is not None:
                         pagespeed_desktop = int(score_raw * 100)
         except Exception:
             pass
+        # If API unavailable, estimate score from measured load time
+        if pagespeed_mobile is None and load_m:
+            pagespeed_estimated = True
+            pagespeed_mobile = (90 if load_m<=1500 else 80 if load_m<=2500 else 70 if load_m<=3000
+                                else 60 if load_m<=4000 else 50 if load_m<=5000
+                                else 40 if load_m<=7000 else 25 if load_m<=10000 else 10)
+        if pagespeed_desktop is None and load_d:
+            pagespeed_estimated = True
+            pagespeed_desktop = (90 if load_d<=1500 else 80 if load_d<=2500 else 70 if load_d<=3000
+                                 else 60 if load_d<=4000 else 50 if load_d<=5000
+                                 else 40 if load_d<=7000 else 25 if load_d<=10000 else 10)
 
         # 4. Brand name from title/domain
         brand_name = signals.get("title", "").split("|")[0].split("-")[0].split("–")[0].strip()
@@ -19611,6 +19630,7 @@ async def _run_free_analysis(domain: str, url: str):
             "load_ms_desktop": load_d,
             "pagespeed_mobile": pagespeed_mobile,
             "pagespeed_desktop": pagespeed_desktop,
+            "pagespeed_estimated": pagespeed_estimated,
             "top_keywords": top_keywords,
             "tech_stack": tech_stack,
             "ad_presence": ad_presence,

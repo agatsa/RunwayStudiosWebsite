@@ -102,6 +102,9 @@ RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
 # ── Admin (dashboard super-admin) ──────────────────────────
 ADMIN_EMAILS = os.getenv("ADMIN_EMAILS", "")  # comma-separated email list
 
+# ── Google PageSpeed Insights (optional) ───────────────────
+PAGESPEED_API_KEY = os.getenv("PAGESPEED_API_KEY", "")  # free key removes rate limit
+
 # ── Email Marketing (Resend) ────────────────────────────────
 RESEND_API_KEY        = os.getenv("RESEND_API_KEY", "")
 RESEND_WEBHOOK_SECRET = os.getenv("RESEND_WEBHOOK_SECRET", "")
