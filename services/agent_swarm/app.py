@@ -19537,43 +19537,48 @@ async def _run_free_analysis(domain: str, url: str):
         # 2. Tech stack
         tech_stack = _detect_tech_stack(html) if html else []
 
-        # 3. Google PageSpeed (free, no key)
-        pagespeed_mobile = 0
-        pagespeed_desktop = 0
+        # 3. Google PageSpeed (free, no key) — None = unavailable, 0 = actual score
+        pagespeed_mobile = None
+        pagespeed_desktop = None
+        _ps_base = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
+        _ps_fields = "lighthouseResult.categories.performance.score"
         try:
-            ps_url = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url={url}&strategy=mobile&fields=lighthouseResult.categories.performance.score"
-            async with _httpx.AsyncClient(timeout=15) as c:
-                r = await c.get(ps_url)
-                if r.status_code == 200:
-                    ps_data = r.json()
-                    pagespeed_mobile = int((ps_data.get("lighthouseResult", {}).get("categories", {}).get("performance", {}).get("score", 0) or 0) * 100)
+            async with _httpx.AsyncClient(timeout=25) as c:
+                rm = await c.get(f"{_ps_base}?url={url}&strategy=mobile&fields={_ps_fields}")
+                if rm.status_code == 200:
+                    score_raw = rm.json().get("lighthouseResult", {}).get("categories", {}).get("performance", {}).get("score")
+                    if score_raw is not None:
+                        pagespeed_mobile = int(score_raw * 100)
         except Exception:
             pass
         try:
-            ps_url2 = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url={url}&strategy=desktop&fields=lighthouseResult.categories.performance.score"
-            async with _httpx.AsyncClient(timeout=15) as c:
-                r2 = await c.get(ps_url2)
-                if r2.status_code == 200:
-                    ps_data2 = r2.json()
-                    pagespeed_desktop = int((ps_data2.get("lighthouseResult", {}).get("categories", {}).get("performance", {}).get("score", 0) or 0) * 100)
-        except Exception:
-            pass
+            async with _httpx.AsyncClient(timeout=25) as c:
+                rd = await c.get(f"{_ps_base}?url={url}&strategy=desktop&fields={_ps_fields}")
+                if rd.status_code == 200:
+                    score_raw = rd.json().get("lighthouseResult", {}).get("categories", {}).get("performance", {}).get("score")
+                    if score_raw is not None:
+                        pagespeed_desktop = int(score_raw * 100)
 
         # 4. Brand name from title/domain
         brand_name = signals.get("title", "").split("|")[0].split("-")[0].split("–")[0].strip()
         if not brand_name or len(brand_name) > 60:
             brand_name = domain.split(".")[0].title()
 
-        # 5. Top keywords from page text
+        # 5. Top keywords — weight title/H1/meta heavily (high intent), pad with body text
         from services.agent_swarm.core.brand_intel import _extract_keywords as _ek
-        page_text = signals.get("page_text_snippet", "")
-        top_keywords = _ek(page_text)[:7] if page_text else []
+        kw_parts = []
+        if signals.get("title"):    kw_parts.append((signals["title"] + " ") * 6)
+        if signals.get("h1"):       kw_parts.append((signals["h1"] + " ") * 6)
+        if signals.get("meta_desc"):kw_parts.append((signals["meta_desc"] + " ") * 4)
+        kw_parts.append(signals.get("page_text_snippet", "")[:600])
+        keyword_source = " ".join(kw_parts)
+        top_keywords = _ek(keyword_source)[:8] if keyword_source.strip() else []
 
         # 6. Ad presence heuristic
         ad_presence = bool(signals.get("has_trust_signals") or "fbq(" in html or "gtag(" in (html or ""))
 
         # 7. Competitive score (LP score + speed bonus)
-        speed_bonus = 10 if pagespeed_mobile >= 70 else (5 if pagespeed_mobile >= 50 else 0)
+        speed_bonus = 10 if (pagespeed_mobile or 0) >= 70 else (5 if (pagespeed_mobile or 0) >= 50 else 0)
         competitive_score = min(100, score + speed_bonus)
 
         result = {

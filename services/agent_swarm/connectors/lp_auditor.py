@@ -33,10 +33,19 @@ _UA_MOBILE  = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKi
 _UA_DESKTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 CTA_KEYWORDS = [
+    # E-commerce
     "buy", "shop", "order", "pre-book", "add to cart", "checkout",
     "book now", "buy now", "get it now", "purchase", "claim", "grab",
+    "get yours", "add to bag",
+    # SaaS / tools / lead-gen
     "get started", "try free", "start free", "sign up", "subscribe",
-    "get yours", "add to bag", "enquire", "book a demo", "get quote",
+    "enquire", "book a demo", "get quote", "book a call", "schedule demo",
+    "watch demo", "request demo", "see how", "request access",
+    "analyse", "analyze", "start now", "try now", "free trial",
+    "get access", "join free", "create account", "register free",
+    "get free", "start today", "join now", "download free",
+    "see pricing", "view plans", "get report", "run report",
+    "explore", "discover", "learn more", "find out",
 ]
 
 PRICE_PATTERN = re.compile(r'[₹$€£]\s*[\d,]+|[\d,]+\s*(?:rs|inr|usd)', re.IGNORECASE)
@@ -95,9 +104,17 @@ def _extract_signals(html: str) -> dict:
     for tag in soup.find_all(["button", "a", "input"]):
         text = tag.get_text(strip=True).lower()
         tag_text = tag.get_text(strip=True)
-        if not text:
+        if not text or len(text) > 80:
             continue
-        if any(kw in text for kw in CTA_KEYWORDS):
+        # Match by keyword OR by visual CTA signals (btn class, onclick, arrow)
+        classes = " ".join(tag.get("class", [])).lower()
+        has_btn_class = any(c in classes for c in ["btn", "cta", "button", "primary", "action"])
+        has_onclick = bool(tag.get("onclick") or tag.get("data-action"))
+        has_arrow = "→" in tag_text or "->" in tag_text
+        if (any(kw in text for kw in CTA_KEYWORDS)
+                or (has_btn_class and len(text) < 40)
+                or (has_onclick and len(text) < 40)
+                or (has_arrow and len(text) < 40)):
             ctas.append({"text": tag_text[:60], "tag": tag.name})
         if len(ctas) >= 10:
             break
