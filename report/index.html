@@ -152,7 +152,7 @@
 <nav>
   <a href="https://runwaystudios.co" class="nav-logo">Runway Studios</a>
   <span class="nav-domain" id="nav-domain">runwaystudios.co</span>
-  <a href="https://app.runwaystudios.co/onboard" class="nav-cta">Get Full Report →</a>
+  <a href="https://app.runwaystudios.co/onboard" class="nav-cta" id="nav-full-cta">Get Full Report →</a>
 </nav>
 
 <!-- Loading state -->
@@ -204,7 +204,7 @@
     </div>
     <div class="score-actions">
       <button class="btn-outline" onclick="shareReport()">Share Report</button>
-      <a href="https://app.runwaystudios.co/onboard" class="btn-primary">Full Analysis →</a>
+      <a href="https://app.runwaystudios.co/onboard" class="btn-primary" id="score-full-cta">Full Analysis →</a>
     </div>
   </div>
 
@@ -306,7 +306,7 @@
       <span class="gate-feat">YouTube Intelligence</span>
       <span class="gate-feat">Landing page recommendations</span>
     </div>
-    <a href="https://app.runwaystudios.co/onboard" class="gate-cta">Get Full Analysis Free →</a>
+    <a href="https://app.runwaystudios.co/onboard" class="gate-cta" id="gate-full-cta">Get Full Analysis Free →</a>
     <p class="gate-note">No credit card. Free plan includes 50 credits — enough for a full brand analysis.</p>
   </div>
 
@@ -475,10 +475,19 @@
     }
   }
 
+  function updateCtaLinks(domain) {
+    const url = 'https://app.runwaystudios.co/onboard?url=' + encodeURIComponent(domain);
+    ['nav-full-cta','score-full-cta','gate-full-cta'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.href = url;
+    });
+  }
+
   async function startAnalysis(domain) {
     _domain = domain;
     document.getElementById('loading-domain').textContent = domain;
     document.getElementById('nav-domain').textContent = domain;
+    updateCtaLinks(domain);
     setStep(0);
     try {
       const r = await fetch(`${_API}/public/analyze?domain=${encodeURIComponent(domain)}`);
