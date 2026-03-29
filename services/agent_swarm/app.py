@@ -19558,6 +19558,8 @@ async def _run_free_analysis(domain: str, url: str):
                     score_raw = rd.json().get("lighthouseResult", {}).get("categories", {}).get("performance", {}).get("score")
                     if score_raw is not None:
                         pagespeed_desktop = int(score_raw * 100)
+        except Exception:
+            pass
 
         # 4. Brand name from title/domain
         brand_name = signals.get("title", "").split("|")[0].split("-")[0].split("–")[0].strip()
