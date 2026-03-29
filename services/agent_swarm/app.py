@@ -19582,7 +19582,7 @@ async def _run_free_analysis(domain: str, url: str):
         if signals.get("title"):    kw_parts.append((signals["title"] + " ") * 2)
         kw_parts.append(signals.get("page_text_snippet", "")[:400])
         keyword_source = " ".join(kw_parts)
-        raw_kw = _ek(keyword_source) if keyword_source.strip() else []
+        raw_kw = _ek(keyword_source, n=20) if keyword_source.strip() else []
         # Common sentence-structure words that aren't topic keywords
         _kw_noise = {
             "stop","stops","gives","given","guessing","guess","across","within",
