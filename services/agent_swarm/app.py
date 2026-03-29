@@ -19566,15 +19566,19 @@ async def _run_free_analysis(domain: str, url: str):
         if not brand_name or len(brand_name) > 60:
             brand_name = domain.split(".")[0].title()
 
-        # 5. Top keywords — weight title/H1/meta heavily (high intent), pad with body text
+        # 5. Top keywords — weight meta_desc most (most intentional copy), filter brand name words
         from services.agent_swarm.core.brand_intel import _extract_keywords as _ek
+        import re as _re2
+        # Domain-derived words to exclude (e.g. "runway","studios" for runwaystudios.co)
+        domain_stop = set(_re2.findall(r"[a-z]{3,}", domain.lower()))
         kw_parts = []
-        if signals.get("title"):    kw_parts.append((signals["title"] + " ") * 6)
-        if signals.get("h1"):       kw_parts.append((signals["h1"] + " ") * 6)
-        if signals.get("meta_desc"):kw_parts.append((signals["meta_desc"] + " ") * 4)
-        kw_parts.append(signals.get("page_text_snippet", "")[:600])
+        if signals.get("meta_desc"):kw_parts.append((signals["meta_desc"] + " ") * 8)
+        if signals.get("h1"):       kw_parts.append((signals["h1"] + " ") * 4)
+        if signals.get("title"):    kw_parts.append((signals["title"] + " ") * 2)
+        kw_parts.append(signals.get("page_text_snippet", "")[:400])
         keyword_source = " ".join(kw_parts)
-        top_keywords = _ek(keyword_source)[:8] if keyword_source.strip() else []
+        raw_kw = _ek(keyword_source) if keyword_source.strip() else []
+        top_keywords = [w for w in raw_kw if w not in domain_stop][:8]
 
         # 6. Ad presence heuristic
         ad_presence = bool(signals.get("has_trust_signals") or "fbq(" in html or "gtag(" in (html or ""))
