@@ -19628,7 +19628,7 @@ async def _run_free_analysis(domain: str, url: str):
 
 
 @app.get("/public/analyze")
-async def public_analyze(request: Request, background_tasks: BackgroundTasks, domain: str = None):
+async def public_analyze(request: Request, background_tasks: BackgroundTasks, domain: str = None, force: bool = False):
     """
     Public (no auth) URL analysis trigger.
     Returns immediately with status='pending' or cached result if available.
@@ -19656,7 +19656,7 @@ async def public_analyze(request: Request, background_tasks: BackgroundTasks, do
         # Use cache if completed within last 24h
         import datetime as _dt
         age_h = ((_dt.datetime.now(_dt.timezone.utc) - updated_at.replace(tzinfo=_dt.timezone.utc)).total_seconds() / 3600) if updated_at else 999
-        if status == "completed" and age_h < 24:
+        if status == "completed" and age_h < 24 and not force:
             return {"status": "completed", "domain": domain, "result": result if isinstance(result, dict) else {}}
         if status == "pending":
             return {"status": "pending", "domain": domain}
