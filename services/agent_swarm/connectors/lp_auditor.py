@@ -151,7 +151,7 @@ def _extract_signals(html: str) -> dict:
         "has_trust_signals": has_trust,
         "has_reviews": has_reviews,
         "has_guarantee": has_guarantee,
-        "page_text_snippet": page_text[:800],
+        "page_text_snippet": page_text[:800] + " " + page_text[len(page_text)//2:len(page_text)//2+600] + " " + page_text[-400:],
     }
 
 
