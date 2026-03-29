@@ -274,7 +274,7 @@
       <div class="speed-bar-wrap"><div class="speed-bar" id="speed-bar-desk" style="width:0%;background:#7c3aed"></div></div>
       <div class="speed-score" id="speed-desk-score">—</div>
     </div>
-    <p style="font-size:0.72rem;color:var(--gray-500);margin-top:0.5rem;">Source: Google PageSpeed Insights. Scores below 50 significantly hurt paid ad conversion rates.</p>
+    <p style="font-size:0.72rem;color:var(--gray-500);margin-top:0.5rem;" id="speed-note">Source: Google PageSpeed Insights. Scores below 50 significantly hurt paid ad conversion rates.</p>
   </div>
 
   <!-- Issues -->
@@ -418,6 +418,12 @@
       document.getElementById('tech-wrap').innerHTML = tech.map(t => `<span class="tech-chip">${t}</span>`).join('');
     } else {
       document.getElementById('tech-section').style.display = 'none';
+    }
+
+    // Speed note
+    if (mob == null && desk == null) {
+      const noteEl = document.getElementById('speed-note');
+      if (noteEl) noteEl.textContent = 'PageSpeed data unavailable (Google API rate limit). Your load time above is measured directly.';
     }
 
     // Speed bars
