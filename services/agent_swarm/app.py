@@ -928,17 +928,25 @@ async def list_workspaces(request: Request):
     clerk_user_id = request.headers.get("X-Clerk-User-Id", "").strip()
 
     if clerk_user_id:
-        # User-scoped: only return workspaces belonging to this Clerk user's org
+        # User-scoped: owned workspaces (owner) UNION member workspaces
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """SELECT w.id, w.name, w.store_url, w.store_platform, w.active,
-                              w.workspace_type, w.onboarding_complete, w.onboarding_channels
+                              w.workspace_type, w.onboarding_complete, w.onboarding_channels,
+                              'owner' AS role, w.created_at
                        FROM workspaces w
                        JOIN organizations o ON o.id = w.org_id
                        WHERE o.clerk_user_id = %s AND w.active = TRUE
-                       ORDER BY w.created_at""",
-                    (clerk_user_id,),
+                       UNION
+                       SELECT w.id, w.name, w.store_url, w.store_platform, w.active,
+                              w.workspace_type, w.onboarding_complete, w.onboarding_channels,
+                              m.role, m.joined_at
+                       FROM workspaces w
+                       JOIN workspace_members m ON m.workspace_id = w.id
+                       WHERE m.clerk_user_id = %s AND w.active = TRUE
+                       ORDER BY created_at""",
+                    (clerk_user_id, clerk_user_id),
                 )
                 rows = cur.fetchall()
         workspaces = [
@@ -948,6 +956,7 @@ async def list_workspaces(request: Request):
                 "workspace_type": r[5] or "d2c",
                 "onboarding_complete": r[6] if r[6] is not None else False,
                 "onboarding_channels": r[7] or [],
+                "role": r[8] or "owner",
             }
             for r in rows
         ]
@@ -12078,6 +12087,35 @@ async def admin_migrate(request: Request):
         # v33b — Extra columns on onboard_jobs for enriched scan data
         "ALTER TABLE onboard_jobs ADD COLUMN IF NOT EXISTS reddit_voc JSONB",
         "ALTER TABLE onboard_jobs ADD COLUMN IF NOT EXISTS ad_keywords JSONB",
+
+        # v38b — Team members & invites
+        """CREATE TABLE IF NOT EXISTS workspace_members (
+            id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id  UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            clerk_user_id TEXT        NOT NULL,
+            email         TEXT        NOT NULL,
+            name          TEXT        DEFAULT '',
+            role          TEXT        NOT NULL DEFAULT 'member' CHECK (role IN ('admin','member','viewer')),
+            invited_by    TEXT        NOT NULL DEFAULT '',
+            joined_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(workspace_id, clerk_user_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_ws_members_ws  ON workspace_members(workspace_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ws_members_uid ON workspace_members(clerk_user_id)",
+        """CREATE TABLE IF NOT EXISTS workspace_invites (
+            id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            workspace_id UUID        NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            email        TEXT        NOT NULL,
+            role         TEXT        NOT NULL DEFAULT 'member',
+            token        TEXT        NOT NULL UNIQUE DEFAULT gen_random_uuid()::text,
+            invited_by   TEXT        NOT NULL DEFAULT '',
+            status       TEXT        NOT NULL DEFAULT 'pending',
+            expires_at   TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '7 days',
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(workspace_id, email)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_ws_invites_ws    ON workspace_invites(workspace_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ws_invites_token ON workspace_invites(token)",
     ]
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -16719,6 +16757,351 @@ async def workspace_create(request: Request):
 
 import hashlib as _hashlib
 import time as _time
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEAM MEMBERS & INVITES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+PLAN_MEMBER_LIMITS: dict = {"free": 1, "starter": 3, "growth": 999}
+
+def _get_member_limit(plan: str) -> int:
+    return PLAN_MEMBER_LIMITS.get(plan, 1)
+
+def _workspace_plan(conn, workspace_id: str) -> str:
+    """Return the billing plan for a workspace's org."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT o.plan FROM organizations o JOIN workspaces w ON w.org_id=o.id WHERE w.id=%s",
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+        return row[0] if row else "free"
+    except Exception:
+        return "free"
+
+def _assert_can_invite(conn, workspace_id: str):
+    """Raise 403 if the workspace is at its member limit."""
+    plan = _workspace_plan(conn, workspace_id)
+    limit = _get_member_limit(plan)
+    if limit >= 999:
+        return  # unlimited
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM workspace_members WHERE workspace_id=%s",
+            (workspace_id,),
+        )
+        current_members = cur.fetchone()[0]
+    # +1 for the owner
+    if current_members + 1 >= limit:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Member limit reached for {plan} plan ({limit} total). Upgrade to add more.",
+        )
+
+
+@app.post("/team/invite")
+async def team_invite(request: Request):
+    """Invite a member to a workspace by email.
+    Body: {workspace_id, email, role, inviter_name, workspace_name}
+    Requires X-Clerk-User-Id header (the inviting user).
+    """
+    body = await request.json()
+    workspace_id   = body.get("workspace_id", "").strip()
+    email          = body.get("email", "").strip().lower()
+    role           = body.get("role", "member").strip()
+    inviter_name   = body.get("inviter_name", "Your teammate").strip()
+    workspace_name = body.get("workspace_name", "Runway Studios").strip()
+    clerk_user_id  = request.headers.get("X-Clerk-User-Id", "").strip()
+
+    if not workspace_id or not email:
+        raise HTTPException(status_code=400, detail="workspace_id and email required")
+    if role not in ("admin", "member", "viewer"):
+        raise HTTPException(status_code=400, detail="role must be admin|member|viewer")
+    if not clerk_user_id:
+        raise HTTPException(status_code=401, detail="X-Clerk-User-Id required")
+
+    with get_conn() as conn:
+        # Verify invoker is owner or admin
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT o.clerk_user_id FROM organizations o JOIN workspaces w ON w.org_id=o.id WHERE w.id=%s",
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        is_owner = row[0] == clerk_user_id
+        if not is_owner:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT role FROM workspace_members WHERE workspace_id=%s AND clerk_user_id=%s",
+                    (workspace_id, clerk_user_id),
+                )
+                mrow = cur.fetchone()
+            if not mrow or mrow[0] not in ("admin",):
+                raise HTTPException(status_code=403, detail="Only owner or admin can invite members")
+
+        _assert_can_invite(conn, workspace_id)
+
+        # Upsert invite (reset if previously expired/re-invited)
+        import secrets as _sec
+        token = _sec.token_urlsafe(32)
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO workspace_invites (workspace_id, email, role, token, invited_by, status, expires_at)
+                   VALUES (%s, %s, %s, %s, %s, 'pending', NOW() + INTERVAL '7 days')
+                   ON CONFLICT (workspace_id, email)
+                   DO UPDATE SET role=%s, token=%s, invited_by=%s, status='pending',
+                                 expires_at=NOW() + INTERVAL '7 days', created_at=NOW()
+                   RETURNING token""",
+                (workspace_id, email, role, token, clerk_user_id, role, token, clerk_user_id),
+            )
+            token = cur.fetchone()[0]
+        conn.commit()
+
+    # Send email via Resend
+    try:
+        from services.agent_swarm.config import RESEND_API_KEY
+        if RESEND_API_KEY:
+            rc = _resend()
+            invite_url = f"https://app.runwaystudios.co/invite?token={token}"
+            html = f"""
+<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px 24px">
+  <div style="text-align:center;margin-bottom:28px">
+    <span style="font-size:22px;font-weight:700;color:#111">Runway Studios</span>
+  </div>
+  <h2 style="font-size:20px;color:#111;margin:0 0 12px">You've been invited</h2>
+  <p style="color:#444;line-height:1.6;margin:0 0 20px">
+    <strong>{inviter_name}</strong> has invited you to join
+    <strong>{workspace_name}</strong> on Runway Studios as a <strong>{role}</strong>.
+  </p>
+  <a href="{invite_url}" style="display:inline-block;background:#111;color:#fff;text-decoration:none;
+     padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px">
+    Accept Invitation
+  </a>
+  <p style="color:#888;font-size:12px;margin-top:28px">
+    This invitation expires in 7 days. If you weren't expecting this email, you can ignore it.
+  </p>
+</div>"""
+            rc.send_email(
+                to=email,
+                from_="Runway Studios <noreply@runwaystudios.co>",
+                subject=f"{inviter_name} invited you to {workspace_name}",
+                html=html,
+            )
+    except Exception as _e:
+        print(f"[team/invite] email send failed (non-fatal): {_e}")
+
+    return {"ok": True, "token": token, "email": email, "role": role}
+
+
+@app.get("/team/members")
+async def team_members(request: Request):
+    """List members + pending invites for a workspace."""
+    workspace_id  = request.query_params.get("workspace_id", "").strip()
+    clerk_user_id = request.headers.get("X-Clerk-User-Id", "").strip()
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, clerk_user_id, email, name, role, joined_at
+                   FROM workspace_members WHERE workspace_id=%s ORDER BY joined_at""",
+                (workspace_id,),
+            )
+            member_rows = cur.fetchall()
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, email, role, status, expires_at, created_at
+                   FROM workspace_invites
+                   WHERE workspace_id=%s AND status='pending' AND expires_at > NOW()
+                   ORDER BY created_at DESC""",
+                (workspace_id,),
+            )
+            invite_rows = cur.fetchall()
+        # Get owner info
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT o.clerk_user_id FROM organizations o JOIN workspaces w ON w.org_id=o.id WHERE w.id=%s",
+                (workspace_id,),
+            )
+            owner_row = cur.fetchone()
+        plan = _workspace_plan(conn, workspace_id)
+
+    members = [
+        {"id": str(r[0]), "clerk_user_id": r[1], "email": r[2],
+         "name": r[3] or "", "role": r[4], "joined_at": r[5].isoformat() if r[5] else None}
+        for r in member_rows
+    ]
+    invites = [
+        {"id": str(r[0]), "email": r[1], "role": r[2],
+         "status": r[3], "expires_at": r[4].isoformat() if r[4] else None,
+         "created_at": r[5].isoformat() if r[5] else None}
+        for r in invite_rows
+    ]
+    owner_clerk_id = owner_row[0] if owner_row else None
+    limit = _get_member_limit(plan)
+    total = len(members) + 1  # +1 for owner
+
+    return {
+        "members": members,
+        "invites": invites,
+        "owner_clerk_id": owner_clerk_id,
+        "plan": plan,
+        "member_limit": limit,
+        "total_used": total,
+        "can_invite": total < limit,
+    }
+
+
+@app.delete("/team/member/{member_id}")
+async def team_remove_member(member_id: str, request: Request):
+    """Remove a member from a workspace. Only owner can remove."""
+    clerk_user_id = request.headers.get("X-Clerk-User-Id", "").strip()
+    workspace_id  = request.query_params.get("workspace_id", "").strip()
+    if not clerk_user_id or not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id + X-Clerk-User-Id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT o.clerk_user_id FROM organizations o JOIN workspaces w ON w.org_id=o.id WHERE w.id=%s",
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+        if not row or row[0] != clerk_user_id:
+            raise HTTPException(status_code=403, detail="Only the workspace owner can remove members")
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM workspace_members WHERE id=%s::uuid AND workspace_id=%s", (member_id, workspace_id))
+        conn.commit()
+    return {"ok": True}
+
+
+@app.delete("/team/invite/{invite_id}")
+async def team_revoke_invite(invite_id: str, request: Request):
+    """Revoke a pending invite."""
+    clerk_user_id = request.headers.get("X-Clerk-User-Id", "").strip()
+    workspace_id  = request.query_params.get("workspace_id", "").strip()
+    if not clerk_user_id or not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id + X-Clerk-User-Id required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE workspace_invites SET status='revoked' WHERE id=%s::uuid AND workspace_id=%s",
+                (invite_id, workspace_id),
+            )
+        conn.commit()
+    return {"ok": True}
+
+
+@app.patch("/team/member/{member_id}/role")
+async def team_change_role(member_id: str, request: Request):
+    """Change a member's role. Only owner or admin can do this."""
+    body = await request.json()
+    new_role       = body.get("role", "").strip()
+    clerk_user_id  = request.headers.get("X-Clerk-User-Id", "").strip()
+    workspace_id   = body.get("workspace_id", "").strip()
+    if new_role not in ("admin", "member", "viewer"):
+        raise HTTPException(status_code=400, detail="role must be admin|member|viewer")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE workspace_members SET role=%s WHERE id=%s::uuid AND workspace_id=%s",
+                (new_role, member_id, workspace_id),
+            )
+        conn.commit()
+    return {"ok": True, "role": new_role}
+
+
+@app.get("/invite/info")
+async def invite_info(request: Request):
+    """Public — get invite details from token (no auth required)."""
+    token = request.query_params.get("token", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="token required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT i.id, i.workspace_id, i.email, i.role, i.status, i.expires_at,
+                          w.name AS workspace_name
+                   FROM workspace_invites i
+                   JOIN workspaces w ON w.id = i.workspace_id
+                   WHERE i.token = %s""",
+                (token,),
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    _id, ws_id, email, role, status, expires_at, ws_name = row
+    if status != "pending":
+        raise HTTPException(status_code=410, detail=f"Invite already {status}")
+    import datetime as _dt_inv
+    if expires_at and expires_at.replace(tzinfo=None) < _dt_inv.datetime.utcnow():
+        raise HTTPException(status_code=410, detail="Invite expired")
+    return {
+        "invite_id": str(_id),
+        "workspace_id": str(ws_id),
+        "workspace_name": ws_name,
+        "email": email,
+        "role": role,
+        "expires_at": expires_at.isoformat() if expires_at else None,
+    }
+
+
+@app.post("/invite/accept")
+async def invite_accept(request: Request):
+    """Accept an invite — links Clerk user to workspace.
+    Body: {token, clerk_user_id, email, name}
+    """
+    body = await request.json()
+    token         = body.get("token", "").strip()
+    clerk_user_id = body.get("clerk_user_id", "").strip()
+    email         = body.get("email", "").strip().lower()
+    name          = body.get("name", "").strip()
+    if not token or not clerk_user_id or not email:
+        raise HTTPException(status_code=400, detail="token, clerk_user_id, email required")
+
+    import datetime as _dt_acc
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, workspace_id, email, role, status, expires_at FROM workspace_invites WHERE token=%s",
+                (token,),
+            )
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Invite not found")
+        invite_id, workspace_id, invite_email, role, status, expires_at = row
+        if status != "pending":
+            raise HTTPException(status_code=410, detail=f"Invite already {status}")
+        if expires_at and expires_at.replace(tzinfo=None) < _dt_acc.datetime.utcnow():
+            raise HTTPException(status_code=410, detail="Invite expired")
+        if invite_email.lower() != email.lower():
+            raise HTTPException(status_code=403, detail="Email does not match invite")
+
+        # Create member row
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO workspace_members (workspace_id, clerk_user_id, email, name, role, invited_by)
+                   SELECT %s, %s, %s, %s, %s, invited_by FROM workspace_invites WHERE id=%s
+                   ON CONFLICT (workspace_id, clerk_user_id) DO UPDATE SET role=EXCLUDED.role, name=EXCLUDED.name""",
+                (workspace_id, clerk_user_id, email, name, role, invite_id),
+            )
+        # Mark invite accepted
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE workspace_invites SET status='accepted' WHERE id=%s",
+                (invite_id,),
+            )
+        conn.commit()
+
+    return {"ok": True, "workspace_id": str(workspace_id), "role": role}
 
 
 def _resend():

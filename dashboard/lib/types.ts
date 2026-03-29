@@ -9,6 +9,7 @@ export interface Workspace {
   workspace_type?: 'd2c' | 'creator' | 'saas' | 'agency' | 'media'
   onboarding_complete?: boolean
   onboarding_channels?: string[]
+  role?: 'owner' | 'admin' | 'member' | 'viewer'
 }
 
 // ── KPI / Dashboard ────────────────────────────────────────

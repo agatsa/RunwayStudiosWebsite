@@ -4,7 +4,9 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { toast } from 'sonner'
-import { CheckCircle, Link2, Trash2, Loader2, RefreshCw, ShoppingBag, Crown, Lock, Youtube, Building2, MonitorSmartphone } from 'lucide-react'
+import { CheckCircle, Link2, Trash2, Loader2, RefreshCw, ShoppingBag, Crown, Lock, Youtube, Building2, MonitorSmartphone, Users } from 'lucide-react'
+import TeamManager from './TeamManager'
+import { useWorkspace } from '@/components/layout/WorkspaceProvider'
 import MetaConnectDialog from './MetaConnectDialog'
 import GoogleConnectDialog from './GoogleConnectDialog'
 import GoogleAccountSelectDialog from './GoogleAccountSelectDialog'
@@ -143,6 +145,7 @@ function PlatformCard({
 }
 
 export default function SettingsView({ connections, workspaceId, workspaceName, googleConnected, googleError, googleOAuthConfigured = false, ga4PropertyId, ga4Connected = false, metaConnected, metaSession, metaError }: Props) {
+  const { currentRole } = useWorkspace()
   const [showMetaDialog, setShowMetaDialog] = useState(false)
   const [showGoogleDialog, setShowGoogleDialog] = useState(false)
   const [showYouTubeDialog, setShowYouTubeDialog] = useState(false)
@@ -530,6 +533,22 @@ export default function SettingsView({ connections, workspaceId, workspaceName, 
           onClose={() => setShowUpload(null)}
         />
       )}
+
+      {/* ── Team section ── */}
+      <section className="space-y-4">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <Users className="h-4 w-4 text-gray-400" />
+            <h2 className="text-base font-semibold text-gray-900">Team</h2>
+          </div>
+          <p className="text-sm text-gray-500">Manage who has access to this workspace.</p>
+        </div>
+        <TeamManager
+          workspaceId={workspaceId}
+          workspaceName={workspaceName}
+          currentRole={currentRole}
+        />
+      </section>
 
       {/* Plan gate upgrade modal */}
       {planGate && (

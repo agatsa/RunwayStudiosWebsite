@@ -17,6 +17,10 @@ interface WorkspaceContextValue {
   loading: boolean
   refresh: () => void
   openCreateWorkspace: () => void
+  /** Role of the current user in the current workspace */
+  currentRole: 'owner' | 'admin' | 'member' | 'viewer'
+  /** True if current user can approve actions / manage settings */
+  canManage: boolean
 }
 
 const WorkspaceContext = createContext<WorkspaceContextValue>({
@@ -26,6 +30,8 @@ const WorkspaceContext = createContext<WorkspaceContextValue>({
   loading: true,
   refresh: () => {},
   openCreateWorkspace: () => {},
+  currentRole: 'owner',
+  canManage: true,
 })
 
 export function useWorkspace() {
@@ -149,9 +155,12 @@ export default function WorkspaceProvider({ children }: { children: React.ReactN
     }
   }
 
+  const currentRole = (current?.role ?? 'owner') as 'owner' | 'admin' | 'member' | 'viewer'
+  const canManage = currentRole === 'owner' || currentRole === 'admin'
+
   return (
     <ChatProvider>
-    <WorkspaceContext.Provider value={{ workspaces, current, setCurrent, loading, refresh: load, openCreateWorkspace: () => setShowCreateWorkspace(true) }}>
+    <WorkspaceContext.Provider value={{ workspaces, current, setCurrent, loading, refresh: load, openCreateWorkspace: () => setShowCreateWorkspace(true), currentRole, canManage }}>
       {children}
 
       {/* Full-screen loading overlay — fixed so it covers everything, fades out when done */}
@@ -171,8 +180,8 @@ export default function WorkspaceProvider({ children }: { children: React.ReactN
           onCancel={() => setShowCreateWorkspace(false)}
         />
       )}
-      {/* Existing workspace needs onboarding */}
-      {!loading && workspaces.length > 0 && current && current.onboarding_complete === false && !showStepper && (
+      {/* Existing workspace needs onboarding — only show to owner, not invited members */}
+      {!loading && workspaces.length > 0 && current && current.onboarding_complete === false && !showStepper && currentRole === 'owner' && (
         <OnboardingModal workspaceId={current.id} onComplete={handleOnboardingComplete} />
       )}
       {/* Connect accounts stepper — shown after onboarding modal */}

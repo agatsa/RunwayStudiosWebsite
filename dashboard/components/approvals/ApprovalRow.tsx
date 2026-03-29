@@ -3,8 +3,9 @@
 import { useTransition, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { Check, X, Loader2, PauseCircle, Sparkles, MapPin, Hash, Target, Eye, Clock, Rocket } from 'lucide-react'
+import { Check, X, Loader2, PauseCircle, Sparkles, MapPin, Hash, Target, Eye, Clock, Rocket, Lock } from 'lucide-react'
 import type { ActionRow } from '@/lib/types'
+import { useWorkspace } from '@/components/layout/WorkspaceProvider'
 
 interface Props {
   action: ActionRow
@@ -197,6 +198,7 @@ function CampaignPlanDetail({
 export default function ApprovalRow({ action }: Props) {
   const [isPending, startTransition] = useTransition()
   const router = useRouter()
+  const { canManage } = useWorkspace()
 
   const meta = ACTION_META[action.action_type] ?? ACTION_META['review']
 
@@ -384,6 +386,13 @@ export default function ApprovalRow({ action }: Props) {
 
         {action.status === 'pending' ? (
           <div className="flex gap-3">
+            {!canManage && (
+              <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-2.5 text-sm text-gray-400">
+                <Lock className="h-4 w-4" />
+                Admin access required to approve
+              </div>
+            )}
+            {canManage && (
             <button
               onClick={() => respond('approve')}
               disabled={isPending}
@@ -394,6 +403,8 @@ export default function ApprovalRow({ action }: Props) {
                 ? (action.platform === 'google' ? 'Approve & Launch on Google' : 'Approve & Launch on Meta')
                 : 'Approve'}
             </button>
+            )}
+            {canManage && (
             <button
               onClick={() => respond('reject')}
               disabled={isPending}
@@ -402,6 +413,7 @@ export default function ApprovalRow({ action }: Props) {
               <X className="h-5 w-5" />
               Reject
             </button>
+            )}
           </div>
         ) : (
           <span className="text-sm text-gray-400">

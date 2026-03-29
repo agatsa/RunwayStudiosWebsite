@@ -10,6 +10,8 @@ const isPublicRoute = createRouteMatcher([
   '/api/google/oauth/callback(.*)',
   // Public email unsubscribe (token-based, no session needed)
   '/unsubscribe(.*)',
+  // Team invite landing page (user may not be logged in yet)
+  '/invite(.*)',
   // Internal debug route for email domain diagnosis
   '/api/email/domain/debug(.*)',
   // Onboarding funnel — publicly accessible, auth handled inside page
