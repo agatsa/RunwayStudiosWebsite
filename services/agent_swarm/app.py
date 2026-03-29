@@ -19583,8 +19583,15 @@ async def _run_free_analysis(domain: str, url: str):
         kw_parts.append(signals.get("page_text_snippet", "")[:400])
         keyword_source = " ".join(kw_parts)
         raw_kw = _ek(keyword_source) if keyword_source.strip() else []
-        # Exclude words in domain or that are substrings of domain base
-        top_keywords = [w for w in raw_kw if w not in domain_stop][:8]
+        # Common sentence-structure words that aren't topic keywords
+        _kw_noise = {
+            "stop","stops","gives","given","guessing","guess","across","within",
+            "between","through","using","make","makes","build","turn","turns",
+            "drive","drives","simply","easily","quickly","really","truly","actually",
+            "enables","ensures","allows","helps","based","platform","solution",
+            "every","always","never","often","start","take","work","works","just",
+        }
+        top_keywords = [w for w in raw_kw if w not in domain_stop and w not in _kw_noise][:8]
 
         # 6. Ad presence heuristic
         ad_presence = bool(signals.get("has_trust_signals") or "fbq(" in html or "gtag(" in (html or ""))
