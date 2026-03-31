@@ -778,6 +778,14 @@ def _run_website_chain(job_id, workspace_id, url, bi_job_id, directive, log, set
             set_status("complete", {"gos_job_id": gos_job_id})
         else:
             log("✓ Growth OS strategy complete!", "success", "growth_os")
+            # Deduct 50 credits on successful completion only
+            try:
+                from services.agent_swarm.app import _get_org_id_for_workspace, _deduct_credits_only
+                with get_conn() as _cc:
+                    _org = _get_org_id_for_workspace(_cc, workspace_id)
+                    _deduct_credits_only(_cc, _org, workspace_id, 50, "growth_os_bundle")
+            except Exception as _ce:
+                print(f"[onboard_chain] credit deduction warning (gos): {_ce}")
             set_status("complete", {"gos_job_id": gos_job_id})
 
     except Exception as e:
@@ -912,6 +920,16 @@ def _run_youtube_chain(job_id, workspace_id, url, log, set_status):
         yt_intel.run_analysis_phase(workspace_id=workspace_id, job_id=yt_job_id)
 
         log("✓ YouTube analysis + growth recipe complete!", "success", "youtube")
+
+        # Deduct 50 credits on successful completion only
+        try:
+            from services.agent_swarm.app import _get_org_id_for_workspace, _deduct_credits_only
+            with get_conn() as _cc:
+                _org = _get_org_id_for_workspace(_cc, workspace_id)
+                _deduct_credits_only(_cc, _org, workspace_id, 50, "youtube_intel_bundle")
+        except Exception as _ce:
+            print(f"[onboard_chain] credit deduction warning (yt): {_ce}")
+
         set_status("complete", {"yt_job_id": yt_job_id})
 
     except Exception as e:
