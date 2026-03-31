@@ -628,19 +628,31 @@ function OnboardPageInner() {
               <h1 className="text-2xl font-bold">Sign in to continue</h1>
               <p className="text-sm text-gray-400 mt-1">Create a free account to see your analysis for <strong className="text-white">{url}</strong></p>
             </div>
-            <div className="w-full">
+            <div className="flex justify-center w-full">
               <SignIn
                 forceRedirectUrl={`/onboard?url=${encodeURIComponent(url)}`}
                 signUpForceRedirectUrl={`/onboard?url=${encodeURIComponent(url)}`}
                 appearance={{
                   elements: {
-                    rootBox: 'w-full',
-                    card: 'rounded-2xl bg-gray-900 border border-gray-700 shadow-none',
-                    headerTitle: 'text-white',
-                    socialButtonsBlockButton: 'bg-gray-800 border border-gray-600 text-white hover:bg-gray-700',
-                    formFieldInput: 'bg-gray-800 border-gray-600 text-white',
-                    formButtonPrimary: 'bg-brand-600 hover:bg-brand-700',
-                    footerActionLink: 'text-brand-400',
+                    rootBox: 'mx-auto',
+                    card: 'rounded-2xl bg-white border border-gray-200 shadow-lg',
+                    headerTitle: 'text-gray-900 font-bold',
+                    headerSubtitle: 'text-gray-500',
+                    socialButtonsBlockButton: 'bg-white border border-gray-300 text-gray-800 hover:bg-gray-50',
+                    socialButtonsBlockButtonText: 'text-gray-800 font-medium',
+                    dividerLine: 'bg-gray-200',
+                    dividerText: 'text-gray-400',
+                    formFieldLabel: 'text-gray-700 font-medium',
+                    formFieldInput: 'bg-white border-gray-300 text-gray-900 placeholder-gray-400',
+                    formButtonPrimary: 'bg-violet-600 hover:bg-violet-700 text-white font-semibold',
+                    footerActionLink: 'text-violet-600 hover:text-violet-700',
+                    footerActionText: 'text-gray-500',
+                    identityPreviewText: 'text-gray-900',
+                    identityPreviewEditButton: 'text-violet-600',
+                    otpCodeFieldInput: 'bg-white border-gray-300 text-gray-900',
+                    formResendCodeLink: 'text-violet-600',
+                    alertText: 'text-red-600',
+                    formFieldErrorText: 'text-red-500',
                   }
                 }}
               />
