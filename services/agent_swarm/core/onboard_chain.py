@@ -859,8 +859,8 @@ def _run_youtube_chain(job_id, workspace_id, url, log, set_status):
             with conn.cursor() as cur:
                 cur.execute(
                     """INSERT INTO yt_analysis_jobs
-                           (id, workspace_id, status, phase)
-                       VALUES (%s::uuid, %s::uuid, 'pending', 'idle')""",
+                           (id, workspace_id, status, phase, discovery_status)
+                       VALUES (%s::uuid, %s::uuid, 'pending', 'idle', 'discovering')""",
                     (yt_job_id, workspace_id),
                 )
             conn.commit()
@@ -876,11 +876,12 @@ def _run_youtube_chain(job_id, workspace_id, url, log, set_status):
 
         yt_intel = importlib.import_module("services.agent_swarm.core.yt_intelligence")
 
-        # Phase 1: Discovery — Bug fix 1+2: call directly (sync function, manages own conn)
+        # Phase 1: Discovery — call directly (sync function, manages own conn)
         yt_intel.run_discovery_phase(workspace_id=workspace_id, job_id=yt_job_id)
         log("✓ Competitor channels discovered", "success", "youtube")
 
-        # Auto-confirm all discovered competitors
+        # Auto-confirm all discovered competitors and jump straight to 'analyzing'
+        # (skip awaiting_confirmation — no user confirmation step in onboard flow)
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -895,7 +896,16 @@ def _run_youtube_chain(job_id, workspace_id, url, log, set_status):
         confirmed_ids = [c.get("channel_id") for c in candidates if c.get("channel_id")]
         log(f"Auto-confirming {len(confirmed_ids)} YouTube competitor channels…", "info", "youtube")
 
-        # Phase 2: Deep Analysis — Bug fix 1+2: call directly (sync function, manages own conn)
+        # Immediately mark as 'analyzing' so frontend shows analysis in progress
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE yt_analysis_jobs SET discovery_status='analyzing', status='running' WHERE id=%s::uuid",
+                    (yt_job_id,),
+                )
+            conn.commit()
+
+        # Phase 2: Deep Analysis
         log("Phase 2/2 — YouTube Deep Analysis + Growth Recipe", "phase", "youtube")
         log("─────────────────────────────────────────────────────────", "divider")
 

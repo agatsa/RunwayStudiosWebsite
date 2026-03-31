@@ -455,14 +455,23 @@ export default function YouTubeCompetitorIntel({ workspaceId, autostart = false 
       if (d.discovery_status === 'awaiting_confirmation' && d.discovery_candidates?.length) {
         setConfirmedIds(d.discovery_candidates.map((c: DiscoveryCandidate) => c.channel_id))
       }
-      // Auto-start if coming from onboard and no analysis exists yet
+      if (d.discovery_status === 'analyzing') setAnalyzing(true)
+      // Auto-start: from onboard, job doesn't exist yet — poll for it before starting fresh
       if (triggerAutostartIfIdle && (!d.has_job || d.discovery_status === 'idle')) {
         setLoading(false)
-        // Kick off discovery automatically — backend may still be creating the job
-        // so retry once after 3 s before starting a fresh job
-        setTimeout(async () => {
+        // Backend may still be creating the job (race). Retry up to 3× before starting fresh.
+        let attempts = 0
+        const waitForJob = async () => {
+          attempts++
           const d2 = await get('discovery-status')
-          if (!d2?.has_job || d2?.discovery_status === 'idle') {
+          if (d2?.has_job && d2?.discovery_status !== 'idle') {
+            // Backend job appeared — show it
+            setDiscovery(d2)
+            if (d2.discovery_status === 'analyzing') setAnalyzing(true)
+          } else if (attempts < 3) {
+            setTimeout(waitForJob, 4000)
+          } else {
+            // No job after 12 s — start fresh
             setDiscovery({ has_job: true, job_id: null, discovery_status: 'discovering', discovery_log: [], discovery_candidates: [], own_topic_space: [] })
             const r = await fetch('/api/youtube/competitor-intel/analyze', {
               method: 'POST',
@@ -473,11 +482,9 @@ export default function YouTubeCompetitorIntel({ workspaceId, autostart = false 
               const j = await r.json()
               setJob({ job_id: j.job_id, status: 'pending', started_at: null, completed_at: null, channels_analyzed: 0, channels_total: 5, videos_analyzed: 0, error: null, phase: 'competitor_analysis' })
             }
-          } else {
-            setDiscovery(d2)
-            if (d2.discovery_status === 'analyzing') setAnalyzing(true)
           }
-        }, 3000)
+        }
+        setTimeout(waitForJob, 4000)
         return
       }
     }
@@ -570,7 +577,17 @@ export default function YouTubeCompetitorIntel({ workspaceId, autostart = false 
         if (d.discovery_status === 'awaiting_confirmation') {
           setConfirmedIds(d.discovery_candidates?.map((c: DiscoveryCandidate) => c.channel_id) ?? [])
           clearInterval(iv)
+          // Onboard flow auto-confirms immediately — check once more after 2s
+          // in case backend already moved to 'analyzing' (skipping manual confirm step)
+          setTimeout(async () => {
+            const d2 = await get('discovery-status')
+            if (d2?.discovery_status === 'analyzing') {
+              setDiscovery(d2)
+              setAnalyzing(true)
+            }
+          }, 2000)
         }
+        if (d.discovery_status === 'analyzing') { clearInterval(iv); setAnalyzing(true) }
         if (d.discovery_status === 'error') clearInterval(iv)
       }
     }, 2000)

@@ -19798,18 +19798,6 @@ async def onboard_confirm_purchase(request: Request, background_tasks: Backgroun
             )
         conn.commit()
 
-        # Deduct the full bundle cost (50 cr) for the ₹499 one-time purchase.
-        # YouTube = full intel bundle (9-layer discovery + deep analysis + growth recipe).
-        # D2C/website = full Growth OS bundle (brand intel + LP audit + growth strategy).
-        # This burns all credits from the signup grant so the user cannot run analyses again
-        # without upgrading to a monthly plan.
-        try:
-            org_id_for_deduct = _get_org_id_for_workspace(conn, workspace_id)
-            feature_label = "youtube_intel_bundle" if url_type == "youtube" else "growth_os_bundle"
-            _deduct_credits_only(conn, org_id_for_deduct, workspace_id, 50, feature_label)
-        except Exception as _ce:
-            print(f"[onboard] credit deduction warning: {_ce}")
-
     def _run_chain():
         from services.agent_swarm.core.onboard_chain import run_paid_chain as _rpc
         _rpc(
