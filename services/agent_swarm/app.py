@@ -75,6 +75,10 @@ CREDIT_PACKS = {
     "600": {"credits": 600, "amount_paise": 299900},   # ₹2,999
 }
 FEATURE_COSTS = {
+    # ── One-time ₹499 bundles (consumes full signup grant) ──
+    "youtube_intel_bundle": 50,  # 9-layer YT intel + growth recipe (onboard ₹499)
+    "growth_os_bundle":     50,  # Brand intel + LP audit + Growth OS (onboard ₹499)
+    # ── Individual features (monthly plan users) ──
     "yt_competitor_intel":  20,
     "growth_os":            10,
     "app_growth_plan":       5,
@@ -19793,6 +19797,18 @@ async def onboard_confirm_purchase(request: Request, background_tasks: Backgroun
                 (razorpay_payment_id, razorpay_order_id),
             )
         conn.commit()
+
+        # Deduct the full bundle cost (50 cr) for the ₹499 one-time purchase.
+        # YouTube = full intel bundle (9-layer discovery + deep analysis + growth recipe).
+        # D2C/website = full Growth OS bundle (brand intel + LP audit + growth strategy).
+        # This burns all credits from the signup grant so the user cannot run analyses again
+        # without upgrading to a monthly plan.
+        try:
+            org_id_for_deduct = _get_org_id_for_workspace(conn, workspace_id)
+            feature_label = "youtube_intel_bundle" if url_type == "youtube" else "growth_os_bundle"
+            _deduct_credits_only(conn, org_id_for_deduct, workspace_id, 50, feature_label)
+        except Exception as _ce:
+            print(f"[onboard] credit deduction warning: {_ce}")
 
     def _run_chain():
         from services.agent_swarm.core.onboard_chain import run_paid_chain as _rpc
