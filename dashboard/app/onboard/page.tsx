@@ -430,7 +430,10 @@ function OnboardPageInner() {
         } else if (d.status === 'complete') {
           setStage('complete')
           clearInterval(pollRef.current!)
-          setTimeout(() => router.push(`/growth-os?ws=${wsId}`), 3000)
+          const dest = (d.url_type === 'youtube')
+            ? `/competitor-intel?ws=${wsId}&tab=youtube`
+            : `/growth-os?ws=${wsId}`
+          setTimeout(() => router.push(dest), 3000)
         } else if (d.status === 'failed') {
           setStage('failed')
           clearInterval(pollRef.current!)
@@ -452,7 +455,10 @@ function OnboardPageInner() {
         if (d.status === 'complete') {
           setStage('complete')
           clearInterval(pollRef.current!)
-          setTimeout(() => router.push(`/growth-os?ws=${wsId}`), 4000)
+          const dest = (d.url_type === 'youtube')
+            ? `/competitor-intel?ws=${wsId}&tab=youtube`
+            : `/growth-os?ws=${wsId}`
+          setTimeout(() => router.push(dest), 4000)
         } else if (d.status === 'failed') {
           setStage('failed')
           clearInterval(pollRef.current!)
@@ -861,10 +867,12 @@ function OnboardPageInner() {
               <p className="text-sm text-gray-400 mt-1">Redirecting you to your dashboard…</p>
             </div>
             <button
-              onClick={() => router.push(`/growth-os?ws=${workspaceId}`)}
+              onClick={() => router.push(urlType === 'youtube'
+                ? `/competitor-intel?ws=${workspaceId}&tab=youtube`
+                : `/growth-os?ws=${workspaceId}`)}
               className="flex items-center gap-2 px-6 py-3 bg-brand-600 hover:bg-brand-700 rounded-xl font-semibold text-sm transition-colors"
             >
-              View My Growth Strategy <ArrowRight className="h-4 w-4" />
+              {urlType === 'youtube' ? 'View My Channel Intelligence' : 'View My Growth Strategy'} <ArrowRight className="h-4 w-4" />
             </button>
           </div>
         )}

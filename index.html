@@ -359,9 +359,9 @@
   <a href="#" class="nav-logo">Runway Studios</a>
   <ul class="nav-links">
     <li><a href="#what-we-do">Platform</a></li>
+    <li><a href="#youtube-creators" style="color:#ef4444;font-weight:600;">▶ For Creators</a></li>
     <li><a href="#how">How It Works</a></li>
     <li><a href="#pricing">Pricing</a></li>
-    <li><a href="#testimonials">Reviews</a></li>
     <li><a href="#faq">FAQ</a></li>
     <li><a href="#contact">Contact</a></li>
   </ul>
@@ -375,9 +375,9 @@
 
 <div class="mobile-menu" id="mobile-menu">
   <a href="#what-we-do" onclick="toggleMenu()">Platform</a>
+  <a href="#youtube-creators" onclick="toggleMenu()" style="color:#ef4444;font-weight:600;">▶ For YouTube Creators</a>
   <a href="#how" onclick="toggleMenu()">How It Works</a>
   <a href="#pricing" onclick="toggleMenu()">Pricing</a>
-  <a href="#testimonials" onclick="toggleMenu()">Reviews</a>
   <a href="#faq" onclick="toggleMenu()">FAQ</a>
   <a href="#contact" onclick="toggleMenu()">Contact</a>
   <a href="https://app.runwaystudios.co/sign-in" onclick="toggleMenu()">Log in</a>
@@ -387,38 +387,86 @@
 <section class="hero">
   <div class="hero-eyebrow">
     <span class="dot"></span>
-    Free Competitor Analysis — No Sign-up Required
+    For YouTube Creators &amp; D2C Brands
   </div>
   <h1>Your Competitors' Entire Strategy.<br><em>Exposed In 30 Seconds.</em></h1>
-  <p class="hero-sub">Drop any URL. ARIA analyses your competitors, scores your landing page, detects their tech stack, and hands you a growth plan. Free. No account needed.</p>
+  <p class="hero-sub">Drop your YouTube channel or brand URL. ARIA analyses your competitors, finds content gaps, and hands you a growth plan.</p>
 
   <!-- URL Input Hero Form -->
-  <div style="max-width:580px;margin:2rem auto 1rem;display:flex;gap:0;box-shadow:0 4px 24px rgba(124,58,237,0.18);border-radius:14px;overflow:hidden;border:1.5px solid #c4b5fd;background:white;">
+  <div id="heroInputWrap" style="max-width:580px;margin:2rem auto 0.5rem;display:flex;gap:0;box-shadow:0 4px 24px rgba(124,58,237,0.18);border-radius:14px;overflow:hidden;border:1.5px solid #c4b5fd;background:white;transition:border-color 0.2s;">
+    <span id="heroTypeIcon" style="display:flex;align-items:center;padding:0 0.75rem 0 1rem;font-size:1.2rem;flex-shrink:0;">🌐</span>
     <input
       id="heroUrlInput"
       type="url"
-      placeholder="e.g. yourcompetitor.com or yoursite.com"
-      style="flex:1;border:none;outline:none;padding:1rem 1.25rem;font-size:1rem;color:#111827;background:transparent;min-width:0;"
+      placeholder="youtube.com/@yourchannel or yourstore.com"
+      style="flex:1;border:none;outline:none;padding:1rem 0.5rem;font-size:1rem;color:#111827;background:transparent;min-width:0;"
+      oninput="heroDetectType()"
       onkeydown="if(event.key==='Enter')heroAnalyse()"
     />
+    <span id="heroTypeBadge" style="display:none;align-items:center;padding:0 0.5rem;font-size:0.72rem;font-weight:700;border-radius:6px;margin:0.6rem 0.25rem;white-space:nowrap;"></span>
     <button
+      id="heroBtn"
       onclick="heroAnalyse()"
-      style="background:#7c3aed;color:white;border:none;padding:1rem 1.75rem;font-weight:700;font-size:0.95rem;cursor:pointer;white-space:nowrap;transition:background 0.2s;"
+      style="background:#7c3aed;color:white;border:none;padding:1rem 1.75rem;font-weight:700;font-size:0.95rem;cursor:pointer;white-space:nowrap;transition:background 0.2s;flex-shrink:0;"
       onmouseover="this.style.background='#6d28d9'"
-      onmouseout="this.style.background='#7c3aed'"
+      onmouseout="this.style.background=window._heroBtnColor||'#7c3aed'"
     >
       Analyse Free →
     </button>
   </div>
-  <p style="font-size:0.8rem;color:var(--gray-500);margin-bottom:0.75rem;">No account needed · Results in ~30 seconds · Powered by <strong style="color:var(--gray-700);">runwaystudios.co</strong></p>
+  <p id="heroHint" style="font-size:0.8rem;color:var(--gray-500);margin-bottom:0.75rem;">Paste a YouTube channel link <strong style="color:var(--gray-700);">or</strong> a brand/competitor website</p>
   <p class="hero-trust" style="margin-bottom:2rem;">Already have an account? <a href="https://app.runwaystudios.co/sign-in" style="color:var(--brand);font-weight:600;">Log in →</a></p>
 
   <script>
+  function _isYouTubeUrl(val) {
+    return /youtube\.com\/(c\/|channel\/|@|user\/)|youtu\.be\//i.test(val);
+  }
+  function heroDetectType() {
+    var val = document.getElementById('heroUrlInput').value.trim();
+    var wrap = document.getElementById('heroInputWrap');
+    var icon = document.getElementById('heroTypeIcon');
+    var badge = document.getElementById('heroTypeBadge');
+    var btn = document.getElementById('heroBtn');
+    var hint = document.getElementById('heroHint');
+    window._heroBtnColor = '#7c3aed';
+    if (!val) {
+      wrap.style.borderColor = '#c4b5fd';
+      icon.textContent = '🌐';
+      badge.style.display = 'none';
+      btn.textContent = 'Analyse Free →';
+      hint.innerHTML = 'Paste a YouTube channel link <strong style="color:#374151;">or</strong> a brand/competitor website';
+      return;
+    }
+    if (_isYouTubeUrl(val)) {
+      wrap.style.borderColor = '#ef4444';
+      icon.textContent = '▶️';
+      badge.style.display = 'flex';
+      badge.style.background = '#fee2e2';
+      badge.style.color = '#b91c1c';
+      badge.textContent = 'YouTube';
+      btn.textContent = 'Analyse My Channel →';
+      window._heroBtnColor = '#7c3aed';
+      hint.innerHTML = '9-layer competitor analysis · Content gap finder · ₹499 full report';
+    } else {
+      wrap.style.borderColor = '#c4b5fd';
+      icon.textContent = '🌐';
+      badge.style.display = 'flex';
+      badge.style.background = '#ede9fe';
+      badge.style.color = '#5b21b6';
+      badge.textContent = 'Brand / D2C';
+      btn.textContent = 'Analyse Free →';
+      hint.innerHTML = 'Free competitor analysis · Landing page score · Growth plan';
+    }
+  }
   function heroAnalyse() {
     var val = document.getElementById('heroUrlInput').value.trim();
-    if (!val) return;
+    if (!val) { document.getElementById('heroUrlInput').focus(); return; }
+    if (_isYouTubeUrl(val)) {
+      window.location.href = 'https://app.runwaystudios.co/onboard?url=' + encodeURIComponent(val);
+      return;
+    }
     var domain = val.replace(/^https?:\/\//,'').replace(/^www\./,'').split('/')[0].split('?')[0];
-    if (!domain || domain.indexOf('.') === -1) return;
+    if (!domain || domain.indexOf('.') === -1) { document.getElementById('heroUrlInput').focus(); return; }
     window.location.href = '/report/?domain=' + encodeURIComponent(domain);
   }
   </script>
@@ -534,6 +582,67 @@
     </div>
   </div>
 </div>
+
+<!-- YOUTUBE CREATOR SECTION -->
+<section id="youtube-creators" style="padding:5rem 2rem;background:linear-gradient(135deg,#0f0f1a 0%,#1a1035 100%);color:white;">
+  <div class="container" style="max-width:1000px;margin:0 auto;">
+    <div style="display:inline-flex;align-items:center;gap:0.5rem;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);border-radius:100px;padding:0.35rem 1rem;margin-bottom:1.5rem;">
+      <span style="width:7px;height:7px;border-radius:50%;background:#ef4444;box-shadow:0 0 6px #ef4444;display:inline-block;"></span>
+      <span style="font-size:0.75rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#ef4444;">For YouTube Creators</span>
+    </div>
+    <h2 style="font-size:clamp(1.75rem,4vw,2.75rem);font-weight:800;line-height:1.15;letter-spacing:-0.025em;margin-bottom:1rem;">Why is their channel growing <span style="color:#fb923c;">11× faster</span> posting the same frequency as you?</h2>
+    <p style="font-size:1.1rem;color:rgba(255,255,255,0.6);max-width:640px;margin-bottom:3rem;line-height:1.7;">It's not the algorithm. They found a content gap you haven't. ARIA analyses your top 5 competitors — formats, thumbnails, hooks, titles, posting rhythm — and tells you exactly what to make next.</p>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1.25rem;margin-bottom:3rem;">
+      <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:1.5rem;">
+        <div style="font-size:1.5rem;margin-bottom:0.75rem;">🔍</div>
+        <div style="font-weight:700;color:white;margin-bottom:0.4rem;">9-Layer Competitor Intel</div>
+        <div style="font-size:0.875rem;color:rgba(255,255,255,0.5);line-height:1.6;">Topic clusters, title patterns, thumbnail DNA, upload rhythm, view velocity — all reverse-engineered from your niche's top channels.</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:1.5rem;">
+        <div style="font-size:1.5rem;margin-bottom:0.75rem;">📈</div>
+        <div style="font-weight:700;color:white;margin-bottom:0.4rem;">Content Gap Finder</div>
+        <div style="font-size:0.875rem;color:rgba(255,255,255,0.5);line-height:1.6;">Finds high-demand topics zero creators in your niche have covered yet. Be first. Capture the search traffic before someone else does.</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:1.5rem;">
+        <div style="font-size:1.5rem;margin-bottom:0.75rem;">🗓️</div>
+        <div style="font-weight:700;color:white;margin-bottom:0.4rem;">30-Day Content Sprint</div>
+        <div style="font-size:0.875rem;color:rgba(255,255,255,0.5);line-height:1.6;">A week-by-week plan: what to post, in what format, with which hook — tailored to your channel size and niche, not generic advice.</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:1.5rem;">
+        <div style="font-size:1.5rem;margin-bottom:0.75rem;">🎯</div>
+        <div style="font-weight:700;color:white;margin-bottom:0.4rem;">Thumbnail & Hook Library</div>
+        <div style="font-size:0.875rem;color:rgba(255,255,255,0.5);line-height:1.6;">10 tested hooks and a thumbnail brief based on what's performing in your niche right now — not guesswork.</div>
+      </div>
+    </div>
+
+    <div style="background:rgba(251,146,60,0.1);border:1px solid rgba(251,146,60,0.25);border-radius:20px;padding:2rem;display:flex;align-items:center;gap:2rem;flex-wrap:wrap;">
+      <div style="flex:1;min-width:260px;">
+        <div style="font-size:0.75rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#fb923c;margin-bottom:0.5rem;">One-time · No subscription</div>
+        <div style="font-size:2rem;font-weight:900;color:white;margin-bottom:0.25rem;">₹499 <span style="font-size:1rem;font-weight:500;color:rgba(255,255,255,0.4);text-decoration:line-through;">₹2,999</span></div>
+        <div style="font-size:0.875rem;color:rgba(255,255,255,0.55);">Full competitor intelligence report · 30-day content plan · Hooks &amp; thumbnail brief</div>
+      </div>
+      <div>
+        <div style="display:flex;flex-direction:column;gap:0.75rem;">
+          <div style="display:flex;align-items:center;gap:0.5rem;background:rgba(255,255,255,0.06);border-radius:10px;padding:0.85rem 1.25rem;">
+            <span style="font-size:1rem;">▶️</span>
+            <input id="ytCreatorInput" type="url" placeholder="Paste your YouTube channel link" style="background:transparent;border:none;outline:none;color:white;font-size:0.95rem;flex:1;min-width:220px;" onkeydown="if(event.key==='Enter')ytCreatorGo()"/>
+          </div>
+          <button onclick="ytCreatorGo()" style="background:linear-gradient(135deg,#fb923c,#f97316);color:white;border:none;border-radius:10px;padding:0.9rem 2rem;font-weight:800;font-size:0.95rem;cursor:pointer;box-shadow:0 6px 24px rgba(251,146,60,0.35);">
+            Analyse My Channel — ₹499
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+  function ytCreatorGo() {
+    var val = document.getElementById('ytCreatorInput').value.trim();
+    if (!val) { document.getElementById('ytCreatorInput').focus(); return; }
+    window.location.href = 'https://app.runwaystudios.co/onboard?url=' + encodeURIComponent(val);
+  }
+  </script>
+</section>
 
 <!-- PAIN SECTION -->
 <section class="pain" id="pain">
