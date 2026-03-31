@@ -96,7 +96,7 @@ FEATURE_COSTS = {
     "ai_chat":               1,
 }
 APIFY_API_TOKEN = os.getenv("APIFY_API_TOKEN", "")
-PLAN_MONTHLY_CREDITS = {"free": 0, "starter": 50, "growth": 300}   # starter=one-time grant, growth=monthly
+PLAN_MONTHLY_CREDITS = {"free": 0, "starter": 50, "growth": 200}   # starter=one-time grant, growth=monthly
 PLAN_PRICES_MONTHLY  = {"starter": 49900, "growth": 149900}         # ₹499 one-time, ₹1,499/month
 PLAN_PRICES_YEARLY   = {"starter": 49900, "growth": 1498800}        # starter unchanged, growth=₹1,249×12
 VALID_PLANS          = {"free", "starter", "growth"}
