@@ -1,38 +1,38 @@
 import { SignIn } from '@clerk/nextjs'
 
-const clerkDark = {
+const clerkLight = {
   elements: {
     rootBox: 'w-full',
-    card: 'rounded-2xl bg-gray-900 border border-gray-700 shadow-xl',
-    headerTitle: 'text-white text-lg font-bold',
-    headerSubtitle: 'text-gray-400',
-    socialButtonsBlockButton: 'bg-gray-800 border border-gray-600 text-white hover:bg-gray-700',
-    socialButtonsBlockButtonText: 'text-white font-medium',
-    dividerLine: 'bg-gray-700',
-    dividerText: 'text-gray-500',
-    formFieldLabel: 'text-gray-300 font-medium',
-    formFieldInput: 'bg-gray-800 border-gray-600 text-white placeholder-gray-500',
-    formButtonPrimary: 'bg-violet-600 hover:bg-violet-700 font-semibold',
-    footerActionLink: 'text-violet-400 hover:text-violet-300',
-    footerActionText: 'text-gray-400',
-    identityPreviewText: 'text-white',
-    identityPreviewEditButton: 'text-violet-400',
-    otpCodeFieldInput: 'bg-gray-800 border-gray-600 text-white',
-    formResendCodeLink: 'text-violet-400',
-    alertText: 'text-red-400',
-    formFieldErrorText: 'text-red-400',
+    card: 'rounded-2xl bg-white border border-gray-200 shadow-lg',
+    headerTitle: 'text-gray-900 text-lg font-bold',
+    headerSubtitle: 'text-gray-500',
+    socialButtonsBlockButton: 'bg-white border border-gray-300 text-gray-800 hover:bg-gray-50',
+    socialButtonsBlockButtonText: 'text-gray-800 font-medium',
+    dividerLine: 'bg-gray-200',
+    dividerText: 'text-gray-400',
+    formFieldLabel: 'text-gray-700 font-medium',
+    formFieldInput: 'bg-white border-gray-300 text-gray-900 placeholder-gray-400',
+    formButtonPrimary: 'bg-violet-600 hover:bg-violet-700 text-white font-semibold',
+    footerActionLink: 'text-violet-600 hover:text-violet-700',
+    footerActionText: 'text-gray-500',
+    identityPreviewText: 'text-gray-900',
+    identityPreviewEditButton: 'text-violet-600',
+    otpCodeFieldInput: 'bg-white border-gray-300 text-gray-900',
+    formResendCodeLink: 'text-violet-600',
+    alertText: 'text-red-600',
+    formFieldErrorText: 'text-red-500',
   }
 }
 
 export default function SignInPage() {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-gray-950 px-4">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-gray-100 px-4">
       <div className="mb-6 text-center">
         <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-violet-600 text-white font-bold text-lg">R</div>
-        <h1 className="text-xl font-bold text-white">Sign in to Runway Studios</h1>
-        <p className="mt-1 text-sm text-gray-400">Your AI growth platform</p>
+        <h1 className="text-xl font-bold text-gray-900">Sign in to Runway Studios</h1>
+        <p className="mt-1 text-sm text-gray-500">Your AI growth platform</p>
       </div>
-      <SignIn fallbackRedirectUrl="/dashboard" signUpUrl="/sign-up" appearance={clerkDark} />
+      <SignIn fallbackRedirectUrl="/dashboard" signUpUrl="/sign-up" appearance={clerkLight} />
     </div>
   )
 }
