@@ -386,7 +386,7 @@ function CompetitorCard({ c, onRemove, showRemove = true }: { c: Competitor; onR
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export default function YouTubeCompetitorIntel({ workspaceId }: { workspaceId: string }) {
+export default function YouTubeCompetitorIntel({ workspaceId, autostart = false }: { workspaceId: string; autostart?: boolean }) {
   const [tab, setTab] = useState<TabId>('overview')
 
   // Data states
@@ -445,7 +445,7 @@ export default function YouTubeCompetitorIntel({ workspaceId }: { workspaceId: s
     }
   }, [get])
 
-  const loadOverview = useCallback(async () => {
+  const loadOverview = useCallback(async (triggerAutostartIfIdle = false) => {
     setLoading(true)
     const [c, s, d] = await Promise.all([get('competitors'), get('status'), get('discovery-status')])
     setCompetitors(c?.competitors ?? [])
@@ -455,11 +455,40 @@ export default function YouTubeCompetitorIntel({ workspaceId }: { workspaceId: s
       if (d.discovery_status === 'awaiting_confirmation' && d.discovery_candidates?.length) {
         setConfirmedIds(d.discovery_candidates.map((c: DiscoveryCandidate) => c.channel_id))
       }
+      // Auto-start if coming from onboard and no analysis exists yet
+      if (triggerAutostartIfIdle && (!d.has_job || d.discovery_status === 'idle')) {
+        setLoading(false)
+        // Kick off discovery automatically — backend may still be creating the job
+        // so retry once after 3 s before starting a fresh job
+        setTimeout(async () => {
+          const d2 = await get('discovery-status')
+          if (!d2?.has_job || d2?.discovery_status === 'idle') {
+            setDiscovery({ has_job: true, job_id: null, discovery_status: 'discovering', discovery_log: [], discovery_candidates: [], own_topic_space: [] })
+            const r = await fetch('/api/youtube/competitor-intel/analyze', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ workspace_id: workspaceId }),
+            })
+            if (r.ok) {
+              const j = await r.json()
+              setJob({ job_id: j.job_id, status: 'pending', started_at: null, completed_at: null, channels_analyzed: 0, channels_total: 5, videos_analyzed: 0, error: null, phase: 'competitor_analysis' })
+            }
+          } else {
+            setDiscovery(d2)
+            if (d2.discovery_status === 'analyzing') setAnalyzing(true)
+          }
+        }, 3000)
+        return
+      }
     }
     // Auto-start polling if a job is already running (e.g. after page refresh)
     if (s?.status === 'running') setAnalyzing(true)
+    // If discovery is already in progress (backend started it), start polling
+    if (d?.discovery_status === 'discovering') {
+      // polling useEffect will pick this up via discovery state
+    }
     setLoading(false)
-  }, [get])
+  }, [get, workspaceId])
 
   const loadTopics = useCallback(async () => {
     const d = await get('topics')
@@ -520,7 +549,7 @@ export default function YouTubeCompetitorIntel({ workspaceId }: { workspaceId: s
 
   useEffect(() => {
     if (!workspaceId) return
-    if (tab === 'overview')       loadOverview()
+    if (tab === 'overview')       loadOverview(autostart)
     else if (tab === 'topics')      loadTopics()
     else if (tab === 'formats')     loadFormats()
     else if (tab === 'thumbnails')  loadThumbnails()

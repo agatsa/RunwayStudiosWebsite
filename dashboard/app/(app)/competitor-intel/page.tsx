@@ -21,6 +21,7 @@ function CompetitorIntelContent() {
   const searchParams  = useSearchParams()
   const workspaceId   = searchParams.get('ws') ?? ''
   const defaultTab    = (searchParams.get('tab') as Tab) ?? 'brand'
+  const autostart     = searchParams.get('autostart') === '1'
   const [activeTab, setActiveTab] = useState<Tab>(defaultTab)
 
   // Auction data — loaded client-side
@@ -96,7 +97,7 @@ function CompetitorIntelContent() {
       )}
 
       {activeTab === 'youtube' && workspaceId && (
-        <YouTubeCompetitorIntel workspaceId={workspaceId} />
+        <YouTubeCompetitorIntel workspaceId={workspaceId} autostart={autostart} />
       )}
 
       {activeTab === 'auction' && (

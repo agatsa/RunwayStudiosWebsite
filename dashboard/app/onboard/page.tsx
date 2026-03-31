@@ -540,6 +540,19 @@ function OnboardPageInner() {
     }
   }
 
+  const _afterPaymentSuccess = (wsId: string) => {
+    if (urlType === 'youtube') {
+      // YouTube: backend has started the analysis chain — jump straight to
+      // competitor intel so the user sees live discovery progress.
+      // Give the backend ~2.5 s to create the yt_analysis_jobs record first.
+      setStage('chain_running')
+      setTimeout(() => router.push(`/competitor-intel?ws=${wsId}&tab=youtube&autostart=1`), 2500)
+    } else {
+      setStage('chain_running')
+      startChainPolling(job!.job_id, wsId)
+    }
+  }
+
   const confirmStubPayment = async (orderId: string) => {
     if (!job) return
     const r = await fetch('/api/onboard/confirm-purchase', {
@@ -556,8 +569,7 @@ function OnboardPageInner() {
     })
     const data = await r.json()
     if (!r.ok) throw new Error(data.detail || 'Payment confirmation failed')
-    setStage('chain_running')
-    startChainPolling(job.job_id, workspaceId)
+    _afterPaymentSuccess(workspaceId)
   }
 
   const confirmPayment = async (orderId: string, paymentId: string, signature: string) => {
@@ -576,8 +588,7 @@ function OnboardPageInner() {
     })
     const data = await r.json()
     if (!r.ok) throw new Error(data.detail || 'Payment confirmation failed')
-    setStage('chain_running')
-    startChainPolling(job.job_id, workspaceId)
+    _afterPaymentSuccess(workspaceId)
   }
 
   const handleStart = () => {
