@@ -1120,12 +1120,82 @@ Return ONLY valid JSON with this exact structure — no markdown, no preamble:
     "sources_used": ["list of sources that had data"],
     "sources_missing": ["list of sources with no data"],
     "coverage_pct": 75
-  }
+  },
+  "honest_assessment": {
+    "headline": "One brutal-truth sentence about the brand's current growth state",
+    "what_is_working": ["Specific thing working with data evidence", "Another thing"],
+    "what_is_broken": ["Specific blocker with data evidence", "Specific issue"],
+    "real_30d_target": "What is realistically achievable in 30 days — USE ONLY real numbers from the data. State ₹ revenue or % growth with the assumption behind it.",
+    "real_90d_target": "90-day realistic target with assumptions. If no data, say what data is needed."
+  },
+  "asymmetric_moves": [
+    {
+      "rank": 1,
+      "title": "5-8 word move title",
+      "why_asymmetric": "Why this has 10x impact vs effort — cite data",
+      "data_basis": "The specific data point that proves this move",
+      "timeline": "Days 1-7",
+      "revenue_or_growth_potential": "Specific estimate: ₹X/month additional revenue OR X% subscriber growth"
+    }
+  ],
+  "sprint_calendar": {
+    "week_1": {
+      "theme": "Week 1 theme — 5 words",
+      "days": [
+        {"days": "1-2", "task": "Specific task", "why_first": "Why this is first", "outcome": "What you will have by end of day 2"}
+      ]
+    },
+    "week_2": {"theme": "...", "days": [{"days": "8-10", "task": "...", "why_first": "...", "outcome": "..."}]},
+    "week_3": {"theme": "...", "days": [{"days": "15-17", "task": "...", "why_first": "...", "outcome": "..."}]},
+    "week_4": {"theme": "...", "days": [{"days": "22-24", "task": "...", "why_first": "...", "outcome": "..."}]}
+  },
+  "channel_rankings": [
+    {
+      "rank": 1,
+      "channel_or_format": "Channel name (brands) or content format (creators)",
+      "estimated_cac_or_cpm": "₹X estimated CAC or ₹Y CPM — based on data or category benchmark",
+      "speed": "Fast",
+      "priority": "DO FIRST",
+      "reason": "One sentence why this rank based on data"
+    }
+  ],
+  "financial_model": {
+    "current_state": "Current monthly revenue or views/subscribers — based on data only",
+    "month_1_target": "₹X — state exact assumption e.g. if ROAS stays at 2.8 and daily spend increases to ₹8K",
+    "month_3_target": "₹X — state key assumption",
+    "month_12_target": "₹X — state key assumption and what must be true",
+    "biggest_lever": "The single action with highest revenue/growth impact and why",
+    "break_even_point": "At what monthly spend or output level does this become self-sustaining"
+  },
+  "not_to_do": [
+    {
+      "dont": "Do not [specific action]",
+      "because": "Data-backed reason — cite specific number from intel"
+    }
+  ],
+  "weekly_kpis": [
+    {
+      "metric": "Metric name",
+      "current_value": "X from real data or no data yet",
+      "week_4_target": "Y",
+      "red_flag": "Below Z — means stop or change course",
+      "how_to_measure": "Where exactly to check this metric"
+    }
+  ]
 }
 
 Generate 20-30 actions total, spread across all 7 dimensions and all 4 time periods.
 For CRM sequences: generate at least 3 (Welcome, Cart Abandon/Follow-up, Win-back).
 Each email in a sequence should have a FULL body — at least 3-4 paragraphs of real copy.
+
+CRITICAL RULES FOR NEW SECTIONS:
+- honest_assessment: Use ONLY real numbers from data provided. If spending ₹X at ROAS Y that equals ₹Z revenue — say that. No invented numbers.
+- asymmetric_moves: Generate EXACTLY 3 moves, ranked by impact/effort ratio. Each must cite a specific data point.
+- sprint_calendar: Each week must have 2-4 specific day-ranges with concrete tasks derived from the intel data — not generic advice. For creators: this is a content calendar. For brands: this is an execution calendar.
+- channel_rankings: Include ALL relevant channels (6-10 entries). For brands: rank by CAC/conversion speed. For creators: rank content formats by views/effort ratio from real video data.
+- financial_model: Use ONLY real numbers from connected data. If Meta ROAS and spend data exists, project revenue as spend × ROAS scenarios. If YouTube data exists, project as views × CPM benchmarks. NEVER invent — always state basis. Use ₹ currency.
+- not_to_do: 3-5 items. Each grounded in specific data from intel. Be direct and opinionated.
+- weekly_kpis: 5-7 metrics. Use real current values from data where available. Red flag thresholds should be specific numbers.
 """
 
 
@@ -1147,12 +1217,33 @@ def _build_strategy_prompt(intel: dict, directive: str = None, strategy_mode: st
         lines.append("\nEvery single action in this strategy MUST serve this directive. Weight all channels, timing, and budget toward this goal.\n")
 
     ws = intel.get("workspace", {})
+    ws_type = ws.get("type", "d2c")
+    is_creator = ws_type in ("creator", "media")
+
     lines.append(f"=== BRAND PROFILE ===")
     lines.append(f"Brand: {ws.get('name', 'Unknown')}")
-    lines.append(f"Type: {ws.get('type', 'd2c')}")
+    lines.append(f"Type: {ws_type}")
     lines.append(f"Monthly Budget: ₹{ws.get('monthly_budget', 0):,.0f}")
     if ws.get("brand_url"):
         lines.append(f"Website: {ws['brand_url']}")
+
+    # Workspace-type context — tells Claude how to frame the new sections
+    if is_creator:
+        lines.append("\n=== STRATEGY TYPE: YOUTUBE CREATOR / MEDIA ===")
+        lines.append("This is a creator workspace. Adapt ALL new sections as follows:")
+        lines.append("• channel_rankings = content FORMAT rankings (Shorts/Tutorial/Review/Vlog/Podcast etc) by avg views, CTR, and effort")
+        lines.append("• financial_model = subscriber/views growth + monetisation: AdSense CPM × monthly views + sponsorship ₹ value at subscriber milestones")
+        lines.append("• actions focus on: content calendar, thumbnail A/B test, collab outreach, SEO title formulas, Shorts funnel to long-form")
+        lines.append("• sprint_calendar = week-by-week content publishing plan with specific video titles/topics/formats based on competitor intel")
+        lines.append("• not_to_do = creator-specific pitfalls grounded in the YouTube data provided")
+        lines.append("• financial_model targets = monthly AdSense ₹ + sponsorship ₹ at target subscriber/view milestones from real data")
+    else:
+        lines.append("\n=== STRATEGY TYPE: BRAND / D2C / SAAS / AGENCY ===")
+        lines.append("This is a brand running paid advertising + owned channels. Strategy focuses on:")
+        lines.append("• channel_rankings = advertising + owned channels ranked by CAC, conversion speed, and ROI")
+        lines.append("• financial_model = monthly revenue = ad_spend × ROAS + organic/email channels — project from real spend/ROAS data")
+        lines.append("• sprint_calendar = week-by-week brand execution: campaign launches, LP fixes, email sequences, creative testing")
+        lines.append("• financial_model: use real ROAS and spend numbers to project — state assumptions clearly")
 
     # Product Catalog — inject before ad data so ARIA knows what's being sold
     products_catalog = intel.get("products_catalog", [])

@@ -74,6 +74,73 @@ interface IntelCoverage {
   coverage_pct: number
 }
 
+interface HonestAssessment {
+  headline: string
+  what_is_working: string[]
+  what_is_broken: string[]
+  real_30d_target: string
+  real_90d_target: string
+}
+
+interface AsymmetricMove {
+  rank: number
+  title: string
+  why_asymmetric: string
+  data_basis: string
+  timeline: string
+  revenue_or_growth_potential: string
+}
+
+interface SprintDay {
+  days: string
+  task: string
+  why_first?: string
+  outcome: string
+}
+
+interface SprintWeek {
+  theme: string
+  days: SprintDay[]
+}
+
+interface SprintCalendar {
+  week_1: SprintWeek
+  week_2: SprintWeek
+  week_3: SprintWeek
+  week_4: SprintWeek
+}
+
+interface ChannelRanking {
+  rank: number
+  channel_or_format: string
+  estimated_cac_or_cpm: string
+  speed: string
+  priority: string
+  reason: string
+}
+
+interface FinancialModel {
+  current_state: string
+  month_1_target: string
+  month_3_target: string
+  month_12_target: string
+  biggest_lever: string
+  break_even_point: string
+}
+
+interface NotToDo {
+  dont: string
+  because: string
+}
+
+interface WeeklyKPI {
+  metric: string
+  current_value: string
+  week_4_target: string
+  red_flag: string
+  how_to_measure: string
+}
+
 interface GrowthPlan {
   plan_id?: string
   strategy_summary?: StrategySummary
@@ -81,6 +148,13 @@ interface GrowthPlan {
   crm_sequences?: CRMSequence[]
   product_brief?: ProductBrief
   intelligence_coverage?: IntelCoverage
+  honest_assessment?: HonestAssessment
+  asymmetric_moves?: AsymmetricMove[]
+  sprint_calendar?: SprintCalendar
+  channel_rankings?: ChannelRanking[]
+  financial_model?: FinancialModel
+  not_to_do?: NotToDo[]
+  weekly_kpis?: WeeklyKPI[]
 }
 
 interface JobState {
@@ -428,6 +502,283 @@ function TerminalLog({ logs, status }: { logs: LogEntry[]; status: string }) {
   )
 }
 
+// ── HonestAssessmentCard ──────────────────────────────────────────────────────
+
+function HonestAssessmentCard({ data }: { data: HonestAssessment }) {
+  return (
+    <div className="rounded-2xl border border-red-200 bg-gradient-to-br from-red-50 to-white p-5">
+      <div className="flex items-center gap-2 mb-3">
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-red-500">
+          <AlertCircle className="h-4 w-4 text-white" />
+        </div>
+        <p className="text-sm font-bold text-gray-900">Honest Assessment</p>
+      </div>
+      <p className="text-sm font-semibold text-red-800 mb-4 leading-snug">{data.headline}</p>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-green-600">✓ What's Working</p>
+          {data.what_is_working?.map((item, i) => (
+            <div key={i} className="flex items-start gap-1.5 text-xs text-gray-700">
+              <CheckCircle2 className="h-3.5 w-3.5 text-green-500 mt-0.5 shrink-0" />
+              <span>{item}</span>
+            </div>
+          ))}
+        </div>
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-red-600">✗ What's Broken</p>
+          {data.what_is_broken?.map((item, i) => (
+            <div key={i} className="flex items-start gap-1.5 text-xs text-gray-700">
+              <X className="h-3.5 w-3.5 text-red-400 mt-0.5 shrink-0" />
+              <span>{item}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <div className="rounded-xl bg-white border border-red-100 p-3">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500 mb-1">30-Day Target</p>
+          <p className="text-xs text-gray-700 leading-relaxed">{data.real_30d_target}</p>
+        </div>
+        <div className="rounded-xl bg-white border border-red-100 p-3">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500 mb-1">90-Day Target</p>
+          <p className="text-xs text-gray-700 leading-relaxed">{data.real_90d_target}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── AsymmetricMovesGrid ───────────────────────────────────────────────────────
+
+function AsymmetricMovesGrid({ moves }: { moves: AsymmetricMove[] }) {
+  const colors = [
+    { border: 'border-amber-200', bg: 'bg-amber-50', badge: 'bg-amber-500', text: 'text-amber-700' },
+    { border: 'border-blue-200',  bg: 'bg-blue-50',  badge: 'bg-blue-500',  text: 'text-blue-700' },
+    { border: 'border-violet-200',bg: 'bg-violet-50',badge: 'bg-violet-500',text: 'text-violet-700'},
+  ]
+  return (
+    <div>
+      <h3 className="text-xs font-bold uppercase tracking-wide text-gray-500 mb-3 flex items-center gap-2">
+        <Zap className="h-3.5 w-3.5" />
+        3 Asymmetric Moves — Highest Impact / Lowest Effort
+      </h3>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {moves.slice(0, 3).map((move, i) => {
+          const c = colors[i] ?? colors[0]
+          return (
+            <div key={i} className={`rounded-xl border ${c.border} ${c.bg} p-4`}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className={`flex h-6 w-6 items-center justify-center rounded-full ${c.badge} text-white text-xs font-bold`}>
+                  {move.rank}
+                </span>
+                <span className={`text-[10px] font-semibold uppercase tracking-wide ${c.text}`}>{move.timeline}</span>
+              </div>
+              <p className="text-sm font-bold text-gray-900 mb-1.5 leading-snug">{move.title}</p>
+              <p className="text-xs text-gray-600 leading-relaxed mb-2">{move.why_asymmetric}</p>
+              <div className="rounded-lg bg-white/70 px-2.5 py-2">
+                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wide mb-0.5">Potential</p>
+                <p className={`text-xs font-semibold ${c.text}`}>{move.revenue_or_growth_potential}</p>
+              </div>
+              {move.data_basis && (
+                <p className="mt-2 text-[10px] text-gray-400 italic leading-relaxed">Data: {move.data_basis}</p>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ── SprintCalendarSection ─────────────────────────────────────────────────────
+
+function SprintCalendarSection({ calendar }: { calendar: SprintCalendar }) {
+  const weeks = [
+    { key: 'week_1', label: 'Week 1', data: calendar.week_1, color: 'border-green-200 bg-green-50', badge: 'bg-green-500' },
+    { key: 'week_2', label: 'Week 2', data: calendar.week_2, color: 'border-blue-200 bg-blue-50',   badge: 'bg-blue-500' },
+    { key: 'week_3', label: 'Week 3', data: calendar.week_3, color: 'border-violet-200 bg-violet-50', badge: 'bg-violet-500' },
+    { key: 'week_4', label: 'Week 4', data: calendar.week_4, color: 'border-amber-200 bg-amber-50', badge: 'bg-amber-500' },
+  ]
+  return (
+    <div>
+      <h3 className="text-xs font-bold uppercase tracking-wide text-gray-500 mb-3 flex items-center gap-2">
+        <Calendar className="h-3.5 w-3.5" />
+        30-Day Sprint Calendar
+      </h3>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {weeks.map(({ label, data, color, badge }) => {
+          if (!data) return null
+          return (
+            <div key={label} className={`rounded-xl border ${color} p-3.5`}>
+              <div className="flex items-center gap-2 mb-2.5">
+                <span className={`flex h-6 w-6 items-center justify-center rounded-full ${badge} text-white text-[10px] font-bold`}>
+                  {label.split(' ')[1]}
+                </span>
+                <p className="text-xs font-bold text-gray-800">{data.theme}</p>
+              </div>
+              <div className="space-y-2">
+                {(data.days ?? []).map((d, i) => (
+                  <div key={i} className="rounded-lg bg-white/80 p-2.5">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <Clock className="h-3 w-3 text-gray-400 shrink-0" />
+                      <span className="text-[10px] font-bold text-gray-500">Days {d.days}</span>
+                    </div>
+                    <p className="text-xs text-gray-800 leading-snug font-medium">{d.task}</p>
+                    {d.outcome && (
+                      <p className="text-[10px] text-gray-500 mt-1 leading-snug">→ {d.outcome}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ── ChannelRankingsTable ──────────────────────────────────────────────────────
+
+function ChannelRankingsTable({ rankings }: { rankings: ChannelRanking[] }) {
+  const speedColor = (s: string) =>
+    s === 'Fast' ? 'bg-green-100 text-green-700' : s === 'Medium' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'
+  const priorityColor = (p: string) =>
+    p === 'DO FIRST' ? 'bg-red-100 text-red-700 font-bold' :
+    p === 'DO NOT YET' ? 'bg-gray-100 text-gray-500' :
+    'bg-blue-100 text-blue-700'
+
+  return (
+    <div>
+      <h3 className="text-xs font-bold uppercase tracking-wide text-gray-500 mb-3 flex items-center gap-2">
+        <BarChart2 className="h-3.5 w-3.5" />
+        Channel Rankings
+      </h3>
+      <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+        <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-0 text-[10px] font-bold uppercase tracking-wide text-gray-400 px-4 py-2.5 border-b border-gray-100 bg-gray-50">
+          <span className="w-6">#</span>
+          <span>Channel / Format</span>
+          <span className="w-20 text-center">CAC / CPM</span>
+          <span className="w-16 text-center">Speed</span>
+          <span className="w-24 text-center">Priority</span>
+        </div>
+        {rankings.map((r, i) => (
+          <div key={i} className={`grid grid-cols-[auto_1fr_auto_auto_auto] gap-0 items-center px-4 py-3 ${i !== rankings.length - 1 ? 'border-b border-gray-50' : ''} hover:bg-gray-50 transition-colors`}>
+            <span className="w-6 text-xs font-bold text-gray-400">{r.rank}</span>
+            <div className="min-w-0 pr-3">
+              <p className="text-xs font-semibold text-gray-900 truncate">{r.channel_or_format}</p>
+              <p className="text-[10px] text-gray-400 mt-0.5 line-clamp-1">{r.reason}</p>
+            </div>
+            <span className="w-20 text-[10px] text-center text-gray-600 font-medium">{r.estimated_cac_or_cpm}</span>
+            <span className="w-16 text-center">
+              <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${speedColor(r.speed)}`}>{r.speed}</span>
+            </span>
+            <span className="w-24 text-center">
+              <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] ${priorityColor(r.priority)}`}>{r.priority}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── FinancialModelCard ────────────────────────────────────────────────────────
+
+function FinancialModelCard({ model }: { model: FinancialModel }) {
+  return (
+    <div>
+      <h3 className="text-xs font-bold uppercase tracking-wide text-gray-500 mb-3 flex items-center gap-2">
+        <TrendingUp className="h-3.5 w-3.5" />
+        Financial Model — Based on Your Real Data
+      </h3>
+      <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+        <div className="grid grid-cols-2 divide-x divide-y divide-gray-100 sm:grid-cols-4 sm:divide-y-0">
+          {[
+            { label: 'Current State', value: model.current_state, color: 'text-gray-700' },
+            { label: 'Month 1 Target', value: model.month_1_target, color: 'text-blue-700' },
+            { label: 'Month 3 Target', value: model.month_3_target, color: 'text-indigo-700' },
+            { label: '12-Month Target', value: model.month_12_target, color: 'text-violet-700' },
+          ].map(({ label, value, color }) => (
+            <div key={label} className="p-4">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-gray-400 mb-1">{label}</p>
+              <p className={`text-xs font-semibold ${color} leading-relaxed`}>{value}</p>
+            </div>
+          ))}
+        </div>
+        <div className="border-t border-gray-100 grid grid-cols-1 divide-y sm:grid-cols-2 sm:divide-x sm:divide-y-0 divide-gray-100">
+          <div className="p-4">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-green-600 mb-1">🔑 Biggest Lever</p>
+            <p className="text-xs text-gray-700 leading-relaxed">{model.biggest_lever}</p>
+          </div>
+          <div className="p-4">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500 mb-1">Break-Even Point</p>
+            <p className="text-xs text-gray-700 leading-relaxed">{model.break_even_point}</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── NotToDoCard ───────────────────────────────────────────────────────────────
+
+function NotToDoCard({ items }: { items: NotToDo[] }) {
+  return (
+    <div>
+      <h3 className="text-xs font-bold uppercase tracking-wide text-gray-500 mb-3 flex items-center gap-2">
+        <X className="h-3.5 w-3.5" />
+        What NOT to Do
+      </h3>
+      <div className="space-y-2">
+        {items.map((item, i) => (
+          <div key={i} className="rounded-xl border border-gray-200 bg-white p-3.5 flex items-start gap-3">
+            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-red-100 mt-0.5">
+              <X className="h-3.5 w-3.5 text-red-500" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-gray-900">{item.dont}</p>
+              <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">{item.because}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── WeeklyKPIsCard ────────────────────────────────────────────────────────────
+
+function WeeklyKPIsCard({ kpis }: { kpis: WeeklyKPI[] }) {
+  return (
+    <div>
+      <h3 className="text-xs font-bold uppercase tracking-wide text-gray-500 mb-3 flex items-center gap-2">
+        <Target className="h-3.5 w-3.5" />
+        Weekly KPIs to Track
+      </h3>
+      <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+        <div className="grid grid-cols-[1fr_auto_auto_auto] gap-0 text-[10px] font-bold uppercase tracking-wide text-gray-400 px-4 py-2.5 border-b border-gray-100 bg-gray-50">
+          <span>Metric</span>
+          <span className="w-24 text-right">Current</span>
+          <span className="w-24 text-right">Week 4 Target</span>
+          <span className="w-28 text-right">Red Flag</span>
+        </div>
+        {kpis.map((kpi, i) => (
+          <div key={i} className={`grid grid-cols-[1fr_auto_auto_auto] items-start gap-0 px-4 py-3 ${i !== kpis.length - 1 ? 'border-b border-gray-50' : ''} hover:bg-gray-50 transition-colors`}>
+            <div>
+              <p className="text-xs font-semibold text-gray-900">{kpi.metric}</p>
+              <p className="text-[10px] text-gray-400 mt-0.5">{kpi.how_to_measure}</p>
+            </div>
+            <span className="w-24 text-right text-xs text-gray-600 pt-0.5">{kpi.current_value}</span>
+            <span className="w-24 text-right text-xs font-semibold text-green-700 pt-0.5">{kpi.week_4_target}</span>
+            <span className="w-28 text-right text-[10px] text-red-600 pt-0.5">{kpi.red_flag}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 interface Props {
@@ -449,7 +800,7 @@ export default function GrowthOSPanel({ workspaceId }: Props) {
   const [strategyMode, setStrategyMode] = useState('scale')
   const [starting, setStarting] = useState(false)
   const [showRunDialog, setShowRunDialog] = useState(false)
-  const [activeTab, setActiveTab] = useState<'actions' | 'crm' | 'product'>('actions')
+  const [activeTab, setActiveTab] = useState<'strategy' | 'actions' | 'crm' | 'product'>('strategy')
   const [activeDimension, setActiveDimension] = useState<string | null>(null)
   const [activePeriod, setActivePeriod] = useState<string | null>(null)
   const [showHistory, setShowHistory] = useState(false)
@@ -844,9 +1195,10 @@ export default function GrowthOSPanel({ workspaceId }: Props) {
           {/* Tab switcher */}
           <div className="flex gap-1 rounded-xl bg-gray-100 p-1">
             {[
-              { id: 'actions', label: `Actions (${actions.length})` },
-              { id: 'crm',     label: `CRM Sequences (${plan.crm_sequences?.length ?? 0})` },
-              { id: 'product', label: 'Product Brief' },
+              { id: 'strategy', label: '📋 Strategy Plan' },
+              { id: 'actions',  label: `⚡ Actions (${actions.length})` },
+              { id: 'crm',      label: `✉️ CRM (${plan.crm_sequences?.length ?? 0})` },
+              { id: 'product',  label: '📦 Product' },
             ].map(tab => (
               <button
                 key={tab.id}
@@ -861,6 +1213,38 @@ export default function GrowthOSPanel({ workspaceId }: Props) {
               </button>
             ))}
           </div>
+
+          {/* ── Strategy tab ── */}
+          {activeTab === 'strategy' && (
+            <div className="space-y-6">
+              {plan.honest_assessment && (
+                <HonestAssessmentCard data={plan.honest_assessment} />
+              )}
+              {plan.asymmetric_moves && plan.asymmetric_moves.length > 0 && (
+                <AsymmetricMovesGrid moves={plan.asymmetric_moves} />
+              )}
+              {plan.sprint_calendar && (
+                <SprintCalendarSection calendar={plan.sprint_calendar} />
+              )}
+              {plan.channel_rankings && plan.channel_rankings.length > 0 && (
+                <ChannelRankingsTable rankings={plan.channel_rankings} />
+              )}
+              {plan.financial_model && (
+                <FinancialModelCard model={plan.financial_model} />
+              )}
+              {plan.not_to_do && plan.not_to_do.length > 0 && (
+                <NotToDoCard items={plan.not_to_do} />
+              )}
+              {plan.weekly_kpis && plan.weekly_kpis.length > 0 && (
+                <WeeklyKPIsCard kpis={plan.weekly_kpis} />
+              )}
+              {!plan.honest_assessment && !plan.asymmetric_moves && !plan.sprint_calendar && (
+                <div className="py-10 text-center">
+                  <p className="text-sm text-gray-500">Regenerate strategy to see the full GTM plan with 30-day calendar, financial model, and channel rankings.</p>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* ── Actions tab ── */}
           {activeTab === 'actions' && (
