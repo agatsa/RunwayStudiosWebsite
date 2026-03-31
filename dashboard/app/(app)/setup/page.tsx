@@ -6,6 +6,8 @@ import { Link2, Package, CreditCard, Users } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import Link from 'next/link'
 import { ExternalLink } from 'lucide-react'
+import TeamManager from '@/components/settings/TeamManager'
+import { useWorkspace } from '@/components/layout/WorkspaceProvider'
 
 type Tab = 'connect' | 'products' | 'billing' | 'team'
 
@@ -29,6 +31,7 @@ function SetupContent() {
   const wsId = searchParams.get('ws') ?? ''
   const defaultTab = (searchParams.get('tab') as Tab) ?? 'connect'
   const [activeTab, setActiveTab] = useState<Tab>(defaultTab)
+  const { currentRole } = useWorkspace()
 
   if (!wsId) {
     return (
@@ -119,9 +122,7 @@ function SetupContent() {
             <p className="text-sm font-semibold text-gray-900">Team Members</p>
           </div>
           <div className="p-4">
-            <p className="text-sm text-gray-500">
-              Team member management coming soon. Additional seats available for ₹299/month per person.
-            </p>
+            <TeamManager workspaceId={wsId} workspaceName="" currentRole={currentRole} />
           </div>
         </div>
       )}
