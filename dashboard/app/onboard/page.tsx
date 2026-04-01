@@ -630,6 +630,7 @@ function OnboardPageInner() {
             </div>
             <div className="flex justify-center w-full">
               <SignIn
+                routing="hash"
                 forceRedirectUrl={`/onboard?url=${encodeURIComponent(url)}`}
                 signUpForceRedirectUrl={`/onboard?url=${encodeURIComponent(url)}`}
                 appearance={{
